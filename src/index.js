@@ -306,6 +306,38 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       
+      // Check if we're starting a new round (not the first round)
+      if (tournament.currentRoundIndex === 0 && tournament.currentRound > 1) {
+        try {
+          const channel = interaction.channel;
+          // Delete all messages except the setup message
+          const messages = await channel.messages.fetch({ limit: 100 });
+          const toDelete = messages.filter(msg => msg.id !== tournament.setupMessage);
+          
+          for (const msg of toDelete.values()) {
+            await msg.delete().catch(() => null);
+          }
+          
+          // Post round summary
+          const summaryEmbed = new EmbedBuilder()
+            .setTitle(`📊 Round ${tournament.currentRound - 1} Complete!`)
+            .setColor(0x0099ff);
+          
+          let summaryDescription = `**Scores after Round ${tournament.currentRound - 1}:**\n`;
+          const sortedScores = Array.from(tournament.scores.entries())
+            .sort((a, b) => b[1] - a[1]);
+          
+          sortedScores.forEach((entry, idx) => {
+            summaryDescription += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+          });
+          
+          summaryEmbed.setDescription(summaryDescription);
+          await channel.send({ embeds: [summaryEmbed] });
+        } catch (error) {
+          console.error('Failed to cleanup channel or post summary:', error.message);
+        }
+      }
+      
       let currentRoundMatches = tournament.rounds[tournament.currentRound - 1];
       
       const grouping = currentRoundMatches[tournament.currentRoundIndex];
