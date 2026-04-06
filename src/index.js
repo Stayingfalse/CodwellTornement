@@ -279,4 +279,6 @@ function generateGrouping(players) {
   };
 }
 
-client.login(process.env.BOT_TOKEN);
+client.on('error', (error) => {
+  console.error('Client error:', error);
+});
