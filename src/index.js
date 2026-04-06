@@ -24,6 +24,8 @@ let tournament = {
   currentGrouping: null,
   currentThread: null,
   setupMessage: null,
+  schedule: [], // Stores all pre-planned groupings
+  scheduleIndex: 0, // Current position in schedule
 };
 
 const commands = [
@@ -58,6 +60,8 @@ async function loadTournamentData() {
     tournament.currentGrouping = parsed.currentGrouping;
     tournament.currentThread = parsed.currentThread;
     tournament.setupMessage = parsed.setupMessage;
+    tournament.schedule = parsed.schedule || [];
+    tournament.scheduleIndex = parsed.scheduleIndex || 0;
     console.log('Tournament data loaded from storage');
   } catch (error) {
     console.log('No previous tournament data found, starting fresh');
@@ -75,6 +79,8 @@ async function saveTournamentData() {
       currentGrouping: tournament.currentGrouping,
       currentThread: tournament.currentThread,
       setupMessage: tournament.setupMessage,
+      schedule: tournament.schedule,
+      scheduleIndex: tournament.scheduleIndex,
     };
     await fs.writeFile(TOURNAMENT_FILE, JSON.stringify(data, null, 2));
   } catch (error) {
@@ -186,26 +192,32 @@ client.on('interactionCreate', async (interaction) => {
       }
       tournament.currentRound = 1;
       tournament.scores = new Map([...tournament.players].map(id => [id, 0]));
+      tournament.schedule = generateSchedule(Array.from(tournament.players));
+      tournament.scheduleIndex = 0;
       await saveTournamentData();
-      await interaction.reply({ content: `Tournament started with ${tournament.players.size} players!`, flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: `Tournament started with ${tournament.players.size} players! Generated ${tournament.schedule.length} matches.`, flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_allocate') {
       if (tournament.players.size < 4) {
         await interaction.reply({ content: 'Tournament needs at least 4 players.', flags: MessageFlags.Ephemeral });
         return;
       }
-      const players = Array.from(tournament.players);
-      // Generate a new grouping
-      let grouping = generateGrouping(players);
-      while (tournament.playedGroupings.has(JSON.stringify(grouping))) {
-        grouping = generateGrouping(players);
+      if (tournament.schedule.length === 0) {
+        await interaction.reply({ content: 'Tournament has not been started. Use the Start button first.', flags: MessageFlags.Ephemeral });
+        return;
       }
-      tournament.playedGroupings.add(JSON.stringify(grouping));
+      if (tournament.scheduleIndex >= tournament.schedule.length) {
+        await interaction.reply({ content: `All ${tournament.schedule.length} scheduled matches have been completed!`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      
+      const grouping = tournament.schedule[tournament.scheduleIndex];
       tournament.currentGrouping = grouping;
+      tournament.scheduleIndex++;
 
       await saveTournamentData();
 
       const embed = new EmbedBuilder()
-        .setTitle(`Round ${tournament.currentRound} Allocation`)
+        .setTitle(`Round ${tournament.currentRound} Allocation (Match ${tournament.scheduleIndex}/${tournament.schedule.length})`)
         .setDescription(`**Blue Team:**\nSpymaster: <@${grouping.blue.spymaster}>\nGuesser: <@${grouping.blue.guesser}>\n\n**Red Team:**\nSpymaster: <@${grouping.red.spymaster}>\nGuesser: <@${grouping.red.guesser}>`)
         .setColor(0x0099ff);
 
@@ -375,6 +387,52 @@ function generateGrouping(players) {
     blue: { spymaster: shuffled[0], guesser: shuffled[1] },
     red: { spymaster: shuffled[2], guesser: shuffled[3] },
   };
+}
+
+function generateSchedule(players) {
+  // Generate all possible 4-person groupings from the player list
+  const groupings = [];
+  
+  // Generate all combinations of 4 players
+  for (let i = 0; i < players.length; i++) {
+    for (let j = i + 1; j < players.length; j++) {
+      for (let k = j + 1; k < players.length; k++) {
+        for (let l = k + 1; l < players.length; l++) {
+          const fourPlayers = [players[i], players[j], players[k], players[l]];
+          
+          // Generate all possible team pairings from these 4 players
+          // Blue: (0,1) vs Red: (2,3)
+          // Blue: (0,2) vs Red: (1,3)
+          // Blue: (0,3) vs Red: (1,2)
+          groupings.push({
+            blue: { spymaster: players[i], guesser: players[j] },
+            red: { spymaster: players[k], guesser: players[l] },
+          });
+          groupings.push({
+            blue: { spymaster: players[i], guesser: players[k] },
+            red: { spymaster: players[j], guesser: players[l] },
+          });
+          groupings.push({
+            blue: { spymaster: players[i], guesser: players[l] },
+            red: { spymaster: players[j], guesser: players[k] },
+          });
+        }
+      }
+    }
+  }
+  
+  // Shuffle the groupings
+  groupings.sort(() => Math.random() - 0.5);
+  
+  // Remove consecutive duplicates (ensure no same grouping twice in a row)
+  const schedule = [groupings[0]];
+  for (let i = 1; i < groupings.length; i++) {
+    if (JSON.stringify(groupings[i]) !== JSON.stringify(schedule[schedule.length - 1])) {
+      schedule.push(groupings[i]);
+    }
+  }
+  
+  return schedule;
 }
 
 client.on('error', (error) => {
