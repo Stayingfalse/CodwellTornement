@@ -69,12 +69,16 @@ client.on('interactionCreate', async (interaction) => {
 
     if (customId === 'signup') {
       tournament.players.add(interaction.user.id);
-      // Edit the setup message
-      const channel = interaction.channel;
-      const message = await channel.messages.fetch(tournament.setupMessage);
-      const embed = message.embeds[0];
-      const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
-      await message.edit({ embeds: [updatedEmbed] });
+      try {
+        // Edit the setup message
+        const channel = interaction.channel;
+        const message = await channel.messages.fetch(tournament.setupMessage);
+        const embed = message.embeds[0];
+        const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
+        await message.edit({ embeds: [updatedEmbed] });
+      } catch (error) {
+        console.error('Failed to edit setup message:', error);
+      }
       await interaction.reply({ content: 'You have signed up!', flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin') {
       const adminRoleId = process.env.ADMIN_ROLE_ID; // Replace with your admin role ID
@@ -137,33 +141,38 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.reply({ embeds: [embed] });
 
-      // Create thread
-      const channel = interaction.channel;
-      const thread = await channel.threads.create({
-        name: `Round ${tournament.currentRound} Game`,
-        autoArchiveDuration: 60,
-        reason: 'Tournament game thread',
-      });
-      tournament.currentThread = thread.id;
+      try {
+        // Create thread
+        const channel = interaction.channel;
+        const thread = await channel.threads.create({
+          name: `Round ${tournament.currentRound} Game`,
+          autoArchiveDuration: 60,
+          reason: 'Tournament game thread',
+        });
+        tournament.currentThread = thread.id;
 
-      const threadEmbed = new EmbedBuilder()
-        .setTitle('Game Thread')
-        .setDescription('Please play your game and select the outcome below.')
-        .setColor(0x00ff00);
+        const threadEmbed = new EmbedBuilder()
+          .setTitle('Game Thread')
+          .setDescription('Please play your game and select the outcome below.')
+          .setColor(0x00ff00);
 
-      const row = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder()
-            .setCustomId('log_blue_win')
-            .setLabel('Blue Wins')
-            .setStyle(ButtonStyle.Primary),
-          new ButtonBuilder()
-            .setCustomId('log_red_win')
-            .setLabel('Red Wins')
-            .setStyle(ButtonStyle.Danger),
-        );
+        const row = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId('log_blue_win')
+              .setLabel('Blue Wins')
+              .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+              .setCustomId('log_red_win')
+              .setLabel('Red Wins')
+              .setStyle(ButtonStyle.Danger),
+          );
 
-      await thread.send({ embeds: [threadEmbed], components: [row] });
+        await thread.send({ embeds: [threadEmbed], components: [row] });
+      } catch (error) {
+        console.error('Failed to create thread:', error);
+        await interaction.followUp({ content: 'Failed to create game thread. Please check bot permissions.', flags: MessageFlags.Ephemeral });
+      }
     } else if (customId === 'admin_scores') {
       const scoreList = Array.from(tournament.scores.entries()).map(([id, score]) => `<@${id}>: ${score}`).join('\n');
       const embed = new EmbedBuilder()
@@ -248,8 +257,12 @@ client.on('interactionCreate', async (interaction) => {
 
       tournament.currentRound++;
       tournament.currentGrouping = null;
-      const thread = interaction.guild.channels.cache.get(tournament.currentThread);
-      if (thread) await thread.setArchived(true);
+      try {
+        const thread = interaction.guild.channels.cache.get(tournament.currentThread);
+        if (thread) await thread.setArchived(true);
+      } catch (error) {
+        console.error('Failed to archive thread:', error);
+      }
       tournament.currentThread = null;
 
       await interaction.reply(`Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}. Round completed.`);
