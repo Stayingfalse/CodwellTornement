@@ -19,13 +19,13 @@ const client = new Client({
 let tournament = {
   players: new Set(),
   currentRound: 0,
+  currentRoundIndex: 0, // Index of current match within the round
   playedGroupings: new Set(),
   scores: new Map(),
   currentGrouping: null,
   currentThread: null,
   setupMessage: null,
-  schedule: [], // Stores all pre-planned groupings
-  scheduleIndex: 0, // Current position in schedule
+  rounds: [], // Array of rounds, each round contains multiple matches
 };
 
 const commands = [
@@ -57,11 +57,11 @@ async function loadTournamentData() {
     tournament.scores = new Map(parsed.scores);
     tournament.playedGroupings = new Set(parsed.playedGroupings);
     tournament.currentRound = parsed.currentRound;
+    tournament.currentRoundIndex = parsed.currentRoundIndex || 0;
     tournament.currentGrouping = parsed.currentGrouping;
     tournament.currentThread = parsed.currentThread;
     tournament.setupMessage = parsed.setupMessage;
-    tournament.schedule = parsed.schedule || [];
-    tournament.scheduleIndex = parsed.scheduleIndex || 0;
+    tournament.rounds = parsed.rounds || [];
     console.log('Tournament data loaded from storage');
   } catch (error) {
     console.log('No previous tournament data found, starting fresh');
@@ -76,11 +76,11 @@ async function saveTournamentData() {
       scores: Array.from(tournament.scores),
       playedGroupings: Array.from(tournament.playedGroupings),
       currentRound: tournament.currentRound,
+      currentRoundIndex: tournament.currentRoundIndex,
       currentGrouping: tournament.currentGrouping,
       currentThread: tournament.currentThread,
       setupMessage: tournament.setupMessage,
-      schedule: tournament.schedule,
-      scheduleIndex: tournament.scheduleIndex,
+      rounds: tournament.rounds,
     };
     await fs.writeFile(TOURNAMENT_FILE, JSON.stringify(data, null, 2));
   } catch (error) {
@@ -191,33 +191,44 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       tournament.currentRound = 1;
+      tournament.currentRoundIndex = 0;
       tournament.scores = new Map([...tournament.players].map(id => [id, 0]));
-      tournament.schedule = generateSchedule(Array.from(tournament.players));
-      tournament.scheduleIndex = 0;
+      tournament.rounds = generateRounds(Array.from(tournament.players));
       await saveTournamentData();
-      await interaction.reply({ content: `Tournament started with ${tournament.players.size} players! Generated ${tournament.schedule.length} matches.`, flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: `Tournament started with ${tournament.players.size} players! Generated ${tournament.rounds.length} rounds.`, flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_allocate') {
       if (tournament.players.size < 4) {
         await interaction.reply({ content: 'Tournament needs at least 4 players.', flags: MessageFlags.Ephemeral });
         return;
       }
-      if (tournament.schedule.length === 0) {
+      if (tournament.rounds.length === 0) {
         await interaction.reply({ content: 'Tournament has not been started. Use the Start button first.', flags: MessageFlags.Ephemeral });
         return;
       }
-      if (tournament.scheduleIndex >= tournament.schedule.length) {
-        await interaction.reply({ content: `All ${tournament.schedule.length} scheduled matches have been completed!`, flags: MessageFlags.Ephemeral });
+      if (tournament.currentRound > tournament.rounds.length) {
+        await interaction.reply({ content: `All ${tournament.rounds.length} rounds have been completed!`, flags: MessageFlags.Ephemeral });
         return;
       }
       
-      const grouping = tournament.schedule[tournament.scheduleIndex];
+      const currentRoundMatches = tournament.rounds[tournament.currentRound - 1];
+      if (tournament.currentRoundIndex >= currentRoundMatches.length) {
+        // All matches in this round are done, move to next round
+        tournament.currentRound++;
+        tournament.currentRoundIndex = 0;
+        if (tournament.currentRound > tournament.rounds.length) {
+          await interaction.reply({ content: `All ${tournament.rounds.length} rounds have been completed!`, flags: MessageFlags.Ephemeral });
+          return;
+        }
+      }
+      
+      const grouping = currentRoundMatches[tournament.currentRoundIndex];
       tournament.currentGrouping = grouping;
-      tournament.scheduleIndex++;
+      tournament.currentRoundIndex++;
 
       await saveTournamentData();
 
       const embed = new EmbedBuilder()
-        .setTitle(`Round ${tournament.currentRound} Allocation (Match ${tournament.scheduleIndex}/${tournament.schedule.length})`)
+        .setTitle(`Round ${tournament.currentRound} - Match ${tournament.currentRoundIndex}/${currentRoundMatches.length}`)
         .setDescription(`**Blue Team:**\nSpymaster: <@${grouping.blue.spymaster}>\nGuesser: <@${grouping.blue.guesser}>\n\n**Red Team:**\nSpymaster: <@${grouping.red.spymaster}>\nGuesser: <@${grouping.red.guesser}>`)
         .setColor(0x0099ff);
 
@@ -227,7 +238,7 @@ client.on('interactionCreate', async (interaction) => {
         // Create thread
         const channel = interaction.channel;
         const thread = await channel.threads.create({
-          name: `Round ${tournament.currentRound} Game`,
+          name: `R${tournament.currentRound}M${tournament.currentRoundIndex} Game`,
           autoArchiveDuration: 60,
           reason: 'Tournament game thread',
         });
@@ -389,50 +400,64 @@ function generateGrouping(players) {
   };
 }
 
-function generateSchedule(players) {
-  // Generate all possible 4-person groupings from the player list
-  const groupings = [];
+function generateRounds(players) {
+  const rounds = [];
+  const usedPlayers = new Set();
+  let availablePlayers = [...players];
   
-  // Generate all combinations of 4 players
-  for (let i = 0; i < players.length; i++) {
-    for (let j = i + 1; j < players.length; j++) {
-      for (let k = j + 1; k < players.length; k++) {
-        for (let l = k + 1; l < players.length; l++) {
-          const fourPlayers = [players[i], players[j], players[k], players[l]];
-          
-          // Generate all possible team pairings from these 4 players
-          // Blue: (0,1) vs Red: (2,3)
-          // Blue: (0,2) vs Red: (1,3)
-          // Blue: (0,3) vs Red: (1,2)
-          groupings.push({
-            blue: { spymaster: players[i], guesser: players[j] },
-            red: { spymaster: players[k], guesser: players[l] },
-          });
-          groupings.push({
-            blue: { spymaster: players[i], guesser: players[k] },
-            red: { spymaster: players[j], guesser: players[l] },
-          });
-          groupings.push({
-            blue: { spymaster: players[i], guesser: players[l] },
-            red: { spymaster: players[j], guesser: players[k] },
-          });
-        }
+  while (availablePlayers.length >= 4) {
+    const round = [];
+    const playersInThisRound = new Set();
+    
+    // Create as many 4-person matches as possible in this round
+    while (availablePlayers.length >= 4) {
+      // Get 4 random players that haven't been used in this round
+      const candidates = availablePlayers.filter(p => !playersInThisRound.has(p));
+      if (candidates.length < 4) break;
+      
+      // Pick 4 random candidates
+      const selected = [];
+      for (let i = 0; i < 4; i++) {
+        const idx = Math.floor(Math.random() * candidates.length);
+        selected.push(candidates[idx]);
+        candidates.splice(idx, 1);
       }
+      
+      // Create all possible team pairings from these 4 players
+      const pairings = [
+        {
+          blue: { spymaster: selected[0], guesser: selected[1] },
+          red: { spymaster: selected[2], guesser: selected[3] },
+        },
+        {
+          blue: { spymaster: selected[0], guesser: selected[2] },
+          red: { spymaster: selected[1], guesser: selected[3] },
+        },
+        {
+          blue: { spymaster: selected[0], guesser: selected[3] },
+          red: { spymaster: selected[1], guesser: selected[2] },
+        },
+      ];
+      
+      // Add a random pairing from these 4 players
+      const pairing = pairings[Math.floor(Math.random() * pairings.length)];
+      round.push(pairing);
+      
+      // Mark these players as used in this round
+      selected.forEach(p => playersInThisRound.add(p));
     }
+    
+    if (round.length > 0) {
+      rounds.push(round);
+    }
+    
+    // Update available players for next round (rotate through all players)
+    availablePlayers = players.filter(p => !playersInThisRound.has(p)).concat(
+      Array.from(playersInThisRound)
+    );
   }
   
-  // Shuffle the groupings
-  groupings.sort(() => Math.random() - 0.5);
-  
-  // Remove consecutive duplicates (ensure no same grouping twice in a row)
-  const schedule = [groupings[0]];
-  for (let i = 1; i < groupings.length; i++) {
-    if (JSON.stringify(groupings[i]) !== JSON.stringify(schedule[schedule.length - 1])) {
-      schedule.push(groupings[i]);
-    }
-  }
-  
-  return schedule;
+  return rounds;
 }
 
 client.on('error', (error) => {
