@@ -596,6 +596,10 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
     } else if (customId === 'admin_reset') {
+      // Capture message/channel IDs before wiping them so we can update the embed after reset
+      const prevSetupMessage = tournament.setupMessage;
+      const prevSetupChannelId = tournament.setupChannelId;
+
       tournament = {
         players: new Set(),
         currentRound: 0,
@@ -604,12 +608,43 @@ client.on('interactionCreate', async (interaction) => {
         scores: new Map(),
         currentGrouping: null,
         currentThread: null,
-        setupMessage: null,
-        setupChannelId: null,
+        setupMessage: prevSetupMessage,
+        setupChannelId: prevSetupChannelId,
         rounds: [],
         started: false,
       };
       await saveTournamentData();
+
+      // Update the signup embed to show the cleared player list
+      if (prevSetupMessage && prevSetupChannelId) {
+        try {
+          const channel = await interaction.guild.channels.fetch(prevSetupChannelId).catch(() => null);
+          if (channel) {
+            const message = await channel.messages.fetch(prevSetupMessage).catch(() => null);
+            if (message) {
+              const signupRow = new ActionRowBuilder()
+                .addComponents(
+                  new ButtonBuilder()
+                    .setCustomId('signup')
+                    .setLabel('Sign Up')
+                    .setStyle(ButtonStyle.Primary),
+                  new ButtonBuilder()
+                    .setCustomId('admin')
+                    .setLabel('Admin')
+                    .setStyle(ButtonStyle.Secondary),
+                );
+              const resetEmbed = new EmbedBuilder()
+                .setTitle('Codenames Tournament')
+                .setDescription(buildSignupDescription())
+                .setColor(0x0099ff);
+              await message.edit({ embeds: [resetEmbed], components: [signupRow] });
+            }
+          }
+        } catch (error) {
+          console.error('[admin_reset] Failed to update signup message:', error.message);
+        }
+      }
+
       await interaction.reply({ content: 'Tournament reset.', flags: MessageFlags.Ephemeral });
     } else if (customId === 'debug_seed_players') {
       if (process.env.DEBUG_MODE !== 'true') {
