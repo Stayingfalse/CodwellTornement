@@ -320,3 +320,6 @@ function generateGrouping(players) {
 client.on('error', (error) => {
   console.error('Client error:', error);
 });
+
+console.log('Attempting to login with token:', process.env.BOT_TOKEN ? 'Token found' : 'Token missing');
+client.login(process.env.BOT_TOKEN);
