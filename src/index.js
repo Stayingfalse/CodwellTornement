@@ -563,7 +563,52 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      // Now show modal for remaining cards
+      // If assassin hit, no need to ask for cards remaining — process immediately
+      if (wasAssassin) {
+        const matchDataA = tournament.activeMatches.find(m => m.threadId === interaction.channelId);
+        if (!matchDataA) {
+          await interaction.reply({ content: 'Could not find an active match for this thread.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const gA = matchDataA.grouping;
+        const winPoints = 3;
+        const losePoints = -1;
+        const bluePlayers = [gA.blue.spymaster, gA.blue.guesser];
+        const redPlayers  = [gA.red.spymaster,  gA.red.guesser];
+        if (winner === 'blue') {
+          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + winPoints));
+          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) + losePoints));
+        } else {
+          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) + winPoints));
+          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + losePoints));
+        }
+        tournament.activeMatches = tournament.activeMatches.filter(m => m.threadId !== interaction.channelId);
+        tournament.currentRoundIndex++;
+        tournament.roundResults.push({ matchNumber: matchDataA.matchNumber, grouping: gA, winner, assassin: true, remainingCards: 0, winPoints, losePoints });
+        const remainingActiveA = tournament.activeMatches.length;
+        const roundCompleteA = remainingActiveA === 0;
+        const winnerLabelA = winner === 'blue' ? '🔵 Blue' : '🔴 Red';
+        let replyTextA = `Result logged: **${winnerLabelA}** won by assassin hit.\nWin: **+3 pts** · Lose: **-1 pts**`;
+        if (roundCompleteA) replyTextA += '\nAll matches complete — round advancing.';
+        else replyTextA += `\n${remainingActiveA} match(es) still active this round.`;
+        const correctRowA = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`correct_result_${matchDataA.matchNumber}`).setLabel('Correct This Result').setStyle(ButtonStyle.Danger),
+        );
+        await interaction.reply({ content: replyTextA, components: [correctRowA] });
+        await saveTournamentData();
+        updateScoreboard(interaction.guild).catch(() => null);
+        if (roundCompleteA) {
+          tournament.currentRound++;
+          tournament.currentRoundIndex = 0;
+          await saveTournamentData();
+          if (tournament.currentRound <= tournament.rounds.length) {
+            allocateRound(interaction).catch(e => console.error('Auto-allocation failed:', e.message));
+          }
+        }
+        return;
+      }
+
+      // Not an assassin — show modal for remaining cards
       const modal = new ModalBuilder()
         .setCustomId(`outcome_modal_${winner}_${wasAssassin ? 'assassin' : 'normal'}`)
         .setTitle(`${winner === 'blue' ? 'Blue' : 'Red'} Won - Game Details`);
