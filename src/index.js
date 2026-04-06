@@ -316,6 +316,9 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
+      // Defer reply immediately since we may do async work with auto-allocation
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
       // Force end with 0 points for all players
       const bluePlayers = [tournament.currentGrouping.blue.spymaster, tournament.currentGrouping.blue.guesser];
       const redPlayers = [tournament.currentGrouping.red.spymaster, tournament.currentGrouping.red.guesser];
@@ -329,6 +332,7 @@ client.on('interactionCreate', async (interaction) => {
       const currentRoundMatches = currentRound || [];
       
       let autoAllocated = false;
+      let allocEmbed = null;
       if (tournament.currentRoundIndex >= currentRoundMatches.length) {
         console.log('=== ADMIN_FORCE_END ROUND ADVANCE ===');
         console.log('All matches complete, advancing round');
@@ -354,12 +358,7 @@ client.on('interactionCreate', async (interaction) => {
             const allocResult = await allocateNextMatch(interaction);
             console.log('allocateNextMatch result:', JSON.stringify(allocResult));
             if (allocResult.success && allocResult.embed) {
-              try {
-                await interaction.followUp({ embeds: [allocResult.embed] });
-                console.log('Embed sent successfully');
-              } catch (followUpError) {
-                console.error('Failed to send followUp:', followUpError.message);
-              }
+              allocEmbed = allocResult.embed;
             }
             autoAllocated = allocResult.success;
           } catch (allocError) {
@@ -432,7 +431,18 @@ client.on('interactionCreate', async (interaction) => {
         console.error('Failed to archive thread:', error.message);
       }
       
-      await interaction.reply({ content: `Match force ended. 0 points awarded to all players.${autoAllocated ? ' Next round automatically allocated.' : ''}`, flags: MessageFlags.Ephemeral });
+      // Send the main response using editReply (since we deferred)
+      await interaction.editReply({ content: `Match force ended. 0 points awarded to all players.${autoAllocated ? ' Next round automatically allocated.' : ''}` });
+      
+      // Send the allocation embed as a followUp if auto-allocation succeeded
+      if (allocEmbed) {
+        try {
+          await interaction.followUp({ embeds: [allocEmbed] });
+          console.log('Allocation embed sent via followUp');
+        } catch (followUpError) {
+          console.error('Failed to send allocation embed followUp:', followUpError.message);
+        }
+      }
     } else if (customId === 'force_end_round') {
       // Defer reply immediately since we'll do async work
       await interaction.deferReply();
@@ -466,6 +476,7 @@ client.on('interactionCreate', async (interaction) => {
       
       // Automatically allocate the next round if there are more rounds
       let autoAllocated = false;
+      let allocEmbed = null;
       if (tournament.currentRound <= tournament.rounds.length) {
         console.log('Attempting auto-allocation...');
         console.log('VERIFY: currentRoundIndex right before allocateNextMatch:', tournament.currentRoundIndex);
@@ -473,13 +484,8 @@ client.on('interactionCreate', async (interaction) => {
           const allocResult = await allocateNextMatch(interaction);
           console.log('allocateNextMatch result:', JSON.stringify(allocResult));
           if (allocResult.success && allocResult.embed) {
-            console.log('Sending embed via followUp...');
-            try {
-              await interaction.followUp({ embeds: [allocResult.embed] });
-              console.log('Embed sent successfully');
-            } catch (followUpError) {
-              console.error('Failed to send followUp:', followUpError.message);
-            }
+            allocEmbed = allocResult.embed;
+            console.log('Allocation successful, embed saved for later');
           } else {
             console.log('Allocation failed or no embed:', allocResult.message);
           }
@@ -539,6 +545,16 @@ client.on('interactionCreate', async (interaction) => {
       await saveTournamentData();
       const allocationMessage = autoAllocated ? ' Next round automatically allocated.' : '';
       await interaction.editReply({ content: `Round ${tournament.currentRound - 1} force ended. ${remainingMatches} match(es) skipped with 0 points. Ready for next round.${allocationMessage}` });
+      
+      // Send the allocation embed as a followUp if auto-allocation succeeded
+      if (allocEmbed) {
+        try {
+          await interaction.followUp({ embeds: [allocEmbed] });
+          console.log('Allocation embed sent via followUp');
+        } catch (followUpError) {
+          console.error('Failed to send allocation embed followUp:', followUpError.message);
+        }
+      }
     } else if (customId === 'admin_reset') {
       tournament = {
         players: new Set(),
@@ -680,6 +696,7 @@ client.on('interactionCreate', async (interaction) => {
         const currentRoundMatches = currentRound || [];
         
         let autoAllocated = false;
+        let allocEmbed = null;
         if (tournament.currentRoundIndex >= currentRoundMatches.length) {
           console.log('=== ROUND COMPLETION DEBUG ===');
           console.log('Round completed, advancing...');
@@ -707,13 +724,8 @@ client.on('interactionCreate', async (interaction) => {
               const allocResult = await allocateNextMatch(interaction);
               console.log('Auto-allocation result:', JSON.stringify(allocResult));
               if (allocResult.success && allocResult.embed) {
-                console.log('Sending auto-allocation embed...');
-                try {
-                  await interaction.followUp({ embeds: [allocResult.embed] });
-                  console.log('Auto-allocation embed sent');
-                } catch (followUpError) {
-                  console.error('Failed to send followUp:', followUpError.message);
-                }
+                allocEmbed = allocResult.embed;
+                console.log('Allocation successful, embed saved for later');
               }
               autoAllocated = allocResult.success;
             } catch (allocError) {
@@ -781,6 +793,16 @@ client.on('interactionCreate', async (interaction) => {
         // Send reply to user BEFORE archiving thread to avoid "thread is archived" error
         const allocationMessage = autoAllocated ? ' Next round automatically allocated.' : '';
         await interaction.reply(`Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}. Round completed.${allocationMessage}`);
+        
+        // Send the allocation embed as a followUp if auto-allocation succeeded
+        if (allocEmbed) {
+          try {
+            await interaction.followUp({ embeds: [allocEmbed] });
+            console.log('Allocation embed sent via followUp');
+          } catch (followUpError) {
+            console.error('Failed to send allocation embed followUp:', followUpError.message);
+          }
+        }
         
         // Archive thread in background after reply is sent
         try {
