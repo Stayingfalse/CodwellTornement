@@ -340,6 +340,12 @@ client.on('interactionCreate', async (interaction) => {
       
       let currentRoundMatches = tournament.rounds[tournament.currentRound - 1];
       
+      // Check if all matches in current round have been allocated
+      if (tournament.currentRoundIndex >= currentRoundMatches.length) {
+        await interaction.reply({ content: `All matches in Round ${tournament.currentRound} have been allocated. Wait for outcomes to complete, then allocate the next round.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      
       const grouping = currentRoundMatches[tournament.currentRoundIndex];
       tournament.currentGrouping = grouping;
       tournament.currentRoundIndex++;
