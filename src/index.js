@@ -284,6 +284,10 @@ client.on('interactionCreate', async (interaction) => {
             .setLabel('Force End Match')
             .setStyle(ButtonStyle.Danger),
           new ButtonBuilder()
+            .setCustomId('admin_adjust_score')
+            .setLabel('Adjust Score')
+            .setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder()
             .setCustomId('admin_reset')
             .setLabel('Reset Tournament')
             .setStyle(ButtonStyle.Danger),
@@ -300,7 +304,7 @@ client.on('interactionCreate', async (interaction) => {
 
       const adminRow = new ActionRowBuilder().addComponents(adminComponents.slice(0, 5));
       const adminRows = [adminRow];
-      if (debugMode && adminComponents.length > 5) {
+      if (adminComponents.length > 5) {
         adminRows.push(new ActionRowBuilder().addComponents(adminComponents.slice(5)));
       }
 
@@ -365,6 +369,29 @@ client.on('interactionCreate', async (interaction) => {
         .setDescription(scoreList || 'No scores yet.')
         .setColor(0xff9900);
       await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    } else if (customId === 'admin_adjust_score') {
+      const modal = new ModalBuilder()
+        .setCustomId('adjust_score_modal')
+        .setTitle('Adjust Player Score');
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('adjust_player_id')
+            .setLabel('Player ID or @mention')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setPlaceholder('e.g. 123456789012345678'),
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('adjust_delta')
+            .setLabel('Points to add (use negative to subtract)')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setPlaceholder('e.g. 3 or -2'),
+        ),
+      );
+      await interaction.showModal(modal);
     } else if (customId === 'admin_force_end') {
       if (tournament.activeMatches.length === 0) {
         await interaction.reply({ content: 'No matches currently active to force end.', flags: MessageFlags.Ephemeral });
@@ -491,6 +518,17 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: 'No active match found for this thread.', flags: MessageFlags.Ephemeral });
         return;
       }
+
+      // Only players in this game or admins may submit results
+      const adminRoleId = process.env.ADMIN_ROLE_ID;
+      const isAdmin = interaction.member.roles.cache.has(adminRoleId);
+      const { grouping } = matchData;
+      const matchPlayers = [grouping.blue.spymaster, grouping.blue.guesser, grouping.red.spymaster, grouping.red.guesser];
+      if (!isAdmin && !matchPlayers.includes(interaction.user.id)) {
+        await interaction.reply({ content: 'You are not a player in this game and cannot submit the result.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
       const winner = customId === 'log_blue_win' ? 'blue' : 'red';
 
       // Show buttons for assassin question instead of modal
@@ -512,6 +550,19 @@ client.on('interactionCreate', async (interaction) => {
       const wasAssassin = parts[1] === 'yes';
       const winner = parts[2];
 
+      // Only players in this game or admins may answer
+      const matchData2 = tournament.activeMatches.find(m => m.threadId === interaction.channelId);
+      if (matchData2) {
+        const adminRoleId = process.env.ADMIN_ROLE_ID;
+        const isAdmin2 = interaction.member.roles.cache.has(adminRoleId);
+        const g2 = matchData2.grouping;
+        const matchPlayers2 = [g2.blue.spymaster, g2.blue.guesser, g2.red.spymaster, g2.red.guesser];
+        if (!isAdmin2 && !matchPlayers2.includes(interaction.user.id)) {
+          await interaction.reply({ content: 'You are not a player in this game.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+      }
+
       // Now show modal for remaining cards
       const modal = new ModalBuilder()
         .setCustomId(`outcome_modal_${winner}_${wasAssassin ? 'assassin' : 'normal'}`)
@@ -530,7 +581,57 @@ client.on('interactionCreate', async (interaction) => {
       modal.addComponents(firstActionRow);
 
       await interaction.showModal(modal);
-    } else if (customId.startsWith('confirm_remove_')) {
+    } else if (customId.startsWith('correct_result_')) {
+      // Only match players or admins can correct a result
+      const adminRoleId = process.env.ADMIN_ROLE_ID;
+      const isAdminC = interaction.member.roles.cache.has(adminRoleId);
+
+      // Find the recorded result for this thread
+      const matchNumToCorrect = parseInt(customId.split('_')[2]);
+      const resultIdx = tournament.roundResults.findIndex(r => r.matchNumber === matchNumToCorrect);
+      if (resultIdx === -1) {
+        await interaction.reply({ content: 'No recorded result found to correct. It may have already been corrected.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const prevResult = tournament.roundResults[resultIdx];
+      const matchPlayers = [
+        prevResult.grouping.blue.spymaster, prevResult.grouping.blue.guesser,
+        prevResult.grouping.red.spymaster,  prevResult.grouping.red.guesser,
+      ];
+      if (!isAdminC && !matchPlayers.includes(interaction.user.id)) {
+        await interaction.reply({ content: 'Only players in this game or an admin can correct this result.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      // Reverse previous score changes
+      const bluePlayers = [prevResult.grouping.blue.spymaster, prevResult.grouping.blue.guesser];
+      const redPlayers  = [prevResult.grouping.red.spymaster,  prevResult.grouping.red.guesser];
+      if (prevResult.winner === 'blue') {
+        bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult.winPoints));
+        redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult.losePoints));
+      } else {
+        redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult.winPoints));
+        bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult.losePoints));
+      }
+
+      // Remove from round results and re-add to active matches
+      tournament.roundResults.splice(resultIdx, 1);
+      tournament.currentRoundIndex = Math.max(0, tournament.currentRoundIndex - 1);
+      tournament.activeMatches.push({
+        grouping: prevResult.grouping,
+        threadId: interaction.channelId,
+        matchNumber: prevResult.matchNumber,
+      });
+
+      await saveTournamentData();
+      updateScoreboard(interaction.guild).catch(() => null);
+
+      // Re-post the log buttons in the thread
+      const relogRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('log_blue_win').setLabel('Blue Wins').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('log_red_win').setLabel('Red Wins').setStyle(ButtonStyle.Danger),
+      );
+      await interaction.reply({ content: '⚠️ Previous result reversed. Please re-submit the correct outcome:', components: [relogRow] });
       const userId = customId.split('_')[2];
       if (interaction.user.id === userId) {
         tournament.players.delete(userId);
@@ -602,14 +703,21 @@ client.on('interactionCreate', async (interaction) => {
         const remainingActive = tournament.activeMatches.length;
         const roundComplete = remainingActive === 0;
 
-        // Reply immediately before any further async work
-        let replyText = `Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}.`;
-        if (roundComplete) replyText += ' All matches complete — round advancing.';
-        else replyText += ` ${remainingActive} match(es) still active this round.`;
-        await interaction.reply(replyText);
+        // Reply with result summary and a Correct button (don't archive yet)
+        const winnerLabel = winner === 'blue' ? '🔵 Blue' : '🔴 Red';
+        const howStr = assassin ? 'assassin hit' : `${remainingCards} card${remainingCards !== 1 ? 's' : ''} remaining`;
+        let replyText = `Result logged: **${winnerLabel}** won (${howStr}).
+Win: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**`;
+        if (roundComplete) replyText += '\nAll matches complete — round advancing.';
+        else replyText += `\n${remainingActive} match(es) still active this round.`;
 
-        // Archive this thread in background
-        interaction.channel.setArchived(true).catch(() => null);
+        const correctRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`correct_result_${matchData.matchNumber}`)
+            .setLabel('Correct This Result')
+            .setStyle(ButtonStyle.Danger),
+        );
+        await interaction.reply({ content: replyText, components: [correctRow] });
 
         await saveTournamentData();
         updateScoreboard(interaction.guild).catch(() => null);
@@ -630,6 +738,22 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.reply({ content: 'An error occurred while processing the outcome. Please try again.', flags: MessageFlags.Ephemeral });
         } catch {}
       }
+    } else if (customId === 'adjust_score_modal') {
+      const rawId = interaction.fields.getTextInputValue('adjust_player_id').trim().replace(/[<@!>]/g, '');
+      const delta = parseInt(interaction.fields.getTextInputValue('adjust_delta').trim());
+      if (isNaN(delta)) {
+        await interaction.reply({ content: 'Invalid points value. Please enter a number like `3` or `-2`.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!tournament.scores.has(rawId)) {
+        await interaction.reply({ content: `No score found for player ID \`${rawId}\`. Make sure you used the raw numeric ID.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const oldScore = tournament.scores.get(rawId);
+      tournament.scores.set(rawId, oldScore + delta);
+      await saveTournamentData();
+      updateScoreboard(interaction.guild).catch(() => null);
+      await interaction.reply({ content: `Score adjusted: <@${rawId}> ${oldScore} → **${oldScore + delta} pts** (${delta > 0 ? '+' : ''}${delta})`, flags: MessageFlags.Ephemeral });
     }
   }
 });
