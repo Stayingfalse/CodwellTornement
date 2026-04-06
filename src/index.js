@@ -143,7 +143,17 @@ client.on('interactionCreate', async (interaction) => {
             const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
             if (message) {
               const embed = message.embeds[0];
-              const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
+              let description = 'Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet');
+              
+              // Add prediction if 4+ players
+              if (tournament.players.size >= 4) {
+                const prediction = getTournamentPrediction(tournament.players.size);
+                if (prediction) {
+                  description += `\n\n**Tournament Prediction:**\n${prediction.rounds} Rounds • ${prediction.totalGames} Total Games`;
+                }
+              }
+              
+              const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
               await message.edit({ embeds: [updatedEmbed] });
             }
           }
@@ -327,7 +337,17 @@ client.on('interactionCreate', async (interaction) => {
             const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
             if (message) {
               const embed = message.embeds[0];
-              const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
+              let description = 'Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet');
+              
+              // Add prediction if 4+ players
+              if (tournament.players.size >= 4) {
+                const prediction = getTournamentPrediction(tournament.players.size);
+                if (prediction) {
+                  description += `\n\n**Tournament Prediction:**\n${prediction.rounds} Rounds • ${prediction.totalGames} Total Games`;
+                }
+              }
+              
+              const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
               await message.edit({ embeds: [updatedEmbed] });
             }
           }
@@ -390,6 +410,27 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 });
+
+function getTournamentPrediction(playerCount) {
+  if (playerCount < 4) {
+    return null;
+  }
+  
+  // Generate the rounds to get exact count
+  const rounds = generateRounds(Array.from({length: playerCount}, (_, i) => `player${i}`));
+  
+  let totalGames = 0;
+  const gamesPerRound = rounds.map(round => {
+    totalGames += round.length;
+    return round.length;
+  });
+  
+  return {
+    rounds: rounds.length,
+    gamesPerRound: gamesPerRound,
+    totalGames: totalGames,
+  };
+}
 
 function generateGrouping(players) {
   // Shuffle players
