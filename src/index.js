@@ -353,7 +353,7 @@ client.on('interactionCreate', async (interaction) => {
               .setLabel('Force End Remaining')
               .setStyle(ButtonStyle.Danger),
           );
-        await interaction.reply({ content: `All matches in Round ${tournament.currentRound} have been allocated. Wait for outcomes to complete, then allocate the next round.`, components: [forceEndRow] });
+        await interaction.reply({ content: `All matches in Round ${tournament.currentRound} have been allocated. Wait for outcomes to complete, then allocate the next round.`, components: [forceEndRow], flags: MessageFlags.Ephemeral });
         return;
       }
       
