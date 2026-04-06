@@ -179,8 +179,7 @@ client.on('interactionCreate', async (interaction) => {
 
         description += `**Scoreboard:**\n`;
         const sortedScores = Array.from(tournament.scores.entries())
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 10);
+          .sort((a, b) => b[1] - a[1]);
         sortedScores.forEach((entry, idx) => {
           description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
         });
@@ -664,7 +663,6 @@ async function updateScoreboard(guild) {
       description += `**Scoreboard:**\n`;
       Array.from(tournament.scores.entries())
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 10)
         .forEach((entry, idx) => { description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`; });
     }
 
