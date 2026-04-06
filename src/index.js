@@ -46,7 +46,7 @@ client.once('clientReady', async () => {
   const guild = client.guilds.cache.get(process.env.GUILD_ID);
   if (guild) {
     await guild.commands.set(commands);
-    console.log('Commands registered');
+    console.log('Commands registered');0
   }
 });
 
@@ -297,111 +297,12 @@ client.on('interactionCreate', async (interaction) => {
       await saveTournamentData();
       await interaction.reply({ content: `Tournament started with ${tournament.players.size} players! Generated ${tournament.rounds.length} rounds.`, flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_allocate') {
-      if (tournament.players.size < 4) {
-        await interaction.reply({ content: 'Tournament needs at least 4 players.', flags: MessageFlags.Ephemeral });
+      const result = await allocateNextMatch(interaction);
+      if (!result.success) {
+        await interaction.reply({ content: result.message, flags: MessageFlags.Ephemeral });
         return;
       }
-      if (tournament.rounds.length === 0) {
-        await interaction.reply({ content: 'Tournament has not been started. Use the Start button first.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (tournament.currentRound > tournament.rounds.length) {
-        await interaction.reply({ content: `All ${tournament.rounds.length} rounds have been completed!`, flags: MessageFlags.Ephemeral });
-        return;
-      }
-      
-      // Check if we're starting a new round (not the first round)
-      if (tournament.currentRoundIndex === 0 && tournament.currentRound > 1) {
-        try {
-          const channel = interaction.channel;
-          // Delete all messages except the setup message
-          const messages = await channel.messages.fetch({ limit: 100 });
-          const toDelete = messages.filter(msg => msg.id !== tournament.setupMessage);
-          
-          for (const msg of toDelete.values()) {
-            await msg.delete().catch(() => null);
-          }
-          
-          // Post round summary
-          const summaryEmbed = new EmbedBuilder()
-            .setTitle(`📊 Round ${tournament.currentRound - 1} Complete!`)
-            .setColor(0x0099ff);
-          
-          let summaryDescription = `**Scores after Round ${tournament.currentRound - 1}:**\n`;
-          const sortedScores = Array.from(tournament.scores.entries())
-            .sort((a, b) => b[1] - a[1]);
-          
-          sortedScores.forEach((entry, idx) => {
-            summaryDescription += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
-          });
-          
-          summaryEmbed.setDescription(summaryDescription);
-          await channel.send({ embeds: [summaryEmbed] });
-        } catch (error) {
-          console.error('Failed to cleanup channel or post summary:', error.message);
-        }
-      }
-      
-      let currentRoundMatches = tournament.rounds[tournament.currentRound - 1];
-      
-      // Check if all matches in current round have been allocated
-      if (tournament.currentRoundIndex >= currentRoundMatches.length) {
-        const forceEndRow = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId('force_end_round')
-              .setLabel('Force End Remaining')
-              .setStyle(ButtonStyle.Danger),
-          );
-        await interaction.reply({ content: `All matches in Round ${tournament.currentRound} have been allocated. Wait for outcomes to complete, then allocate the next round.`, components: [forceEndRow], flags: MessageFlags.Ephemeral });
-        return;
-      }
-      
-      const grouping = currentRoundMatches[tournament.currentRoundIndex];
-      tournament.currentGrouping = grouping;
-      tournament.currentRoundIndex++;
-
-      await saveTournamentData();
-
-      const embed = new EmbedBuilder()
-        .setTitle(`Round ${tournament.currentRound} - Match ${tournament.currentRoundIndex}/${currentRoundMatches.length}`)
-        .setDescription(`**Blue Team:**\nSpymaster: <@${grouping.blue.spymaster}>\nGuesser: <@${grouping.blue.guesser}>\n\n**Red Team:**\nSpymaster: <@${grouping.red.spymaster}>\nGuesser: <@${grouping.red.guesser}>`)
-        .setColor(0x0099ff);
-
-      await interaction.reply({ embeds: [embed] });
-
-      try {
-        // Create thread
-        const channel = interaction.channel;
-        const thread = await channel.threads.create({
-          name: `R${tournament.currentRound}M${tournament.currentRoundIndex} Game`,
-          autoArchiveDuration: 60,
-          reason: 'Tournament game thread',
-        });
-        tournament.currentThread = thread.id;
-
-        const threadEmbed = new EmbedBuilder()
-          .setTitle('Game Thread')
-          .setDescription('Please play your game and select the outcome below.')
-          .setColor(0x00ff00);
-
-        const row = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId('log_blue_win')
-              .setLabel('Blue Wins')
-              .setStyle(ButtonStyle.Primary),
-            new ButtonBuilder()
-              .setCustomId('log_red_win')
-              .setLabel('Red Wins')
-              .setStyle(ButtonStyle.Danger),
-          );
-
-        await thread.send({ embeds: [threadEmbed], components: [row] });
-      } catch (error) {
-        console.error('Failed to create thread:', error);
-        await interaction.followUp({ content: 'Failed to create game thread. Please check bot permissions.', flags: MessageFlags.Ephemeral });
-      }
+      await interaction.reply({ embeds: [result.embed] });
     } else if (customId === 'admin_scores') {
       const scoreList = Array.from(tournament.scores.entries()).map(([id, score]) => `<@${id}>: ${score}`).join('\n');
       const embed = new EmbedBuilder()
@@ -427,10 +328,24 @@ client.on('interactionCreate', async (interaction) => {
       const currentRound = tournament.rounds[tournament.currentRound - 1];
       const currentRoundMatches = currentRound || [];
       
+      let autoAllocated = false;
       if (tournament.currentRoundIndex >= currentRoundMatches.length) {
         // All matches in this round are complete, advance to next round
         tournament.currentRound++;
         tournament.currentRoundIndex = 0;
+        
+        // Automatically allocate the next round if there are more rounds
+        if (tournament.currentRound <= tournament.rounds.length) {
+          try {
+            const allocResult = await allocateNextMatch(interaction);
+            if (allocResult.success && allocResult.embed) {
+              await interaction.followUp({ embeds: [allocResult.embed] });
+            }
+            autoAllocated = true;
+          } catch (allocError) {
+            console.error('Failed to auto-allocate next round after force end match:', allocError);
+          }
+        }
       }
       
       // Update the scoreboard
@@ -495,19 +410,55 @@ client.on('interactionCreate', async (interaction) => {
         console.error('Failed to archive thread:', error.message);
       }
       
-      await interaction.reply({ content: 'Match force ended. 0 points awarded to all players.', flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: `Match force ended. 0 points awarded to all players.${autoAllocated ? ' Next round automatically allocated.' : ''}`, flags: MessageFlags.Ephemeral });
     } else if (customId === 'force_end_round') {
       // Defer reply immediately since we'll do async work
       await interaction.deferReply();
       
+      console.log('=== FORCE END ROUND DEBUG ===');
+      console.log('Current tournament state:');
+      console.log('- currentRound:', tournament.currentRound);
+      console.log('- currentRoundIndex:', tournament.currentRoundIndex);
+      console.log('- total rounds:', tournament.rounds.length);
+      console.log('- rounds array:', tournament.rounds.map((round, idx) => `Round ${idx + 1}: ${round.length} matches`));
+      
       // Force end all remaining matches in the round
       const currentRound = tournament.rounds[tournament.currentRound - 1];
-      const remainingMatches = currentRound.length - tournament.currentRoundIndex;
+      console.log('- currentRound matches:', currentRound ? currentRound.length : 'undefined');
+      const remainingMatches = currentRound ? currentRound.length - tournament.currentRoundIndex : 0;
+      console.log('- remainingMatches calculated:', remainingMatches);
       
       // Advance to next round
       tournament.currentRound++;
       tournament.currentRoundIndex = 0;
       tournament.currentGrouping = null;
+      
+      console.log('After advancing:');
+      console.log('- new currentRound:', tournament.currentRound);
+      console.log('- new currentRoundIndex:', tournament.currentRoundIndex);
+      console.log('- tournament.currentRound <= tournament.rounds.length:', tournament.currentRound <= tournament.rounds.length);
+      
+      // Automatically allocate the next round if there are more rounds
+      let autoAllocated = false;
+      if (tournament.currentRound <= tournament.rounds.length) {
+        console.log('Attempting auto-allocation...');
+        try {
+          const allocResult = await allocateNextMatch(interaction);
+          console.log('allocateNextMatch result:', allocResult);
+          if (allocResult.success && allocResult.embed) {
+            console.log('Sending embed via followUp...');
+            await interaction.followUp({ embeds: [allocResult.embed] });
+            console.log('Embed sent successfully');
+          } else {
+            console.log('Allocation failed or no embed:', allocResult.message);
+          }
+          autoAllocated = true;
+        } catch (allocError) {
+          console.error('Failed to auto-allocate next round after force end:', allocError);
+        }
+      } else {
+        console.log('No auto-allocation: reached end of tournament');
+      }
       
       // Update the scoreboard
       try {
@@ -555,7 +506,8 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       await saveTournamentData();
-      await interaction.editReply({ content: `Round ${tournament.currentRound - 1} force ended. ${remainingMatches} match(es) skipped with 0 points. Ready for next round.` });
+      const allocationMessage = autoAllocated ? ' Next round automatically allocated.' : '';
+      await interaction.editReply({ content: `Round ${tournament.currentRound - 1} force ended. ${remainingMatches} match(es) skipped with 0 points. Ready for next round.${allocationMessage}` });
     } else if (customId === 'admin_reset') {
       tournament = {
         players: new Set(),
@@ -696,10 +648,40 @@ client.on('interactionCreate', async (interaction) => {
         const currentRound = tournament.rounds[tournament.currentRound - 1];
         const currentRoundMatches = currentRound || [];
         
+        let autoAllocated = false;
         if (tournament.currentRoundIndex >= currentRoundMatches.length) {
+          console.log('=== ROUND COMPLETION DEBUG ===');
+          console.log('Round completed, advancing...');
+          console.log('- currentRound before:', tournament.currentRound);
+          console.log('- currentRoundIndex before:', tournament.currentRoundIndex);
+          console.log('- currentRoundMatches.length:', currentRoundMatches.length);
+          
           // All matches in this round are complete, advance to next round
           tournament.currentRound++;
           tournament.currentRoundIndex = 0;
+          
+          console.log('- currentRound after:', tournament.currentRound);
+          console.log('- total rounds:', tournament.rounds.length);
+          console.log('- should auto-allocate:', tournament.currentRound <= tournament.rounds.length);
+          
+          // Automatically allocate the next round if there are more rounds
+          if (tournament.currentRound <= tournament.rounds.length) {
+            console.log('Auto-allocating next round...');
+            try {
+              const allocResult = await allocateNextMatch(interaction);
+              console.log('Auto-allocation result:', allocResult);
+              if (allocResult.success && allocResult.embed) {
+                console.log('Sending auto-allocation embed...');
+                await interaction.followUp({ embeds: [allocResult.embed] });
+                console.log('Auto-allocation embed sent');
+              }
+              autoAllocated = true;
+            } catch (allocError) {
+              console.error('Failed to auto-allocate next round:', allocError);
+            }
+          } else {
+            console.log('Tournament complete, no auto-allocation');
+          }
         }
         
         // Update the main scoreboard embed BEFORE archiving thread
@@ -757,7 +739,8 @@ client.on('interactionCreate', async (interaction) => {
         await saveTournamentData();
 
         // Send reply to user BEFORE archiving thread to avoid "thread is archived" error
-        await interaction.reply(`Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}. Round completed.`);
+        const allocationMessage = autoAllocated ? ' Next round automatically allocated.' : '';
+        await interaction.reply(`Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}. Round completed.${allocationMessage}`);
         
         // Archive thread in background after reply is sent
         try {
@@ -782,6 +765,124 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 });
+
+async function allocateNextMatch(interaction) {
+  console.log('=== ALLOCATE NEXT MATCH DEBUG ===');
+  console.log('Tournament state at allocation:');
+  console.log('- players.size:', tournament.players.size);
+  console.log('- rounds.length:', tournament.rounds.length);
+  console.log('- currentRound:', tournament.currentRound);
+  console.log('- currentRoundIndex:', tournament.currentRoundIndex);
+  
+  if (tournament.players.size < 4) {
+    console.log('Allocation failed: not enough players');
+    return { success: false, message: 'Tournament needs at least 4 players.' };
+  }
+  if (tournament.rounds.length === 0) {
+    console.log('Allocation failed: tournament not started');
+    return { success: false, message: 'Tournament has not been started. Use the Start button first.' };
+  }
+  if (tournament.currentRound > tournament.rounds.length) {
+    console.log('Allocation failed: all rounds completed');
+    return { success: false, message: `All ${tournament.rounds.length} rounds have been completed!` };
+  }
+  
+  // Check if we're starting a new round (not the first round)
+  if (tournament.currentRoundIndex === 0 && tournament.currentRound > 1) {
+    console.log('Starting new round, cleaning up channel...');
+    try {
+      const channel = interaction.channel;
+      // Delete all messages except the setup message
+      const messages = await channel.messages.fetch({ limit: 100 });
+      const toDelete = messages.filter(msg => msg.id !== tournament.setupMessage);
+      
+      for (const msg of toDelete.values()) {
+        await msg.delete().catch(() => null);
+      }
+      
+      // Post round summary
+      const summaryEmbed = new EmbedBuilder()
+        .setTitle(`📊 Round ${tournament.currentRound - 1} Complete!`)
+        .setColor(0x0099ff);
+      
+      let summaryDescription = `**Scores after Round ${tournament.currentRound - 1}:**\n`;
+      const sortedScores = Array.from(tournament.scores.entries())
+        .sort((a, b) => b[1] - a[1]);
+      
+      sortedScores.forEach((entry, idx) => {
+        summaryDescription += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+      });
+      
+      summaryEmbed.setDescription(summaryDescription);
+      await channel.send({ embeds: [summaryEmbed] });
+      console.log('Round summary posted');
+    } catch (error) {
+      console.error('Failed to cleanup channel or post summary:', error.message);
+    }
+  }
+  
+  let currentRoundMatches = tournament.rounds[tournament.currentRound - 1];
+  console.log('Current round matches:', currentRoundMatches ? currentRoundMatches.length : 'undefined');
+  
+  // Check if all matches in current round have been allocated
+  if (tournament.currentRoundIndex >= currentRoundMatches.length) {
+    console.log('Allocation failed: all matches in round already allocated');
+    return { success: false, message: `All matches in Round ${tournament.currentRound} have been allocated. Wait for outcomes to complete, then allocate the next round.` };
+  }
+  
+  const grouping = currentRoundMatches[tournament.currentRoundIndex];
+  console.log('Selected grouping:', grouping);
+  tournament.currentGrouping = grouping;
+  tournament.currentRoundIndex++;
+  console.log('Updated tournament state: currentRoundIndex =', tournament.currentRoundIndex);
+
+  await saveTournamentData();
+  console.log('Tournament data saved');
+
+  const embed = new EmbedBuilder()
+    .setTitle(`Round ${tournament.currentRound} - Match ${tournament.currentRoundIndex}/${currentRoundMatches.length}`)
+    .setDescription(`**Blue Team:**\nSpymaster: <@${grouping.blue.spymaster}>\nGuesser: <@${grouping.blue.guesser}>\n\n**Red Team:**\nSpymaster: <@${grouping.red.spymaster}>\nGuesser: <@${grouping.red.guesser}>`)
+    .setColor(0x0099ff);
+
+  try {
+    // Create thread
+    console.log('Creating game thread...');
+    const channel = interaction.channel;
+    const thread = await channel.threads.create({
+      name: `R${tournament.currentRound}M${tournament.currentRoundIndex} Game`,
+      autoArchiveDuration: 60,
+      reason: 'Tournament game thread',
+    });
+    tournament.currentThread = thread.id;
+    console.log('Thread created with ID:', thread.id);
+
+    const threadEmbed = new EmbedBuilder()
+      .setTitle('Game Thread')
+      .setDescription('Please play your game and select the outcome below.')
+      .setColor(0x00ff00);
+
+    const row = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId('log_blue_win')
+          .setLabel('Blue Wins')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId('log_red_win')
+          .setLabel('Red Wins')
+          .setStyle(ButtonStyle.Danger),
+      );
+
+    await thread.send({ embeds: [threadEmbed], components: [row] });
+    console.log('Thread message sent');
+  } catch (error) {
+    console.error('Failed to create thread:', error);
+    return { success: false, message: 'Failed to create game thread. Please check bot permissions.', embed: null };
+  }
+
+  console.log('Allocation successful');
+  return { success: true, message: 'Match allocated successfully.', embed: embed };
+}
 
 function getTournamentPrediction(playerCount) {
   if (playerCount < 4) {
