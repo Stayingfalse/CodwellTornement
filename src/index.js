@@ -49,18 +49,23 @@ client.once('clientReady', async () => {
     console.log('Commands registered');0
   }
 
-  // Rebuild signup message on startup so embed changes propagate without manual intervention
+  // Rebuild setup message on startup so embed changes propagate without manual intervention
   if (tournament.setupMessage && tournament.setupChannelId && guild) {
     try {
       const channel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
       if (channel) {
-        await updateSignupMessage(channel);
-        console.log('[startup] Signup message rebuilt');
+        if (tournament.started) {
+          await updateScoreboard(guild);
+          console.log('[startup] Scoreboard rebuilt');
+        } else {
+          await updateSignupMessage(channel);
+          console.log('[startup] Signup message rebuilt');
+        }
       } else {
         console.warn('[startup] setupChannelId channel not found:', tournament.setupChannelId);
       }
     } catch (error) {
-      console.error('[startup] Failed to rebuild signup message:', error.message);
+      console.error('[startup] Failed to rebuild setup message:', error.message);
     }
   }
 });
