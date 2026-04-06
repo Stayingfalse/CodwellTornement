@@ -227,7 +227,7 @@ client.on('interactionCreate', async (interaction) => {
         // Reply immediately to avoid interaction timeout, then update message in background
         await interaction.reply({ content: 'You have signed up!', flags: MessageFlags.Ephemeral });
         await saveTournamentData();
-        await updateSignupMessage(interaction.channel);
+        updateSignupMessage(interaction.channel); // fire-and-forget
       }
     } else if (customId === 'admin') {
       const adminRoleId = process.env.ADMIN_ROLE_ID; // Replace with your admin role ID
@@ -612,7 +612,7 @@ client.on('interactionCreate', async (interaction) => {
         tournament.players.add(`debug_player_${Date.now()}_${i}`);
       }
       await saveTournamentData();
-      await updateSignupMessage(interaction.channel);
+      updateSignupMessage(interaction.channel); // fire-and-forget
       await interaction.reply({ content: `[DEBUG] Seeded ${seedCount} fake player(s). Total players: ${tournament.players.size}`, flags: MessageFlags.Ephemeral });
     } else if (customId.startsWith('log_')) {
       if (!tournament.currentGrouping) {
@@ -665,7 +665,7 @@ client.on('interactionCreate', async (interaction) => {
         // Reply immediately to avoid interaction timeout, then update message in background
         await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
         await saveTournamentData();
-        await updateSignupMessage(interaction.channel);
+        updateSignupMessage(interaction.channel); // fire-and-forget
       }
     } else if (customId.startsWith('cancel_remove_')) {
       const userId = customId.split('_')[2];
