@@ -344,7 +344,7 @@ client.on('interactionCreate', async (interaction) => {
       await saveTournamentData();
       await interaction.editReply({ content: `Tournament started with ${tournament.players.size} players! Generated ${tournament.rounds.length} rounds.` });
     } else if (customId === 'admin_allocate') {
-      await interaction.deferReply();
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const result = await allocateRound(interaction);
       if (!result.success) {
         await interaction.editReply({ content: result.message });
@@ -380,14 +380,11 @@ client.on('interactionCreate', async (interaction) => {
 
       let autoAllocated = false;
       if (tournament.currentRound <= tournament.rounds.length) {
-        try {
-          const allocResult = await allocateRound(interaction);
-          if (allocResult.success) { autoAllocated = true; }
-        } catch (e) { console.error('Auto-allocate failed:', e.message); }
+        allocateRound(interaction).catch(e => console.error('Auto-allocate failed:', e.message));
       }
 
       updateScoreboard(interaction.guild).catch(() => null);
-      await interaction.editReply({ content: `Force ended ${skippedCount} active match(es) with 0 points.${autoAllocated ? ' Next round automatically allocated.' : ''}` });
+      await interaction.editReply({ content: `Force ended ${skippedCount} active match(es) with 0 points. Next round allocating...` });
     } else if (customId === 'force_end_round') {
       await interaction.deferReply();
 
@@ -405,10 +402,8 @@ client.on('interactionCreate', async (interaction) => {
 
       let autoAllocated2 = false;
       if (tournament.currentRound <= tournament.rounds.length) {
-        try {
-          const allocResult = await allocateRound(interaction);
-          if (allocResult.success) { autoAllocated2 = true; }
-        } catch (e) { console.error('Auto-allocate failed:', e.message); }
+        allocateRound(interaction).catch(e => console.error('Auto-allocate failed:', e.message));
+        autoAllocated2 = true;
       }
 
       updateScoreboard(interaction.guild).catch(() => null);
@@ -608,12 +603,7 @@ client.on('interactionCreate', async (interaction) => {
           await saveTournamentData();
 
           if (tournament.currentRound <= tournament.rounds.length) {
-            try {
-              const allocResult = await allocateRound(interaction);
-              if (allocResult.success) {
-                await interaction.followUp({ content: allocResult.message }).catch(e => console.error('followUp failed:', e.message));
-              }
-            } catch (e) { console.error('Auto-allocation failed:', e.message); }
+            allocateRound(interaction).catch(e => console.error('Auto-allocation failed:', e.message));
           }
         }
       } catch (error) {
