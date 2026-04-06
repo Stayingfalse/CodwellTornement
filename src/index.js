@@ -298,6 +298,10 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.reply({ embeds: [adminEmbed], components: adminRows, flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_start') {
+      if (tournament.started) {
+        await interaction.reply({ content: 'Tournament has already started.', flags: MessageFlags.Ephemeral });
+        return;
+      }
       if (tournament.players.size < 4) {
         await interaction.reply({ content: 'Need at least 4 players to start.', flags: MessageFlags.Ephemeral });
         return;
