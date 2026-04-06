@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags } = require('discord.js');
 const fs = require('fs');
 
 const client = new Client({
@@ -28,7 +28,7 @@ const commands = [
     .setDescription('Set up the Codenames tournament'),
 ];
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log('Bot is ready!');
 
   // Register commands
@@ -75,11 +75,11 @@ client.on('interactionCreate', async (interaction) => {
       const embed = message.embeds[0];
       const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
       await message.edit({ embeds: [updatedEmbed] });
-      await interaction.reply({ content: 'You have signed up!', ephemeral: true });
+      await interaction.reply({ content: 'You have signed up!', flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin') {
       const adminRoleId = process.env.ADMIN_ROLE_ID; // Replace with your admin role ID
       if (!interaction.member.roles.cache.has(adminRoleId)) {
-        await interaction.reply({ content: 'You do not have permission to access admin functions.', ephemeral: true });
+        await interaction.reply({ content: 'You do not have permission to access admin functions.', flags: MessageFlags.Ephemeral });
         return;
       }
       const adminEmbed = new EmbedBuilder()
@@ -107,18 +107,18 @@ client.on('interactionCreate', async (interaction) => {
             .setStyle(ButtonStyle.Danger),
         );
 
-      await interaction.reply({ embeds: [adminEmbed], components: [adminRow], ephemeral: true });
+      await interaction.reply({ embeds: [adminEmbed], components: [adminRow], flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_start') {
       if (tournament.players.size !== 4) {
-        await interaction.reply({ content: 'Need exactly 4 players to start.', ephemeral: true });
+        await interaction.reply({ content: 'Need exactly 4 players to start.', flags: MessageFlags.Ephemeral });
         return;
       }
       tournament.currentRound = 1;
       tournament.scores = new Map([...tournament.players].map(id => [id, 0]));
-      await interaction.reply({ content: 'Tournament started!', ephemeral: true });
+      await interaction.reply({ content: 'Tournament started!', flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_allocate') {
       if (tournament.players.size !== 4) {
-        await interaction.reply({ content: 'Tournament not set up for 4 players.', ephemeral: true });
+        await interaction.reply({ content: 'Tournament not set up for 4 players.', flags: MessageFlags.Ephemeral });
         return;
       }
       const players = Array.from(tournament.players);
@@ -170,7 +170,7 @@ client.on('interactionCreate', async (interaction) => {
         .setTitle('Current Scores')
         .setDescription(scoreList || 'No scores yet.')
         .setColor(0xff9900);
-      await interaction.reply({ embeds: [embed], ephemeral: true });
+      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_reset') {
       tournament = {
         players: new Set(),
@@ -181,10 +181,10 @@ client.on('interactionCreate', async (interaction) => {
         currentThread: null,
         setupMessage: null,
       };
-      await interaction.reply({ content: 'Tournament reset.', ephemeral: true });
+      await interaction.reply({ content: 'Tournament reset.', flags: MessageFlags.Ephemeral });
     } else if (customId.startsWith('log_')) {
       if (!tournament.currentGrouping) {
-        await interaction.reply({ content: 'No current game to log.', ephemeral: true });
+        await interaction.reply({ content: 'No current game to log.', flags: MessageFlags.Ephemeral });
         return;
       }
       const winner = customId === 'log_blue_win' ? 'blue' : 'red';
@@ -222,7 +222,7 @@ client.on('interactionCreate', async (interaction) => {
       const assassin = interaction.fields.getTextInputValue('assassin').toLowerCase() === 'yes';
 
       if (isNaN(remainingCards) || remainingCards < 0 || remainingCards > 8) {
-        await interaction.reply({ content: 'Invalid number of remaining cards. Must be 0-8.', ephemeral: true });
+        await interaction.reply({ content: 'Invalid number of remaining cards. Must be 0-8.', flags: MessageFlags.Ephemeral });
         return;
       }
 
