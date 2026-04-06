@@ -94,6 +94,46 @@ async function saveTournamentData() {
   }
 }
 
+function buildSignupDescription() {
+  const playerList = Array.from(tournament.players);
+  console.log(`[buildSignupDescription] Players in Set (${playerList.length}):`, playerList);
+
+  let description = 'Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n';
+  if (playerList.length > 0) {
+    description += playerList.map(id => id.startsWith('debug_') ? `\`${id}\`` : `<@${id}>`).join('\n');
+  } else {
+    description += 'None yet';
+  }
+
+  if (playerList.length >= 4) {
+    const prediction = getTournamentPrediction(playerList.length);
+    if (prediction) {
+      description += `\n\n**Tournament Prediction:**\n`;
+      description += `${prediction.rounds} Rounds • ${prediction.totalGames} Total Games\n`;
+      description += `Games per round: ${prediction.gamesPerRound.join(', ')}`;
+    }
+  }
+
+  return description;
+}
+
+async function updateSignupMessage(channel) {
+  try {
+    if (!tournament.setupMessage) return;
+    const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
+    if (!message) {
+      console.warn('[updateSignupMessage] Could not fetch setupMessage:', tournament.setupMessage);
+      return;
+    }
+    const embed = message.embeds[0];
+    const updatedEmbed = EmbedBuilder.from(embed).setDescription(buildSignupDescription());
+    await message.edit({ embeds: [updatedEmbed] });
+    console.log('[updateSignupMessage] Setup message updated successfully');
+  } catch (error) {
+    console.error('[updateSignupMessage] Failed:', error.message);
+  }
+}
+
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isCommand()) {
     const { commandName } = interaction;
@@ -135,21 +175,9 @@ client.on('interactionCreate', async (interaction) => {
           );
       } else {
         // Tournament not started - show sign-up
-        let description = 'Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet');
-        
-        // Add prediction if 4+ players
-        if (tournament.players.size >= 4) {
-          const prediction = getTournamentPrediction(tournament.players.size);
-          if (prediction) {
-            description += `\n\n**Tournament Prediction:**\n`;
-            description += `${prediction.rounds} Rounds • ${prediction.totalGames} Total Games\n`;
-            description += `Games per round: ${prediction.gamesPerRound.join(', ')}`;
-          }
-        }
-
         embed = new EmbedBuilder()
           .setTitle('Codenames Tournament')
-          .setDescription(description)
+          .setDescription(buildSignupDescription())
           .setColor(0x0099ff);
 
         row = new ActionRowBuilder()
@@ -199,32 +227,7 @@ client.on('interactionCreate', async (interaction) => {
         // Reply immediately to avoid interaction timeout, then update message in background
         await interaction.reply({ content: 'You have signed up!', flags: MessageFlags.Ephemeral });
         await saveTournamentData();
-        // Update setup message in background
-        try {
-          if (tournament.setupMessage) {
-            const channel = interaction.channel;
-            const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
-            if (message) {
-              const embed = message.embeds[0];
-              let description = 'Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet');
-              
-              // Add prediction if 4+ players
-              if (tournament.players.size >= 4) {
-                const prediction = getTournamentPrediction(tournament.players.size);
-                if (prediction) {
-                  description += `\n\n**Tournament Prediction:**\n`;
-                  description += `${prediction.rounds} Rounds • ${prediction.totalGames} Total Games\n`;
-                  description += `Games per round: ${prediction.gamesPerRound.join(', ')}`;
-                }
-              }
-              
-              const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
-              await message.edit({ embeds: [updatedEmbed] });
-            }
-          }
-        } catch (error) {
-          console.error('Failed to edit setup message:', error.message);
-        }
+        await updateSignupMessage(interaction.channel);
       }
     } else if (customId === 'admin') {
       const adminRoleId = process.env.ADMIN_ROLE_ID; // Replace with your admin role ID
@@ -608,30 +611,8 @@ client.on('interactionCreate', async (interaction) => {
       for (let i = 0; i < seedCount; i++) {
         tournament.players.add(`debug_player_${Date.now()}_${i}`);
       }
-      // Update the setup message
-      try {
-        if (tournament.setupMessage) {
-          const channel = interaction.channel;
-          const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
-          if (message) {
-            const embed = message.embeds[0];
-            let description = 'Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + Array.from(tournament.players).map(id => id.startsWith('debug_') ? `\`${id}\`` : `<@${id}>`).join('\n');
-            if (tournament.players.size >= 4) {
-              const prediction = getTournamentPrediction(tournament.players.size);
-              if (prediction) {
-                description += `\n\n**Tournament Prediction:**\n`;
-                description += `${prediction.rounds} Rounds • ${prediction.totalGames} Total Games\n`;
-                description += `Games per round: ${prediction.gamesPerRound.join(', ')}`;
-              }
-            }
-            const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
-            await message.edit({ embeds: [updatedEmbed] });
-          }
-        }
-      } catch (error) {
-        console.error('Failed to update setup message after seeding:', error.message);
-      }
       await saveTournamentData();
+      await updateSignupMessage(interaction.channel);
       await interaction.reply({ content: `[DEBUG] Seeded ${seedCount} fake player(s). Total players: ${tournament.players.size}`, flags: MessageFlags.Ephemeral });
     } else if (customId.startsWith('log_')) {
       if (!tournament.currentGrouping) {
@@ -684,32 +665,7 @@ client.on('interactionCreate', async (interaction) => {
         // Reply immediately to avoid interaction timeout, then update message in background
         await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
         await saveTournamentData();
-        // Update setup message in background
-        try {
-          if (tournament.setupMessage) {
-            const channel = interaction.channel;
-            const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
-            if (message) {
-              const embed = message.embeds[0];
-              let description = 'Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet');
-              
-              // Add prediction if 4+ players
-              if (tournament.players.size >= 4) {
-                const prediction = getTournamentPrediction(tournament.players.size);
-                if (prediction) {
-                  description += `\n\n**Tournament Prediction:**\n`;
-                  description += `${prediction.rounds} Rounds • ${prediction.totalGames} Total Games\n`;
-                  description += `Games per round: ${prediction.gamesPerRound.join(', ')}`;
-                }
-              }
-              
-              const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
-              await message.edit({ embeds: [updatedEmbed] });
-            }
-          }
-        } catch (error) {
-          console.error('Failed to edit setup message:', error.message);
-        }
+        await updateSignupMessage(interaction.channel);
       }
     } else if (customId.startsWith('cancel_remove_')) {
       const userId = customId.split('_')[2];
