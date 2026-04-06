@@ -141,7 +141,9 @@ client.on('interactionCreate', async (interaction) => {
         if (tournament.players.size >= 4) {
           const prediction = getTournamentPrediction(tournament.players.size);
           if (prediction) {
-            description += `\n\n**Tournament Prediction:**\n${prediction.rounds} Rounds • ${prediction.totalGames} Total Games`;
+            description += `\n\n**Tournament Prediction:**\n`;
+            description += `${prediction.rounds} Rounds • ${prediction.totalGames} Total Games\n`;
+            description += `Games per round: ${prediction.gamesPerRound.join(', ')}`;
           }
         }
 
@@ -207,7 +209,9 @@ client.on('interactionCreate', async (interaction) => {
               if (tournament.players.size >= 4) {
                 const prediction = getTournamentPrediction(tournament.players.size);
                 if (prediction) {
-                  description += `\n\n**Tournament Prediction:**\n${prediction.rounds} Rounds • ${prediction.totalGames} Total Games`;
+                  description += `\n\n**Tournament Prediction:**\n`;
+                  description += `${prediction.rounds} Rounds • ${prediction.totalGames} Total Games\n`;
+                  description += `Games per round: ${prediction.gamesPerRound.join(', ')}`;
                 }
               }
               
@@ -632,7 +636,9 @@ client.on('interactionCreate', async (interaction) => {
               if (tournament.players.size >= 4) {
                 const prediction = getTournamentPrediction(tournament.players.size);
                 if (prediction) {
-                  description += `\n\n**Tournament Prediction:**\n${prediction.rounds} Rounds • ${prediction.totalGames} Total Games`;
+                  description += `\n\n**Tournament Prediction:**\n`;
+                  description += `${prediction.rounds} Rounds • ${prediction.totalGames} Total Games\n`;
+                  description += `Games per round: ${prediction.gamesPerRound.join(', ')}`;
                 }
               }
               
@@ -957,7 +963,11 @@ async function allocateNextMatch(interaction) {
 }
 
 function getTournamentPrediction(playerCount) {
+  console.log('=== TOURNAMENT PREDICTION DEBUG ===');
+  console.log('Calculating prediction for', playerCount, 'players');
+  
   if (playerCount < 4) {
+    console.log('Not enough players for prediction');
     return null;
   }
   
@@ -969,6 +979,8 @@ function getTournamentPrediction(playerCount) {
     totalGames += round.length;
     return round.length;
   });
+  
+  console.log('Prediction result:', { rounds: rounds.length, gamesPerRound, totalGames });
   
   return {
     rounds: rounds.length,
