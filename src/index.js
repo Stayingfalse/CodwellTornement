@@ -497,6 +497,9 @@ client.on('interactionCreate', async (interaction) => {
       
       await interaction.reply({ content: 'Match force ended. 0 points awarded to all players.', flags: MessageFlags.Ephemeral });
     } else if (customId === 'force_end_round') {
+      // Defer reply immediately since we'll do async work
+      await interaction.deferReply();
+      
       // Force end all remaining matches in the round
       const currentRound = tournament.rounds[tournament.currentRound - 1];
       const remainingMatches = currentRound.length - tournament.currentRoundIndex;
@@ -552,7 +555,7 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       await saveTournamentData();
-      await interaction.reply({ content: `Round ${tournament.currentRound - 1} force ended. ${remainingMatches} match(es) skipped with 0 points. Ready for next round.`, flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: `Round ${tournament.currentRound - 1} force ended. ${remainingMatches} match(es) skipped with 0 points. Ready for next round.` });
     } else if (customId === 'admin_reset') {
       tournament = {
         players: new Set(),
