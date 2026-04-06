@@ -1,7 +1,11 @@
 require('dotenv').config();
 
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags } = require('discord.js');
-const fs = require('fs');
+const fs = require('fs').promises;
+const path = require('path');
+
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const TOURNAMENT_FILE = path.join(DATA_DIR, 'tournament.json');
 
 const client = new Client({
   intents: [
@@ -30,14 +34,53 @@ const commands = [
 
 client.once('clientReady', async () => {
   console.log('Bot is ready!');
+  
+  // Load tournament data on startup
+  await loadTournamentData();
 
   // Register commands
-  const guild = client.guilds.cache.get(process.env.GUILD_ID); // Replace with your guild ID
+  const guild = client.guilds.cache.get(process.env.GUILD_ID);
   if (guild) {
     await guild.commands.set(commands);
     console.log('Commands registered');
   }
 });
+
+async function loadTournamentData() {
+  try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    const data = await fs.readFile(TOURNAMENT_FILE, 'utf-8');
+    const parsed = JSON.parse(data);
+    tournament.players = new Set(parsed.players);
+    tournament.scores = new Map(parsed.scores);
+    tournament.playedGroupings = new Set(parsed.playedGroupings);
+    tournament.currentRound = parsed.currentRound;
+    tournament.currentGrouping = parsed.currentGrouping;
+    tournament.currentThread = parsed.currentThread;
+    tournament.setupMessage = parsed.setupMessage;
+    console.log('Tournament data loaded from storage');
+  } catch (error) {
+    console.log('No previous tournament data found, starting fresh');
+  }
+}
+
+async function saveTournamentData() {
+  try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    const data = {
+      players: Array.from(tournament.players),
+      scores: Array.from(tournament.scores),
+      playedGroupings: Array.from(tournament.playedGroupings),
+      currentRound: tournament.currentRound,
+      currentGrouping: tournament.currentGrouping,
+      currentThread: tournament.currentThread,
+      setupMessage: tournament.setupMessage,
+    };
+    await fs.writeFile(TOURNAMENT_FILE, JSON.stringify(data, null, 2));
+  } catch (error) {
+    console.error('Failed to save tournament data:', error);
+  }
+}
 
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isCommand()) {
@@ -63,6 +106,7 @@ client.on('interactionCreate', async (interaction) => {
 
       const message = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
       tournament.setupMessage = message.id;
+      await saveTournamentData();
     }
   } else if (interaction.isButton()) {
     const { customId } = interaction;
@@ -100,6 +144,7 @@ client.on('interactionCreate', async (interaction) => {
           console.error('Failed to edit setup message:', error.message);
         }
         await interaction.reply({ content: 'You have signed up!', flags: MessageFlags.Ephemeral });
+        await saveTournamentData();
       }
     } else if (customId === 'admin') {
       const adminRoleId = process.env.ADMIN_ROLE_ID; // Replace with your admin role ID
@@ -140,6 +185,7 @@ client.on('interactionCreate', async (interaction) => {
       }
       tournament.currentRound = 1;
       tournament.scores = new Map([...tournament.players].map(id => [id, 0]));
+      await saveTournamentData();
       await interaction.reply({ content: 'Tournament started!', flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_allocate') {
       if (tournament.players.size !== 4) {
@@ -154,6 +200,8 @@ client.on('interactionCreate', async (interaction) => {
       }
       tournament.playedGroupings.add(JSON.stringify(grouping));
       tournament.currentGrouping = grouping;
+
+      await saveTournamentData();
 
       const embed = new EmbedBuilder()
         .setTitle(`Round ${tournament.currentRound} Allocation`)
@@ -211,6 +259,7 @@ client.on('interactionCreate', async (interaction) => {
         currentThread: null,
         setupMessage: null,
       };
+      await saveTournamentData();
       await interaction.reply({ content: 'Tournament reset.', flags: MessageFlags.Ephemeral });
     } else if (customId.startsWith('log_')) {
       if (!tournament.currentGrouping) {
@@ -285,6 +334,7 @@ client.on('interactionCreate', async (interaction) => {
         console.error('Failed to archive thread:', error);
       }
       tournament.currentThread = null;
+      await saveTournamentData();
 
       await interaction.reply(`Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}. Round completed.`);
     } else if (customId.startsWith('confirm_remove_')) {
@@ -306,6 +356,7 @@ client.on('interactionCreate', async (interaction) => {
           console.error('Failed to edit setup message:', error.message);
         }
         await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
+        await saveTournamentData();
       }
     } else if (customId.startsWith('cancel_remove_')) {
       const userId = customId.split('_')[2];
