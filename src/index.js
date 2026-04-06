@@ -61,7 +61,7 @@ client.on('interactionCreate', async (interaction) => {
             .setStyle(ButtonStyle.Secondary),
         );
 
-      const message = await interaction.reply({ embeds: [embed], components: [row] });
+      const message = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
       tournament.setupMessage = message.id;
     }
   } else if (interaction.isButton()) {
@@ -86,14 +86,18 @@ client.on('interactionCreate', async (interaction) => {
         // New sign-up
         tournament.players.add(interaction.user.id);
         try {
-          // Edit the setup message
-          const channel = interaction.channel;
-          const message = await channel.messages.fetch(tournament.setupMessage);
-          const embed = message.embeds[0];
-          const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
-          await message.edit({ embeds: [updatedEmbed] });
+          // Only edit message if we have a valid message ID and can access the channel
+          if (tournament.setupMessage) {
+            const channel = interaction.channel;
+            const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
+            if (message) {
+              const embed = message.embeds[0];
+              const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
+              await message.edit({ embeds: [updatedEmbed] });
+            }
+          }
         } catch (error) {
-          console.error('Failed to edit setup message:', error);
+          console.error('Failed to edit setup message:', error.message);
         }
         await interaction.reply({ content: 'You have signed up!', flags: MessageFlags.Ephemeral });
       }
@@ -288,14 +292,18 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.user.id === userId) {
         tournament.players.delete(userId);
         try {
-          // Update the setup message
-          const channel = interaction.channel;
-          const message = await channel.messages.fetch(tournament.setupMessage);
-          const embed = message.embeds[0];
-          const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
-          await message.edit({ embeds: [updatedEmbed] });
+          // Update the setup message if it exists
+          if (tournament.setupMessage) {
+            const channel = interaction.channel;
+            const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
+            if (message) {
+              const embed = message.embeds[0];
+              const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
+              await message.edit({ embeds: [updatedEmbed] });
+            }
+          }
         } catch (error) {
-          console.error('Failed to edit setup message:', error);
+          console.error('Failed to edit setup message:', error.message);
         }
         await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
       }
