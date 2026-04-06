@@ -180,17 +180,17 @@ client.on('interactionCreate', async (interaction) => {
 
       await interaction.reply({ embeds: [adminEmbed], components: [adminRow], flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_start') {
-      if (tournament.players.size !== 4) {
-        await interaction.reply({ content: 'Need exactly 4 players to start.', flags: MessageFlags.Ephemeral });
+      if (tournament.players.size < 4) {
+        await interaction.reply({ content: 'Need at least 4 players to start.', flags: MessageFlags.Ephemeral });
         return;
       }
       tournament.currentRound = 1;
       tournament.scores = new Map([...tournament.players].map(id => [id, 0]));
       await saveTournamentData();
-      await interaction.reply({ content: 'Tournament started!', flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: `Tournament started with ${tournament.players.size} players!`, flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_allocate') {
-      if (tournament.players.size !== 4) {
-        await interaction.reply({ content: 'Tournament not set up for 4 players.', flags: MessageFlags.Ephemeral });
+      if (tournament.players.size < 4) {
+        await interaction.reply({ content: 'Tournament needs at least 4 players.', flags: MessageFlags.Ephemeral });
         return;
       }
       const players = Array.from(tournament.players);
