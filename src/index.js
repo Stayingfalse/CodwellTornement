@@ -316,8 +316,9 @@ client.on('interactionCreate', async (interaction) => {
       
       // Update the setup message to show tournament live
       try {
-        if (tournament.setupMessage) {
-          const channel = interaction.channel;
+        if (tournament.setupMessage && tournament.setupChannelId) {
+          const channel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+          if (!channel) throw new Error('Could not fetch setup channel');
           const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
           if (message) {
             let description = `**Tournament Live - Round ${tournament.currentRound}**\n`;
@@ -682,10 +683,14 @@ async function allocateRound(interaction) {
     return { success: false, message: `Round ${tournament.currentRound} has no matches.` };
   }
 
+  // Always use the main tournament channel, not interaction.channel (which may be a thread)
+  const mainChannel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+  if (!mainChannel) return { success: false, message: 'Could not find the tournament channel.' };
+
   // Clean up channel and post round summary when starting a subsequent round
   if (tournament.currentRound > 1) {
     try {
-      const channel = interaction.channel;
+      const channel = mainChannel;
       const messages = await channel.messages.fetch({ limit: 100 });
       const toDelete = messages.filter(msg => msg.id !== tournament.setupMessage);
       for (const msg of toDelete.values()) await msg.delete().catch(() => null);
@@ -703,7 +708,7 @@ async function allocateRound(interaction) {
   }
 
   // Allocate all matches in this round simultaneously
-  const channel = interaction.channel;
+  const channel = mainChannel;
 
   for (let i = 0; i < currentRoundMatches.length; i++) {
     const grouping = currentRoundMatches[i];
