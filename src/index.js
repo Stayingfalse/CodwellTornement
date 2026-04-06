@@ -497,8 +497,6 @@ client.on('interactionCreate', async (interaction) => {
           bluePlayers.forEach(id => tournament.scores.set(id, tournament.scores.get(id) + losePoints));
         }
 
-        tournament.currentRound++;
-        tournament.currentRoundIndex = 0;
         tournament.currentGrouping = null;
         
         // Update the main scoreboard embed BEFORE archiving thread
@@ -520,14 +518,16 @@ client.on('interactionCreate', async (interaction) => {
                 });
               } else {
                 const currentRound = tournament.rounds[tournament.currentRound - 1];
-                description += `Match ${tournament.currentRoundIndex}/${currentRound?.length || 0}\n\n`;
+                const matchesCompleted = tournament.currentRoundIndex;
+                const totalMatches = currentRound?.length || 0;
+                description += `Match ${matchesCompleted}/${totalMatches}\n\n`;
                 
-                if (tournament.currentRoundIndex < currentRound?.length) {
-                  const nextGame = currentRound[tournament.currentRoundIndex];
-                  description += `**Next Match:**\n`;
-                  description += `🔵 Blue: <@${nextGame.blue.spymaster}> (SM) vs <@${nextGame.blue.guesser}> (G)\n`;
-                  description += `🔴 Red: <@${nextGame.red.spymaster}> (SM) vs <@${nextGame.red.guesser}> (G)\n\n`;
+                if (matchesCompleted < totalMatches) {
+                  description += `**Round in progress**\n`;
+                } else {
+                  description += `**Round Complete!** Click Allocate to start Round ${tournament.currentRound + 1}\n`;
                 }
+                description += '\n';
 
                 description += `**Scoreboard:**\n`;
                 const sortedScores = Array.from(tournament.scores.entries())
