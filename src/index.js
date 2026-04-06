@@ -293,6 +293,32 @@ client.on('interactionCreate', async (interaction) => {
       modal.addComponents(firstActionRow, secondActionRow);
 
       await interaction.showModal(modal);
+    } else if (customId.startsWith('confirm_remove_')) {
+      const userId = customId.split('_')[2];
+      if (interaction.user.id === userId) {
+        tournament.players.delete(userId);
+        try {
+          // Update the setup message if it exists
+          if (tournament.setupMessage) {
+            const channel = interaction.channel;
+            const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
+            if (message) {
+              const embed = message.embeds[0];
+              const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
+              await message.edit({ embeds: [updatedEmbed] });
+            }
+          }
+        } catch (error) {
+          console.error('Failed to edit setup message:', error.message);
+        }
+        await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
+        await saveTournamentData();
+      }
+    } else if (customId.startsWith('cancel_remove_')) {
+      const userId = customId.split('_')[2];
+      if (interaction.user.id === userId) {
+        await interaction.reply({ content: 'Cancelled. You remain signed up.', flags: MessageFlags.Ephemeral });
+      }
     }
   } else if (interaction.isModalSubmit()) {
     const { customId } = interaction;
@@ -338,32 +364,6 @@ client.on('interactionCreate', async (interaction) => {
       await saveTournamentData();
 
       await interaction.reply(`Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}. Round completed.`);
-    } else if (customId.startsWith('confirm_remove_')) {
-      const userId = customId.split('_')[2];
-      if (interaction.user.id === userId) {
-        tournament.players.delete(userId);
-        try {
-          // Update the setup message if it exists
-          if (tournament.setupMessage) {
-            const channel = interaction.channel;
-            const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
-            if (message) {
-              const embed = message.embeds[0];
-              const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
-              await message.edit({ embeds: [updatedEmbed] });
-            }
-          }
-        } catch (error) {
-          console.error('Failed to edit setup message:', error.message);
-        }
-        await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
-        await saveTournamentData();
-      }
-    } else if (customId.startsWith('cancel_remove_')) {
-      const userId = customId.split('_')[2];
-      if (interaction.user.id === userId) {
-        await interaction.reply({ content: 'Cancelled. You remain signed up.', flags: MessageFlags.Ephemeral });
-      }
     }
   }
 });
