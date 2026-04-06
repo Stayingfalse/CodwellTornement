@@ -500,15 +500,8 @@ client.on('interactionCreate', async (interaction) => {
         tournament.currentRound++;
         tournament.currentRoundIndex = 0;
         tournament.currentGrouping = null;
-        try {
-          const thread = interaction.guild.channels.cache.get(tournament.currentThread);
-          if (thread) await thread.setArchived(true);
-        } catch (error) {
-          console.error('Failed to archive thread:', error);
-        }
-        tournament.currentThread = null;
-      
-        // Update the main scoreboard embed
+        
+        // Update the main scoreboard embed BEFORE archiving thread
         try {
           if (tournament.setupMessage) {
             const channel = interaction.channel;
@@ -558,10 +551,28 @@ client.on('interactionCreate', async (interaction) => {
       
         await saveTournamentData();
 
-      await interaction.reply(`Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}. Round completed.`);
+        // Send reply to user BEFORE archiving thread to avoid "thread is archived" error
+        await interaction.reply(`Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}. Round completed.`);
+        
+        // Archive thread in background after reply is sent
+        try {
+          const thread = interaction.guild.channels.cache.get(tournament.currentThread);
+          if (thread) {
+            thread.setArchived(true).catch(err => {
+              console.error('Failed to archive thread:', err.message);
+            });
+          }
+        } catch (error) {
+          console.error('Error archiving thread:', error);
+        }
+        tournament.currentThread = null;
       } catch (error) {
         console.error('Error processing outcome:', error);
-        await interaction.reply({ content: 'An error occurred while processing the outcome. Please try again.', flags: MessageFlags.Ephemeral });
+        try {
+          await interaction.reply({ content: 'An error occurred while processing the outcome. Please try again.', flags: MessageFlags.Ephemeral });
+        } catch (replyError) {
+          console.error('Failed to send error reply:', replyError.message);
+        }
       }
     }
   }
