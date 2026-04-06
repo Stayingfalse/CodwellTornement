@@ -346,7 +346,14 @@ client.on('interactionCreate', async (interaction) => {
       
       // Check if all matches in current round have been allocated
       if (tournament.currentRoundIndex >= currentRoundMatches.length) {
-        await interaction.reply({ content: `All matches in Round ${tournament.currentRound} have been allocated. Wait for outcomes to complete, then allocate the next round.`, flags: MessageFlags.Ephemeral });
+        const forceEndRow = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId('force_end_round')
+              .setLabel('Force End Remaining')
+              .setStyle(ButtonStyle.Danger),
+          );
+        await interaction.reply({ content: `All matches in Round ${tournament.currentRound} have been allocated. Wait for outcomes to complete, then allocate the next round.`, components: [forceEndRow] });
         return;
       }
       
@@ -489,6 +496,63 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       await interaction.reply({ content: 'Match force ended. 0 points awarded to all players.', flags: MessageFlags.Ephemeral });
+    } else if (customId === 'force_end_round') {
+      // Force end all remaining matches in the round
+      const currentRound = tournament.rounds[tournament.currentRound - 1];
+      const remainingMatches = currentRound.length - tournament.currentRoundIndex;
+      
+      // Advance to next round
+      tournament.currentRound++;
+      tournament.currentRoundIndex = 0;
+      tournament.currentGrouping = null;
+      
+      // Update the scoreboard
+      try {
+        if (tournament.setupMessage && tournament.setupChannelId) {
+          const channel = interaction.guild.channels.cache.get(tournament.setupChannelId);
+          if (channel) {
+            const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
+            if (message) {
+              let description = `**Tournament Live - Round ${tournament.currentRound}**\n`;
+              
+              if (tournament.currentRound > tournament.rounds.length) {
+                description = `**Tournament Complete!**\n\n`;
+                description += `**Final Scoreboard:**\n`;
+                const sortedScores = Array.from(tournament.scores.entries())
+                  .sort((a, b) => b[1] - a[1]);
+                sortedScores.forEach((entry, idx) => {
+                  description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+                });
+              } else {
+                const nextRoundMatches = tournament.rounds[tournament.currentRound - 1];
+                const totalMatches = nextRoundMatches?.length || 0;
+                description += `Match 0/${totalMatches}\n\n`;
+                description += `**Round in progress**\n`;
+                description += '\n';
+
+                description += `**Scoreboard:**\n`;
+                const sortedScores = Array.from(tournament.scores.entries())
+                  .sort((a, b) => b[1] - a[1])
+                  .slice(0, 10);
+                sortedScores.forEach((entry, idx) => {
+                  description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+                });
+              }
+              
+              const embed = message.embeds[0];
+              const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
+              await message.edit({ embeds: [updatedEmbed] }).catch(err => {
+                console.error('Failed to edit message:', err.message);
+              });
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Failed to update scoreboard:', error.message);
+      }
+      
+      await saveTournamentData();
+      await interaction.reply({ content: `Round ${tournament.currentRound - 1} force ended. ${remainingMatches} match(es) skipped with 0 points. Ready for next round.`, flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_reset') {
       tournament = {
         players: new Set(),
