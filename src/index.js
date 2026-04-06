@@ -196,8 +196,11 @@ client.on('interactionCreate', async (interaction) => {
       } else {
         // New sign-up
         tournament.players.add(interaction.user.id);
+        // Reply immediately to avoid interaction timeout, then update message in background
+        await interaction.reply({ content: 'You have signed up!', flags: MessageFlags.Ephemeral });
+        await saveTournamentData();
+        // Update setup message in background
         try {
-          // Only edit message if we have a valid message ID and can access the channel
           if (tournament.setupMessage) {
             const channel = interaction.channel;
             const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
@@ -222,8 +225,6 @@ client.on('interactionCreate', async (interaction) => {
         } catch (error) {
           console.error('Failed to edit setup message:', error.message);
         }
-        await interaction.reply({ content: 'You have signed up!', flags: MessageFlags.Ephemeral });
-        await saveTournamentData();
       }
     } else if (customId === 'admin') {
       const adminRoleId = process.env.ADMIN_ROLE_ID; // Replace with your admin role ID
@@ -680,8 +681,11 @@ client.on('interactionCreate', async (interaction) => {
       const userId = customId.split('_')[2];
       if (interaction.user.id === userId) {
         tournament.players.delete(userId);
+        // Reply immediately to avoid interaction timeout, then update message in background
+        await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
+        await saveTournamentData();
+        // Update setup message in background
         try {
-          // Update the setup message if it exists
           if (tournament.setupMessage) {
             const channel = interaction.channel;
             const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
@@ -706,8 +710,6 @@ client.on('interactionCreate', async (interaction) => {
         } catch (error) {
           console.error('Failed to edit setup message:', error.message);
         }
-        await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
-        await saveTournamentData();
       }
     } else if (customId.startsWith('cancel_remove_')) {
       const userId = customId.split('_')[2];
