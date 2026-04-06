@@ -236,8 +236,10 @@ client.on('interactionCreate', async (interaction) => {
         .setDescription('Select an admin action.')
         .setColor(0xff0000);
 
-      const adminRow = new ActionRowBuilder()
-        .addComponents(
+      const debugMode = process.env.DEBUG_MODE === 'true';
+      const debugPlayerCount = parseInt(process.env.DEBUG_PLAYER_COUNT) || 8;
+
+      const adminComponents = [
           new ButtonBuilder()
             .setCustomId('admin_start')
             .setLabel('Start Tournament')
@@ -258,9 +260,24 @@ client.on('interactionCreate', async (interaction) => {
             .setCustomId('admin_reset')
             .setLabel('Reset Tournament')
             .setStyle(ButtonStyle.Danger),
-        );
+      ];
 
-      await interaction.reply({ embeds: [adminEmbed], components: [adminRow], flags: MessageFlags.Ephemeral });
+      if (debugMode) {
+        adminComponents.push(
+          new ButtonBuilder()
+            .setCustomId('debug_seed_players')
+            .setLabel(`[DEBUG] Seed ${debugPlayerCount} Players`)
+            .setStyle(ButtonStyle.Secondary)
+        );
+      }
+
+      const adminRow = new ActionRowBuilder().addComponents(adminComponents.slice(0, 5));
+      const adminRows = [adminRow];
+      if (debugMode && adminComponents.length > 5) {
+        adminRows.push(new ActionRowBuilder().addComponents(adminComponents.slice(5)));
+      }
+
+      await interaction.reply({ embeds: [adminEmbed], components: adminRows, flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_start') {
       if (tournament.players.size < 4) {
         await interaction.reply({ content: 'Need at least 4 players to start.', flags: MessageFlags.Ephemeral });
@@ -575,6 +592,46 @@ client.on('interactionCreate', async (interaction) => {
       };
       await saveTournamentData();
       await interaction.reply({ content: 'Tournament reset.', flags: MessageFlags.Ephemeral });
+    } else if (customId === 'debug_seed_players') {
+      if (process.env.DEBUG_MODE !== 'true') {
+        await interaction.reply({ content: 'Debug mode is not enabled.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (tournament.started) {
+        await interaction.reply({ content: 'Cannot seed players after tournament has started.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const debugPlayerCount = parseInt(process.env.DEBUG_PLAYER_COUNT) || 8;
+      // Use fake snowflake-style IDs for debug players
+      const seedCount = Math.max(0, debugPlayerCount - tournament.players.size);
+      for (let i = 0; i < seedCount; i++) {
+        tournament.players.add(`debug_player_${Date.now()}_${i}`);
+      }
+      // Update the setup message
+      try {
+        if (tournament.setupMessage) {
+          const channel = interaction.channel;
+          const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
+          if (message) {
+            const embed = message.embeds[0];
+            let description = 'Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + Array.from(tournament.players).map(id => id.startsWith('debug_') ? `\`${id}\`` : `<@${id}>`).join('\n');
+            if (tournament.players.size >= 4) {
+              const prediction = getTournamentPrediction(tournament.players.size);
+              if (prediction) {
+                description += `\n\n**Tournament Prediction:**\n`;
+                description += `${prediction.rounds} Rounds • ${prediction.totalGames} Total Games\n`;
+                description += `Games per round: ${prediction.gamesPerRound.join(', ')}`;
+              }
+            }
+            const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
+            await message.edit({ embeds: [updatedEmbed] });
+          }
+        }
+      } catch (error) {
+        console.error('Failed to update setup message after seeding:', error.message);
+      }
+      await saveTournamentData();
+      await interaction.reply({ content: `[DEBUG] Seeded ${seedCount} fake player(s). Total players: ${tournament.players.size}`, flags: MessageFlags.Ephemeral });
     } else if (customId.startsWith('log_')) {
       if (!tournament.currentGrouping) {
         await interaction.reply({ content: 'No current game to log.', flags: MessageFlags.Ephemeral });
