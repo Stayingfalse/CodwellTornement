@@ -68,18 +68,35 @@ client.on('interactionCreate', async (interaction) => {
     const { customId } = interaction;
 
     if (customId === 'signup') {
-      tournament.players.add(interaction.user.id);
-      try {
-        // Edit the setup message
-        const channel = interaction.channel;
-        const message = await channel.messages.fetch(tournament.setupMessage);
-        const embed = message.embeds[0];
-        const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
-        await message.edit({ embeds: [updatedEmbed] });
-      } catch (error) {
-        console.error('Failed to edit setup message:', error);
+      if (tournament.players.has(interaction.user.id)) {
+        // User is already signed up, ask if they want to remove themselves
+        const confirmRow = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId(`confirm_remove_${interaction.user.id}`)
+              .setLabel('Yes, Remove Me')
+              .setStyle(ButtonStyle.Danger),
+            new ButtonBuilder()
+              .setCustomId(`cancel_remove_${interaction.user.id}`)
+              .setLabel('Cancel')
+              .setStyle(ButtonStyle.Secondary),
+          );
+        await interaction.reply({ content: 'You\'re already signed up! Do you want to remove yourself from the tournament?', components: [confirmRow], flags: MessageFlags.Ephemeral });
+      } else {
+        // New sign-up
+        tournament.players.add(interaction.user.id);
+        try {
+          // Edit the setup message
+          const channel = interaction.channel;
+          const message = await channel.messages.fetch(tournament.setupMessage);
+          const embed = message.embeds[0];
+          const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
+          await message.edit({ embeds: [updatedEmbed] });
+        } catch (error) {
+          console.error('Failed to edit setup message:', error);
+        }
+        await interaction.reply({ content: 'You have signed up!', flags: MessageFlags.Ephemeral });
       }
-      await interaction.reply({ content: 'You have signed up!', flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin') {
       const adminRoleId = process.env.ADMIN_ROLE_ID; // Replace with your admin role ID
       if (!interaction.member.roles.cache.has(adminRoleId)) {
@@ -266,6 +283,27 @@ client.on('interactionCreate', async (interaction) => {
       tournament.currentThread = null;
 
       await interaction.reply(`Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}. Round completed.`);
+    } else if (customId.startsWith('confirm_remove_')) {
+      const userId = customId.split('_')[2];
+      if (interaction.user.id === userId) {
+        tournament.players.delete(userId);
+        try {
+          // Update the setup message
+          const channel = interaction.channel;
+          const message = await channel.messages.fetch(tournament.setupMessage);
+          const embed = message.embeds[0];
+          const updatedEmbed = EmbedBuilder.from(embed).setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'));
+          await message.edit({ embeds: [updatedEmbed] });
+        } catch (error) {
+          console.error('Failed to edit setup message:', error);
+        }
+        await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
+      }
+    } else if (customId.startsWith('cancel_remove_')) {
+      const userId = customId.split('_')[2];
+      if (interaction.user.id === userId) {
+        await interaction.reply({ content: 'Cancelled. You remain signed up.', flags: MessageFlags.Ephemeral });
+      }
     }
   }
 });
