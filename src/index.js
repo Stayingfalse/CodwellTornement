@@ -1033,84 +1033,80 @@ function generateRounds(players) {
   }
   
   const playedConfigs = new Set();
-  let roundNum = 0;
   
   while (playedConfigs.size < pairs.size * 4) {
     const round = [];
     const playersUsedThisRound = new Set();
-    let foundMatch = false;
-    
-    // Try to find matches that haven't been played yet
-    for (let i = 0; i < players.length; i++) {
-      if (playersUsedThisRound.has(players[i])) continue;
-      
-      for (let j = i + 1; j < players.length; j++) {
-        if (playersUsedThisRound.has(players[j])) continue;
+
+    // Keep adding matches to this round until no more can be found for unused players
+    let continueRound = true;
+    while (continueRound) {
+      let foundMatch = false;
+
+      matchSearch:
+      for (let i = 0; i < players.length; i++) {
+        if (playersUsedThisRound.has(players[i])) continue;
         
-        // Try to find two more players
-        for (let k = 0; k < players.length; k++) {
-          if (k === i || k === j || playersUsedThisRound.has(players[k])) continue;
+        for (let j = i + 1; j < players.length; j++) {
+          if (playersUsedThisRound.has(players[j])) continue;
           
-          for (let l = k + 1; l < players.length; l++) {
-            if (l === i || l === j || playersUsedThisRound.has(players[l])) continue;
+          for (let k = 0; k < players.length; k++) {
+            if (k === i || k === j || playersUsedThisRound.has(players[k])) continue;
             
-            // We have 4 players: i, j, k, l
-            // Try different pairings
-            const pairings = [
-              { blue: [players[i], players[j]], red: [players[k], players[l]] },
-              { blue: [players[i], players[k]], red: [players[j], players[l]] },
-              { blue: [players[i], players[l]], red: [players[j], players[k]] },
-            ];
-            
-            for (const pairing of pairings) {
-              // Try both role assignments for this pairing
-              const roleAssignments = [
-                { 
-                  blue: { spymaster: pairing.blue[0], guesser: pairing.blue[1] },
-                  red: { spymaster: pairing.red[0], guesser: pairing.red[1] }
-                },
-                {
-                  blue: { spymaster: pairing.blue[1], guesser: pairing.blue[0] },
-                  red: { spymaster: pairing.red[0], guesser: pairing.red[1] }
-                },
-                {
-                  blue: { spymaster: pairing.blue[0], guesser: pairing.blue[1] },
-                  red: { spymaster: pairing.red[1], guesser: pairing.red[0] }
-                },
-                {
-                  blue: { spymaster: pairing.blue[1], guesser: pairing.blue[0] },
-                  red: { spymaster: pairing.red[1], guesser: pairing.red[0] }
-                },
+            for (let l = k + 1; l < players.length; l++) {
+              if (l === i || l === j || playersUsedThisRound.has(players[l])) continue;
+              
+              // We have 4 players: i, j, k, l
+              const pairings = [
+                { blue: [players[i], players[j]], red: [players[k], players[l]] },
+                { blue: [players[i], players[k]], red: [players[j], players[l]] },
+                { blue: [players[i], players[l]], red: [players[j], players[k]] },
               ];
               
-              for (const assignment of roleAssignments) {
-                // Check if all 4 player-pair configurations exist and haven't been played
-                const allUnplayed = checkAndMarkConfigs(assignment, playedConfigs);
+              for (const pairing of pairings) {
+                const roleAssignments = [
+                  { 
+                    blue: { spymaster: pairing.blue[0], guesser: pairing.blue[1] },
+                    red: { spymaster: pairing.red[0], guesser: pairing.red[1] }
+                  },
+                  {
+                    blue: { spymaster: pairing.blue[1], guesser: pairing.blue[0] },
+                    red: { spymaster: pairing.red[0], guesser: pairing.red[1] }
+                  },
+                  {
+                    blue: { spymaster: pairing.blue[0], guesser: pairing.blue[1] },
+                    red: { spymaster: pairing.red[1], guesser: pairing.red[0] }
+                  },
+                  {
+                    blue: { spymaster: pairing.blue[1], guesser: pairing.blue[0] },
+                    red: { spymaster: pairing.red[1], guesser: pairing.red[0] }
+                  },
+                ];
                 
-                if (allUnplayed) {
-                  round.push(assignment);
-                  playersUsedThisRound.add(pairing.blue[0]);
-                  playersUsedThisRound.add(pairing.blue[1]);
-                  playersUsedThisRound.add(pairing.red[0]);
-                  playersUsedThisRound.add(pairing.red[1]);
-                  foundMatch = true;
-                  break;
+                for (const assignment of roleAssignments) {
+                  const allUnplayed = checkAndMarkConfigs(assignment, playedConfigs);
+                  
+                  if (allUnplayed) {
+                    round.push(assignment);
+                    playersUsedThisRound.add(pairing.blue[0]);
+                    playersUsedThisRound.add(pairing.blue[1]);
+                    playersUsedThisRound.add(pairing.red[0]);
+                    playersUsedThisRound.add(pairing.red[1]);
+                    foundMatch = true;
+                    break matchSearch; // break all nested loops, restart round search
+                  }
                 }
               }
-              if (foundMatch) break;
             }
-            if (foundMatch) break;
           }
-          if (foundMatch) break;
         }
-        if (foundMatch) break;
       }
-      if (foundMatch) break;
+
+      if (!foundMatch) continueRound = false;
     }
     
     if (round.length > 0) {
       rounds.push(round);
-      roundNum++;
     } else if (playedConfigs.size < pairs.size * 4) {
       // No more perfect pairings possible, break to avoid infinite loop
       console.warn('Could not complete full round-robin schedule');
