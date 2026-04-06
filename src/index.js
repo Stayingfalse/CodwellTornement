@@ -308,14 +308,14 @@ client.on('interactionCreate', async (interaction) => {
 
       const remainingCardsInput = new TextInputBuilder()
         .setCustomId('remaining_cards')
-        .setLabel('How many cards did the losing team have remaining? (0-8)')
+        .setLabel('Cards remaining? (0-8)')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setPlaceholder('e.g. 3');
 
       const assassinInput = new TextInputBuilder()
         .setCustomId('assassin')
-        .setLabel('Was the win by hitting the assassin? (yes/no)')
+        .setLabel('Hit assassin? (yes/no)')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setPlaceholder('yes or no');
