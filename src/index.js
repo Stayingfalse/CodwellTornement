@@ -307,17 +307,6 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       let currentRoundMatches = tournament.rounds[tournament.currentRound - 1];
-      if (tournament.currentRoundIndex >= currentRoundMatches.length) {
-        // All matches in this round are done, move to next round
-        tournament.currentRound++;
-        tournament.currentRoundIndex = 0;
-        if (tournament.currentRound > tournament.rounds.length) {
-          await interaction.reply({ content: `All ${tournament.rounds.length} rounds have been completed!`, flags: MessageFlags.Ephemeral });
-          return;
-        }
-        // Re-fetch matches for the new round
-        currentRoundMatches = tournament.rounds[tournament.currentRound - 1];
-      }
       
       const grouping = currentRoundMatches[tournament.currentRoundIndex];
       tournament.currentGrouping = grouping;
@@ -504,6 +493,17 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         tournament.currentGrouping = null;
+        
+        // Increment match index and check if we need to advance to next round
+        tournament.currentRoundIndex++;
+        const currentRound = tournament.rounds[tournament.currentRound - 1];
+        const currentRoundMatches = currentRound || [];
+        
+        if (tournament.currentRoundIndex >= currentRoundMatches.length) {
+          // All matches in this round are complete, advance to next round
+          tournament.currentRound++;
+          tournament.currentRoundIndex = 0;
+        }
         
         // Update the main scoreboard embed BEFORE archiving thread
         try {
