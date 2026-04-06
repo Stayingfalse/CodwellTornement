@@ -124,8 +124,8 @@ function buildSignupDescription() {
     const prediction = getTournamentPrediction(playerList.length);
     if (prediction) {
       description += `\n\n**Tournament Prediction:**\n`;
-      description += `${prediction.rounds} Rounds • ${prediction.totalGames} Total Games\n`;
-      description += `Games per round: ${prediction.gamesPerRound.join(', ')}`;
+      description += `${prediction.totalGames} Total Games • ~${prediction.rounds} Rounds`;
+      description += `\n${prediction.concurrentGames} game${prediction.concurrentGames === 1 ? '' : 's'} per round`;
     }
   }
 
@@ -993,29 +993,19 @@ async function allocateNextMatch(interaction) {
 }
 
 function getTournamentPrediction(playerCount) {
-  console.log('=== TOURNAMENT PREDICTION DEBUG ===');
-  console.log('Calculating prediction for', playerCount, 'players');
-  
-  if (playerCount < 4) {
-    console.log('Not enough players for prediction');
-    return null;
-  }
-  
-  // Generate the rounds to get exact count
-  const rounds = generateRounds(Array.from({length: playerCount}, (_, i) => `player${i}`));
-  
-  let totalGames = 0;
-  const gamesPerRound = rounds.map(round => {
-    totalGames += round.length;
-    return round.length;
-  });
-  
-  console.log('Prediction result:', { rounds: rounds.length, gamesPerRound, totalGames });
-  
+  if (playerCount < 4) return null;
+
+  // Analytical formula: each player plays every other player in each of the
+  // 4 role configs (blue-spy, blue-guess, red-spy, red-guess), so total games
+  // = N*(N-1).  floor(N/4) games can run simultaneously per round.
+  const totalGames = playerCount * (playerCount - 1);
+  const concurrentGames = Math.floor(playerCount / 4);
+  const totalRounds = Math.ceil(totalGames / concurrentGames);
+
   return {
-    rounds: rounds.length,
-    gamesPerRound: gamesPerRound,
-    totalGames: totalGames,
+    rounds: totalRounds,
+    concurrentGames,
+    totalGames,
   };
 }
 
