@@ -28,7 +28,12 @@ let tournament = {
   setupChannelId: null, // Channel where setup message was posted
   rounds: [], // Array of rounds, each round contains multiple matches
   started: false, // Track if tournament has started
+  roundDeadline: null, // Unix ms timestamp when current round expires
 };
+
+// Round timer handles (in-memory only)
+let roundWarningTimer = null;
+let roundExpiryTimer = null;
 
 const commands = [
   new SlashCommandBuilder()
@@ -57,6 +62,8 @@ client.once('clientReady', async () => {
         if (tournament.started) {
           await updateScoreboard(guild);
           console.log('[startup] Scoreboard rebuilt');
+          // Re-schedule round timers after restart
+          if (tournament.roundDeadline) scheduleRoundTimers(guild);
         } else {
           await updateSignupMessage(channel);
           console.log('[startup] Signup message rebuilt');
@@ -82,6 +89,7 @@ async function loadTournamentData() {
     tournament.currentRoundIndex = parsed.currentRoundIndex || 0;
     tournament.activeMatches = parsed.activeMatches || [];
     tournament.roundResults = parsed.roundResults || [];
+    tournament.roundDeadline = parsed.roundDeadline || null;
     tournament.setupMessage = parsed.setupMessage;
     tournament.setupChannelId = parsed.setupChannelId;
     tournament.rounds = parsed.rounds || [];
@@ -103,6 +111,7 @@ async function saveTournamentData() {
       currentRoundIndex: tournament.currentRoundIndex,
       activeMatches: tournament.activeMatches,
       roundResults: tournament.roundResults,
+      roundDeadline: tournament.roundDeadline,
       setupMessage: tournament.setupMessage,
       setupChannelId: tournament.setupChannelId,
       rounds: tournament.rounds,
@@ -408,6 +417,7 @@ client.on('interactionCreate', async (interaction) => {
       }
       const skippedCount = tournament.activeMatches.length;
       tournament.activeMatches = [];
+      clearRoundTimers();
       tournament.currentRound++;
       tournament.currentRoundIndex = 0;
       await saveTournamentData();
@@ -430,6 +440,7 @@ client.on('interactionCreate', async (interaction) => {
       }
       const skippedCount2 = tournament.activeMatches.length;
       tournament.activeMatches = [];
+      clearRoundTimers();
       tournament.currentRound++;
       tournament.currentRoundIndex = 0;
       await saveTournamentData();
@@ -448,6 +459,7 @@ client.on('interactionCreate', async (interaction) => {
       const prevSetupMessage = tournament.setupMessage;
       const prevSetupChannelId = tournament.setupChannelId;
 
+      clearRoundTimers();
       tournament = {
         players: new Set(),
         currentRound: 0,
@@ -456,6 +468,8 @@ client.on('interactionCreate', async (interaction) => {
         scores: new Map(),
         currentGrouping: null,
         activeMatches: [],
+        roundResults: [],
+        roundDeadline: null,
         setupMessage: prevSetupMessage,
         setupChannelId: prevSetupChannelId,
         rounds: [],
@@ -626,6 +640,31 @@ client.on('interactionCreate', async (interaction) => {
       modal.addComponents(firstActionRow);
 
       await interaction.showModal(modal);
+    } else if (customId === 'timeout_force_end') {
+      const adminRoleId = process.env.ADMIN_ROLE_ID;
+      if (!interaction.member.roles.cache.has(adminRoleId)) {
+        await interaction.reply({ content: 'Only admins can force end the round.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const skippedT = tournament.activeMatches.length;
+      for (const match of tournament.activeMatches) {
+        try {
+          const t = await interaction.guild.channels.fetch(match.threadId).catch(() => null);
+          if (t) t.setArchived(true).catch(() => null);
+        } catch {}
+      }
+      tournament.activeMatches = [];
+      clearRoundTimers();
+      tournament.roundDeadline = null;
+      tournament.currentRound++;
+      tournament.currentRoundIndex = 0;
+      await saveTournamentData();
+      updateScoreboard(interaction.guild).catch(() => null);
+      if (tournament.currentRound <= tournament.rounds.length) {
+        allocateRound(interaction).catch(e => console.error('Auto-allocate after timeout failed:', e.message));
+      }
+      await interaction.editReply({ content: `Timeout force end: ${skippedT} match(es) skipped. Advancing...` });
     } else if (customId.startsWith('correct_result_')) {
       // Only match players or admins can correct a result
       const adminRoleId = process.env.ADMIN_ROLE_ID;
@@ -769,6 +808,7 @@ Win: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} 
 
         // If all matches in round are done, advance and auto-allocate
         if (roundComplete) {
+          clearRoundTimers();
           tournament.currentRound++;
           tournament.currentRoundIndex = 0;
           await saveTournamentData();
@@ -908,6 +948,16 @@ async function allocateRound(interaction) {
   // Allocate all matches in this round simultaneously
   const channel = mainChannel;
 
+  // Post round header with deadline (deadline is set just after the loop, so compute it now for display)
+  const timeoutDaysHeader = parseFloat(process.env.ROUND_TIMEOUT_DAYS) || 14;
+  const deadlineMs = Date.now() + timeoutDaysHeader * 24 * 60 * 60 * 1000;
+  const deadlineTs = Math.floor(deadlineMs / 1000);
+  const headerEmbed = new EmbedBuilder()
+    .setTitle(`📋 Round ${tournament.currentRound} — ${currentRoundMatches.length} Game${currentRoundMatches.length !== 1 ? 's' : ''}`)
+    .setDescription(`Complete all games below before <t:${deadlineTs}:F> (<t:${deadlineTs}:R>).`)
+    .setColor(0x5865f2);
+  await channel.send({ embeds: [headerEmbed] });
+
   for (let i = 0; i < currentRoundMatches.length; i++) {
     const grouping = currentRoundMatches[i];
     const matchNumber = i + 1;
@@ -954,10 +1004,101 @@ async function allocateRound(interaction) {
     return { success: false, message: 'Failed to create any game threads. Check bot permissions.' };
   }
 
+  // Set round deadline and schedule warning + expiry timers
+  const timeoutDays = parseFloat(process.env.ROUND_TIMEOUT_DAYS) || 14;
+  tournament.roundDeadline = Date.now() + timeoutDays * 24 * 60 * 60 * 1000;
   await saveTournamentData();
+  scheduleRoundTimers(interaction.guild);
   return { success: true, message: `Round ${tournament.currentRound} allocated with ${tournament.activeMatches.length} match(es).` };
 }
 
+
+function clearRoundTimers() {
+  if (roundWarningTimer) { clearTimeout(roundWarningTimer); roundWarningTimer = null; }
+  if (roundExpiryTimer)  { clearTimeout(roundExpiryTimer);  roundExpiryTimer  = null; }
+}
+
+function scheduleRoundTimers(guild) {
+  clearRoundTimers();
+  if (!tournament.roundDeadline) return;
+  const now = Date.now();
+  const TWO_DAYS = 2 * 24 * 60 * 60 * 1000;
+  const warnAt   = tournament.roundDeadline - TWO_DAYS;
+  const expireAt = tournament.roundDeadline;
+
+  if (expireAt <= now) {
+    // Already expired — fire immediately
+    sendRoundExpiry(guild).catch(e => console.error('[timer] Expiry failed:', e.message));
+    return;
+  }
+
+  if (warnAt > now) {
+    roundWarningTimer = setTimeout(() => {
+      sendRoundWarning(guild).catch(e => console.error('[timer] Warning failed:', e.message));
+    }, warnAt - now);
+  }
+
+  roundExpiryTimer = setTimeout(() => {
+    sendRoundExpiry(guild).catch(e => console.error('[timer] Expiry failed:', e.message));
+  }, expireAt - now);
+}
+
+async function sendRoundWarning(guild) {
+  if (!tournament.started || tournament.activeMatches.length === 0) return;
+  const ts = Math.floor(tournament.roundDeadline / 1000);
+  for (const match of tournament.activeMatches) {
+    try {
+      const thread = await guild.channels.fetch(match.threadId).catch(() => null);
+      if (thread) {
+        await thread.send(`⚠️ **Round timer warning:** This round ends <t:${ts}:F> (<t:${ts}:R>). Please complete your game soon!`);
+      }
+    } catch (e) { console.error(`[timer] Warning in thread ${match.threadId} failed:`, e.message); }
+  }
+}
+
+async function sendRoundExpiry(guild) {
+  if (!tournament.started) return;
+  if (tournament.activeMatches.length === 0) return; // Round already completed naturally
+  const mainChannel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+  if (!mainChannel) return;
+
+  const ts = Math.floor(tournament.roundDeadline / 1000);
+  const allRoundMatches = tournament.rounds[tournament.currentRound - 1] || [];
+  const completedNums  = new Set(tournament.roundResults.map(r => r.matchNumber));
+  const stillActive    = tournament.activeMatches;
+
+  const expiredEmbed = new EmbedBuilder()
+    .setTitle(`⏰ Round ${tournament.currentRound} Timer Expired`)
+    .setColor(0xff4500)
+    .setDescription(`The round deadline was <t:${ts}:F>.`);
+
+  if (completedNums.size > 0) {
+    const completedLines = tournament.roundResults
+      .sort((a, b) => a.matchNumber - b.matchNumber)
+      .map(r => {
+        const wLabel = r.winner === 'blue' ? '🔵 Blue' : '🔴 Red';
+        return `Game ${r.matchNumber}: **${wLabel}** won`;
+      }).join('\n');
+    expiredEmbed.addFields({ name: `✅ Completed (${completedNums.size}/${allRoundMatches.length})`, value: completedLines });
+  }
+
+  if (stillActive.length > 0) {
+    const activeLines = stillActive
+      .sort((a, b) => a.matchNumber - b.matchNumber)
+      .map(m => `Game ${m.matchNumber}: 🔵 <@${m.grouping.blue.spymaster}> & <@${m.grouping.blue.guesser}> vs 🔴 <@${m.grouping.red.spymaster}> & <@${m.grouping.red.guesser}>`)
+      .join('\n');
+    expiredEmbed.addFields({ name: `⏳ Still Active (${stillActive.length}/${allRoundMatches.length})`, value: activeLines });
+  }
+
+  const forceRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('timeout_force_end')
+      .setLabel(`Force End & Advance to Round ${tournament.currentRound + 1}`)
+      .setStyle(ButtonStyle.Danger),
+  );
+
+  await mainChannel.send({ embeds: [expiredEmbed], components: [forceRow] });
+}
 
 function getTournamentPrediction(playerCount) {
   if (playerCount < 4) return null;
