@@ -247,6 +247,10 @@ client.on('interactionCreate', async (interaction) => {
             .setLabel('View Scores')
             .setStyle(ButtonStyle.Secondary),
           new ButtonBuilder()
+            .setCustomId('admin_force_end')
+            .setLabel('Force End Match')
+            .setStyle(ButtonStyle.Danger),
+          new ButtonBuilder()
             .setCustomId('admin_reset')
             .setLabel('Reset Tournament')
             .setStyle(ButtonStyle.Danger),
@@ -398,6 +402,93 @@ client.on('interactionCreate', async (interaction) => {
         .setDescription(scoreList || 'No scores yet.')
         .setColor(0xff9900);
       await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    } else if (customId === 'admin_force_end') {
+      if (!tournament.currentGrouping) {
+        await interaction.reply({ content: 'No match currently active to force end.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      // Force end with 0 points for all players
+      const bluePlayers = [tournament.currentGrouping.blue.spymaster, tournament.currentGrouping.blue.guesser];
+      const redPlayers = [tournament.currentGrouping.red.spymaster, tournament.currentGrouping.red.guesser];
+      
+      // All players get 0 points (no change)
+      tournament.currentGrouping = null;
+      
+      // Increment match index and check if round is done
+      tournament.currentRoundIndex++;
+      const currentRound = tournament.rounds[tournament.currentRound - 1];
+      const currentRoundMatches = currentRound || [];
+      
+      if (tournament.currentRoundIndex >= currentRoundMatches.length) {
+        // All matches in this round are complete, advance to next round
+        tournament.currentRound++;
+        tournament.currentRoundIndex = 0;
+      }
+      
+      // Update the scoreboard
+      try {
+        if (tournament.setupMessage && tournament.setupChannelId) {
+          const channel = interaction.guild.channels.cache.get(tournament.setupChannelId);
+          if (channel) {
+            const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
+            if (message) {
+              let description = `**Tournament Live - Round ${tournament.currentRound}**\n`;
+              
+              if (tournament.currentRound > tournament.rounds.length) {
+                description = `**Tournament Complete!**\n\n`;
+                description += `**Final Scoreboard:**\n`;
+                const sortedScores = Array.from(tournament.scores.entries())
+                  .sort((a, b) => b[1] - a[1]);
+                sortedScores.forEach((entry, idx) => {
+                  description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+                });
+              } else {
+                const matchesCompleted = tournament.currentRoundIndex;
+                const totalMatches = currentRoundMatches?.length || 0;
+                description += `Match ${matchesCompleted}/${totalMatches}\n\n`;
+                
+                if (matchesCompleted < totalMatches) {
+                  description += `**Round in progress**\n`;
+                } else {
+                  description += `**Round Complete!** Click Allocate to start Round ${tournament.currentRound + 1}\n`;
+                }
+                description += '\n';
+
+                description += `**Scoreboard:**\n`;
+                const sortedScores = Array.from(tournament.scores.entries())
+                  .sort((a, b) => b[1] - a[1])
+                  .slice(0, 10);
+                sortedScores.forEach((entry, idx) => {
+                  description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+                });
+              }
+              
+              const embed = message.embeds[0];
+              const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
+              await message.edit({ embeds: [updatedEmbed] }).catch(err => {
+                console.error('Failed to edit message:', err.message);
+              });
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Failed to update scoreboard:', error.message);
+      }
+      
+      await saveTournamentData();
+      
+      // Archive the thread if it exists
+      try {
+        const thread = interaction.guild.channels.cache.get(tournament.currentThread);
+        if (thread) {
+          thread.setArchived(true).catch(() => null);
+        }
+      } catch (error) {
+        console.error('Failed to archive thread:', error.message);
+      }
+      
+      await interaction.reply({ content: 'Match force ended. 0 points awarded to all players.', flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_reset') {
       tournament = {
         players: new Set(),
@@ -408,6 +499,7 @@ client.on('interactionCreate', async (interaction) => {
         currentGrouping: null,
         currentThread: null,
         setupMessage: null,
+        setupChannelId: null,
         rounds: [],
         started: false,
       };
