@@ -23,6 +23,7 @@ let tournament = {
   playedGroupings: new Set(),
   scores: new Map(),
   activeMatches: [], // [{grouping, threadId, matchNumber}]
+  roundResults: [], // [{matchNumber, grouping, winner, assassin, remainingCards, winPoints, losePoints}]
   setupMessage: null,
   setupChannelId: null, // Channel where setup message was posted
   rounds: [], // Array of rounds, each round contains multiple matches
@@ -75,6 +76,7 @@ async function loadTournamentData() {
     tournament.currentRound = parsed.currentRound;
     tournament.currentRoundIndex = parsed.currentRoundIndex || 0;
     tournament.activeMatches = parsed.activeMatches || [];
+    tournament.roundResults = parsed.roundResults || [];
     tournament.setupMessage = parsed.setupMessage;
     tournament.setupChannelId = parsed.setupChannelId;
     tournament.rounds = parsed.rounds || [];
@@ -95,6 +97,7 @@ async function saveTournamentData() {
       currentRound: tournament.currentRound,
       currentRoundIndex: tournament.currentRoundIndex,
       activeMatches: tournament.activeMatches,
+      roundResults: tournament.roundResults,
       setupMessage: tournament.setupMessage,
       setupChannelId: tournament.setupChannelId,
       rounds: tournament.rounds,
@@ -579,7 +582,18 @@ client.on('interactionCreate', async (interaction) => {
 
         // Remove this match from active matches
         tournament.activeMatches = tournament.activeMatches.filter(m => m.threadId !== interaction.channelId);
-        tournament.currentRoundIndex++; // track completed match count for scoreboard display
+        tournament.currentRoundIndex++;
+
+        // Record this match's outcome for the round summary
+        tournament.roundResults.push({
+          matchNumber: matchData.matchNumber,
+          grouping,
+          winner,
+          assassin,
+          remainingCards,
+          winPoints,
+          losePoints,
+        });
 
         const remainingActive = tournament.activeMatches.length;
         const roundComplete = remainingActive === 0;
@@ -685,15 +699,37 @@ async function allocateRound(interaction) {
       const toDelete = messages.filter(msg => msg.id !== tournament.setupMessage);
       for (const msg of toDelete.values()) await msg.delete().catch(() => null);
 
+      const completedRound = tournament.currentRound - 1;
       const summaryEmbed = new EmbedBuilder()
-        .setTitle(`\ud83d\udcca Round ${tournament.currentRound - 1} Complete!`)
+        .setTitle(`📊 Round ${completedRound} Complete!`)
         .setColor(0x0099ff);
-      let summaryDesc = `**Scores after Round ${tournament.currentRound - 1}:**\n`;
-      Array.from(tournament.scores.entries())
-        .sort((a, b) => b[1] - a[1])
-        .forEach((entry, idx) => { summaryDesc += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`; });
-      summaryEmbed.setDescription(summaryDesc);
+
+      const results = tournament.roundResults.slice().sort((a, b) => a.matchNumber - b.matchNumber);
+      let summaryDesc = '';
+      if (results.length > 0) {
+        results.forEach(r => {
+          const blueTag = `<@${r.grouping.blue.spymaster}> & <@${r.grouping.blue.guesser}>`;
+          const redTag = `<@${r.grouping.red.spymaster}> & <@${r.grouping.red.guesser}>`;
+          const winnerLabel = r.winner === 'blue' ? '🔵 Blue' : '🔴 Red';
+          const loserLabel = r.winner === 'blue' ? '🔴 Red' : '🔵 Blue';
+          const winnerTag = r.winner === 'blue' ? blueTag : redTag;
+          const loserTag = r.winner === 'blue' ? redTag : blueTag;
+          const howStr = r.assassin ? 'assassin hit' : `${r.remainingCards} card${r.remainingCards !== 1 ? 's' : ''} remaining`;
+          summaryDesc += `**Game ${r.matchNumber}** — 🔵 ${blueTag} vs 🔴 ${redTag}
+`;
+          summaryDesc += `Winner: **${winnerLabel}** (${howStr}) — ${winnerTag} **+${r.winPoints} pts**`;
+          if (r.losePoints !== 0) summaryDesc += `, ${loserTag} **${r.losePoints > 0 ? '+' : ''}${r.losePoints} pts**`;
+          summaryDesc += '\n\n';
+        });
+      } else {
+        summaryDesc = 'No match results recorded.';
+      }
+      summaryEmbed.setDescription(summaryDesc.trimEnd());
       await channel.send({ embeds: [summaryEmbed] });
+
+      // Clear results for the next round
+      tournament.roundResults = [];
+      await saveTournamentData();
     } catch (e) { console.error('Failed to post round summary:', e.message); }
   }
 
