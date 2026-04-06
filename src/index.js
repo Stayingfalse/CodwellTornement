@@ -25,6 +25,7 @@ let tournament = {
   currentGrouping: null,
   currentThread: null,
   setupMessage: null,
+  setupChannelId: null, // Channel where setup message was posted
   rounds: [], // Array of rounds, each round contains multiple matches
   started: false, // Track if tournament has started
 };
@@ -62,6 +63,7 @@ async function loadTournamentData() {
     tournament.currentGrouping = parsed.currentGrouping;
     tournament.currentThread = parsed.currentThread;
     tournament.setupMessage = parsed.setupMessage;
+    tournament.setupChannelId = parsed.setupChannelId;
     tournament.rounds = parsed.rounds || [];
     tournament.started = parsed.started || false;
     console.log('Tournament data loaded from storage');
@@ -82,6 +84,7 @@ async function saveTournamentData() {
       currentGrouping: tournament.currentGrouping,
       currentThread: tournament.currentThread,
       setupMessage: tournament.setupMessage,
+      setupChannelId: tournament.setupChannelId,
       rounds: tournament.rounds,
       started: tournament.started,
     };
@@ -163,6 +166,7 @@ client.on('interactionCreate', async (interaction) => {
       const response = await interaction.reply({ embeds: [embed], components: [row], withResponse: true });
       const message = response.resource.message;
       tournament.setupMessage = message.id;
+      tournament.setupChannelId = message.channelId;
       await saveTournamentData();
     }
   } else if (interaction.isButton()) {
@@ -302,7 +306,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       
-      const currentRoundMatches = tournament.rounds[tournament.currentRound - 1];
+      let currentRoundMatches = tournament.rounds[tournament.currentRound - 1];
       if (tournament.currentRoundIndex >= currentRoundMatches.length) {
         // All matches in this round are done, move to next round
         tournament.currentRound++;
@@ -311,6 +315,8 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.reply({ content: `All ${tournament.rounds.length} rounds have been completed!`, flags: MessageFlags.Ephemeral });
           return;
         }
+        // Re-fetch matches for the new round
+        currentRoundMatches = tournament.rounds[tournament.currentRound - 1];
       }
       
       const grouping = currentRoundMatches[tournament.currentRoundIndex];
@@ -501,26 +507,27 @@ client.on('interactionCreate', async (interaction) => {
         
         // Update the main scoreboard embed BEFORE archiving thread
         try {
-          if (tournament.setupMessage) {
-            const channel = interaction.channel;
-            const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
-            if (message) {
-              let description = `**Tournament Live - Round ${tournament.currentRound}**\n`;
-              
-              // Check if we've finished all rounds
-              if (tournament.currentRound > tournament.rounds.length) {
-                description = `**Tournament Complete!**\n\n`;
-                description += `**Final Scoreboard:**\n`;
-                const sortedScores = Array.from(tournament.scores.entries())
-                  .sort((a, b) => b[1] - a[1]);
-                sortedScores.forEach((entry, idx) => {
-                  description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
-                });
-              } else {
-                const currentRound = tournament.rounds[tournament.currentRound - 1];
-                const matchesCompleted = tournament.currentRoundIndex;
-                const totalMatches = currentRound?.length || 0;
-                description += `Match ${matchesCompleted}/${totalMatches}\n\n`;
+          if (tournament.setupMessage && tournament.setupChannelId) {
+            const channel = interaction.guild.channels.cache.get(tournament.setupChannelId);
+            if (channel) {
+              const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
+              if (message) {
+                let description = `**Tournament Live - Round ${tournament.currentRound}**\n`;
+                
+                // Check if we've finished all rounds
+                if (tournament.currentRound > tournament.rounds.length) {
+                  description = `**Tournament Complete!**\n\n`;
+                  description += `**Final Scoreboard:**\n`;
+                  const sortedScores = Array.from(tournament.scores.entries())
+                    .sort((a, b) => b[1] - a[1]);
+                  sortedScores.forEach((entry, idx) => {
+                    description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+                  });
+                } else {
+                  const currentRound = tournament.rounds[tournament.currentRound - 1];
+                  const matchesCompleted = tournament.currentRoundIndex;
+                  const totalMatches = currentRound?.length || 0;
+                  description += `Match ${matchesCompleted}/${totalMatches}\n\n`;
                 
                 if (matchesCompleted < totalMatches) {
                   description += `**Round in progress**\n`;
