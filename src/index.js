@@ -302,6 +302,7 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: 'Need at least 4 players to start.', flags: MessageFlags.Ephemeral });
         return;
       }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       tournament.currentRound = 1;
       tournament.currentRoundIndex = 0;
       tournament.started = true;
@@ -335,7 +336,7 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       await saveTournamentData();
-      await interaction.reply({ content: `Tournament started with ${tournament.players.size} players! Generated ${tournament.rounds.length} rounds.`, flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: `Tournament started with ${tournament.players.size} players! Generated ${tournament.rounds.length} rounds.` });
     } else if (customId === 'admin_allocate') {
       const result = await allocateNextMatch(interaction);
       if (!result.success) {
@@ -596,6 +597,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
     } else if (customId === 'admin_reset') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       // Capture message/channel IDs before wiping them so we can update the embed after reset
       const prevSetupMessage = tournament.setupMessage;
       const prevSetupChannelId = tournament.setupChannelId;
@@ -645,7 +647,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      await interaction.reply({ content: 'Tournament reset.', flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: 'Tournament reset.' });
     } else if (customId === 'debug_seed_players') {
       if (process.env.DEBUG_MODE !== 'true') {
         await interaction.reply({ content: 'Debug mode is not enabled.', flags: MessageFlags.Ephemeral });
