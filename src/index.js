@@ -104,7 +104,8 @@ client.on('interactionCreate', async (interaction) => {
             .setStyle(ButtonStyle.Secondary),
         );
 
-      const message = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
+      const response = await interaction.reply({ embeds: [embed], components: [row], withResponse: true });
+      const message = response.resource.message;
       tournament.setupMessage = message.id;
       await saveTournamentData();
     }
