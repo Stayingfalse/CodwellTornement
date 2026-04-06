@@ -402,62 +402,133 @@ function generateGrouping(players) {
 
 function generateRounds(players) {
   const rounds = [];
-  const usedPlayers = new Set();
-  let availablePlayers = [...players];
+  const pairs = new Map(); // Track all player pairings and their configurations
   
-  while (availablePlayers.length >= 4) {
+  // Initialize all pairs - each pair needs 4 configurations
+  // Config: (team, role) where team is blue/red and role is spymaster/guesser
+  for (let i = 0; i < players.length; i++) {
+    for (let j = 0; j < players.length; j++) {
+      if (i === j) continue;
+      const key = `${players[i]}-${players[j]}`;
+      pairs.set(key, [
+        { team: 'blue', role: 'spymaster' },  // i is spymaster on blue, j is guesser
+        { team: 'blue', role: 'guesser' },     // i is guesser on blue, j is spymaster
+        { team: 'red', role: 'spymaster' },    // i is spymaster on red, j is guesser
+        { team: 'red', role: 'guesser' },      // i is guesser on red, j is spymaster
+      ]);
+    }
+  }
+  
+  const playedConfigs = new Set();
+  let roundNum = 0;
+  
+  while (playedConfigs.size < pairs.size * 4) {
     const round = [];
-    const playersInThisRound = new Set();
+    const playersUsedThisRound = new Set();
+    let foundMatch = false;
     
-    // Create as many 4-person matches as possible in this round
-    while (availablePlayers.length >= 4) {
-      // Get 4 random players that haven't been used in this round
-      const candidates = availablePlayers.filter(p => !playersInThisRound.has(p));
-      if (candidates.length < 4) break;
+    // Try to find matches that haven't been played yet
+    for (let i = 0; i < players.length; i++) {
+      if (playersUsedThisRound.has(players[i])) continue;
       
-      // Pick 4 random candidates
-      const selected = [];
-      for (let i = 0; i < 4; i++) {
-        const idx = Math.floor(Math.random() * candidates.length);
-        selected.push(candidates[idx]);
-        candidates.splice(idx, 1);
+      for (let j = i + 1; j < players.length; j++) {
+        if (playersUsedThisRound.has(players[j])) continue;
+        
+        // Try to find two more players
+        for (let k = 0; k < players.length; k++) {
+          if (k === i || k === j || playersUsedThisRound.has(players[k])) continue;
+          
+          for (let l = k + 1; l < players.length; l++) {
+            if (l === i || l === j || playersUsedThisRound.has(players[l])) continue;
+            
+            // We have 4 players: i, j, k, l
+            // Try different pairings
+            const pairings = [
+              { blue: [players[i], players[j]], red: [players[k], players[l]] },
+              { blue: [players[i], players[k]], red: [players[j], players[l]] },
+              { blue: [players[i], players[l]], red: [players[j], players[k]] },
+            ];
+            
+            for (const pairing of pairings) {
+              // Try both role assignments for this pairing
+              const roleAssignments = [
+                { 
+                  blue: { spymaster: pairing.blue[0], guesser: pairing.blue[1] },
+                  red: { spymaster: pairing.red[0], guesser: pairing.red[1] }
+                },
+                {
+                  blue: { spymaster: pairing.blue[1], guesser: pairing.blue[0] },
+                  red: { spymaster: pairing.red[0], guesser: pairing.red[1] }
+                },
+                {
+                  blue: { spymaster: pairing.blue[0], guesser: pairing.blue[1] },
+                  red: { spymaster: pairing.red[1], guesser: pairing.red[0] }
+                },
+                {
+                  blue: { spymaster: pairing.blue[1], guesser: pairing.blue[0] },
+                  red: { spymaster: pairing.red[1], guesser: pairing.red[0] }
+                },
+              ];
+              
+              for (const assignment of roleAssignments) {
+                // Check if all 4 player-pair configurations exist and haven't been played
+                const allUnplayed = checkAndMarkConfigs(assignment, playedConfigs);
+                
+                if (allUnplayed) {
+                  round.push(assignment);
+                  playersUsedThisRound.add(pairing.blue[0]);
+                  playersUsedThisRound.add(pairing.blue[1]);
+                  playersUsedThisRound.add(pairing.red[0]);
+                  playersUsedThisRound.add(pairing.red[1]);
+                  foundMatch = true;
+                  break;
+                }
+              }
+              if (foundMatch) break;
+            }
+            if (foundMatch) break;
+          }
+          if (foundMatch) break;
+        }
+        if (foundMatch) break;
       }
-      
-      // Create all possible team pairings from these 4 players
-      const pairings = [
-        {
-          blue: { spymaster: selected[0], guesser: selected[1] },
-          red: { spymaster: selected[2], guesser: selected[3] },
-        },
-        {
-          blue: { spymaster: selected[0], guesser: selected[2] },
-          red: { spymaster: selected[1], guesser: selected[3] },
-        },
-        {
-          blue: { spymaster: selected[0], guesser: selected[3] },
-          red: { spymaster: selected[1], guesser: selected[2] },
-        },
-      ];
-      
-      // Add a random pairing from these 4 players
-      const pairing = pairings[Math.floor(Math.random() * pairings.length)];
-      round.push(pairing);
-      
-      // Mark these players as used in this round
-      selected.forEach(p => playersInThisRound.add(p));
+      if (foundMatch) break;
     }
     
     if (round.length > 0) {
       rounds.push(round);
+      roundNum++;
+    } else if (playedConfigs.size < pairs.size * 4) {
+      // No more perfect pairings possible, break to avoid infinite loop
+      console.warn('Could not complete full round-robin schedule');
+      break;
     }
-    
-    // Update available players for next round (rotate through all players)
-    availablePlayers = players.filter(p => !playersInThisRound.has(p)).concat(
-      Array.from(playersInThisRound)
-    );
   }
   
   return rounds;
+}
+
+function checkAndMarkConfigs(assignment, playedConfigs) {
+  const configs = [
+    `${assignment.blue.spymaster}-${assignment.blue.guesser}-blue-spymaster`,
+    `${assignment.blue.guesser}-${assignment.blue.spymaster}-blue-guesser`,
+    `${assignment.red.spymaster}-${assignment.red.guesser}-red-spymaster`,
+    `${assignment.red.guesser}-${assignment.red.spymaster}-red-guesser`,
+  ];
+  
+  // Check if all are unplayed
+  for (const config of configs) {
+    if (playedConfigs.has(config)) {
+      return false;
+    }
+  }
+  
+  // Mark all as played
+  for (const config of configs) {
+    playedConfigs.add(config);
+  }
+  
+  return true;
 }
 
 client.on('error', (error) => {
