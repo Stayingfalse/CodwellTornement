@@ -387,8 +387,28 @@ client.on('interactionCreate', async (interaction) => {
       }
       const winner = customId === 'log_blue_win' ? 'blue' : 'red';
 
+      // Show buttons for assassin question instead of modal
+      const assassinRow = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(`assassin_yes_${winner}`)
+            .setLabel('Yes, Assassin Hit')
+            .setStyle(ButtonStyle.Danger),
+          new ButtonBuilder()
+            .setCustomId(`assassin_no_${winner}`)
+            .setLabel('No, Not Assassin')
+            .setStyle(ButtonStyle.Primary),
+        );
+
+      await interaction.reply({ content: 'Was the winning move an assassin hit?', components: [assassinRow], flags: MessageFlags.Ephemeral });
+    } else if (customId.startsWith('assassin_')) {
+      const parts = customId.split('_');
+      const wasAssassin = parts[1] === 'yes';
+      const winner = parts[2];
+
+      // Now show modal for remaining cards
       const modal = new ModalBuilder()
-        .setCustomId(`outcome_modal_${winner}`)
+        .setCustomId(`outcome_modal_${winner}_${wasAssassin ? 'assassin' : 'normal'}`)
         .setTitle(`${winner === 'blue' ? 'Blue' : 'Red'} Won - Game Details`);
 
       const remainingCardsInput = new TextInputBuilder()
@@ -400,19 +420,8 @@ client.on('interactionCreate', async (interaction) => {
         .setRequired(true)
         .setPlaceholder('e.g. 3');
 
-      const assassinInput = new TextInputBuilder()
-        .setCustomId('assassin')
-        .setLabel('Hit assassin? (yes/no)')
-        .setStyle(TextInputStyle.Short)
-        .setMinLength(2)
-        .setMaxLength(3)
-        .setRequired(true)
-        .setPlaceholder('yes or no');
-
       const firstActionRow = new ActionRowBuilder().addComponents(remainingCardsInput);
-      const secondActionRow = new ActionRowBuilder().addComponents(assassinInput);
-
-      modal.addComponents(firstActionRow, secondActionRow);
+      modal.addComponents(firstActionRow);
 
       await interaction.showModal(modal);
     } else if (customId.startsWith('confirm_remove_')) {
@@ -455,22 +464,16 @@ client.on('interactionCreate', async (interaction) => {
   } else if (interaction.isModalSubmit()) {
     const { customId } = interaction;
     if (customId.startsWith('outcome_modal_')) {
-      const winner = customId.split('_')[2]; // blue or red
+      const parts = customId.split('_');
+      const winner = parts[2]; // blue or red
+      const assassin = parts[3] === 'assassin'; // true if assassin, false if normal
       
       try {
         const remainingCardsValue = interaction.fields.getTextInputValue('remaining_cards');
-        const assassinValue = interaction.fields.getTextInputValue('assassin').toLowerCase();
-        
         const remainingCards = parseInt(remainingCardsValue);
-        const assassin = assassinValue === 'yes' || assassinValue === 'y';
 
         if (isNaN(remainingCards) || remainingCards < 0 || remainingCards > 8) {
           await interaction.reply({ content: 'Invalid number of remaining cards. Must be 0-8.', flags: MessageFlags.Ephemeral });
-          return;
-        }
-        
-        if (assassinValue !== 'yes' && assassinValue !== 'y' && assassinValue !== 'no' && assassinValue !== 'n') {
-          await interaction.reply({ content: 'Invalid assassin answer. Please answer "yes" or "no".', flags: MessageFlags.Ephemeral });
           return;
         }
 
