@@ -705,26 +705,26 @@ async function allocateRound(interaction) {
         .setColor(0x0099ff);
 
       const results = tournament.roundResults.slice().sort((a, b) => a.matchNumber - b.matchNumber);
-      let summaryDesc = '';
       if (results.length > 0) {
         results.forEach(r => {
-          const blueTag = `<@${r.grouping.blue.spymaster}> & <@${r.grouping.blue.guesser}>`;
-          const redTag = `<@${r.grouping.red.spymaster}> & <@${r.grouping.red.guesser}>`;
-          const winnerLabel = r.winner === 'blue' ? '🔵 Blue' : '🔴 Red';
-          const loserLabel = r.winner === 'blue' ? '🔴 Red' : '🔵 Blue';
-          const winnerTag = r.winner === 'blue' ? blueTag : redTag;
-          const loserTag = r.winner === 'blue' ? redTag : blueTag;
-          const howStr = r.assassin ? 'assassin hit' : `${r.remainingCards} card${r.remainingCards !== 1 ? 's' : ''} remaining`;
-          summaryDesc += `**Game ${r.matchNumber}** — 🔵 ${blueTag} vs 🔴 ${redTag}
-`;
-          summaryDesc += `Winner: **${winnerLabel}** (${howStr}) — ${winnerTag} **+${r.winPoints} pts**`;
-          if (r.losePoints !== 0) summaryDesc += `, ${loserTag} **${r.losePoints > 0 ? '+' : ''}${r.losePoints} pts**`;
-          summaryDesc += '\n\n';
+          const howStr = r.assassin ? 'assassin' : `${r.remainingCards} card${r.remainingCards !== 1 ? 's' : ''} left`;
+          const winnerLabel = r.winner === 'blue' ? '🔵 Blue wins' : '🔴 Red wins';
+          const wSpy  = r.winner === 'blue' ? r.grouping.blue.spymaster  : r.grouping.red.spymaster;
+          const wGues = r.winner === 'blue' ? r.grouping.blue.guesser    : r.grouping.red.guesser;
+          const lSpy  = r.winner === 'blue' ? r.grouping.red.spymaster   : r.grouping.blue.spymaster;
+          const lGues = r.winner === 'blue' ? r.grouping.red.guesser     : r.grouping.blue.guesser;
+          const ptsLine = r.losePoints !== 0
+            ? `+${r.winPoints} / ${r.losePoints > 0 ? '+' : ''}${r.losePoints} pts`
+            : `+${r.winPoints} / +0 pts`;
+          summaryEmbed.addFields({
+            name: `Game ${r.matchNumber} — ${winnerLabel} (${howStr})`,
+            value: `🔵 <@${r.grouping.blue.spymaster}> & <@${r.grouping.blue.guesser}> vs 🔴 <@${r.grouping.red.spymaster}> & <@${r.grouping.red.guesser}>\n` +
+                   `🏆 <@${wSpy}> & <@${wGues}>  ${ptsLine}  ·  😔 <@${lSpy}> & <@${lGues}>`,
+          });
         });
       } else {
-        summaryDesc = 'No match results recorded.';
+        summaryEmbed.setDescription('No match results recorded.');
       }
-      summaryEmbed.setDescription(summaryDesc.trimEnd());
       await channel.send({ embeds: [summaryEmbed] });
 
       // Clear results for the next round
