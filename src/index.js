@@ -498,6 +498,7 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         tournament.currentRound++;
+        tournament.currentRoundIndex = 0;
         tournament.currentGrouping = null;
         try {
           const thread = interaction.guild.channels.cache.get(tournament.currentThread);
@@ -507,40 +508,55 @@ client.on('interactionCreate', async (interaction) => {
         }
         tournament.currentThread = null;
       
-      // Update the main scoreboard embed
-      try {
-        if (tournament.setupMessage) {
-          const channel = interaction.channel;
-          const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
-          if (message) {
-            let description = `**Tournament Live - Round ${tournament.currentRound}**\n`;
-            const currentRound = tournament.rounds[tournament.currentRound - 1];
-            description += `Match ${tournament.currentRoundIndex}/${currentRound?.length || 0}\n\n`;
-            
-            if (tournament.currentGrouping) {
-              description += `**Current Match:**\n`;
-              description += `🔵 Blue: <@${tournament.currentGrouping.blue.spymaster}> (SM) vs <@${tournament.currentGrouping.blue.guesser}> (G)\n`;
-              description += `🔴 Red: <@${tournament.currentGrouping.red.spymaster}> (SM) vs <@${tournament.currentGrouping.red.guesser}> (G)\n\n`;
-            }
+        // Update the main scoreboard embed
+        try {
+          if (tournament.setupMessage) {
+            const channel = interaction.channel;
+            const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
+            if (message) {
+              let description = `**Tournament Live - Round ${tournament.currentRound}**\n`;
+              
+              // Check if we've finished all rounds
+              if (tournament.currentRound > tournament.rounds.length) {
+                description = `**Tournament Complete!**\n\n`;
+                description += `**Final Scoreboard:**\n`;
+                const sortedScores = Array.from(tournament.scores.entries())
+                  .sort((a, b) => b[1] - a[1]);
+                sortedScores.forEach((entry, idx) => {
+                  description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+                });
+              } else {
+                const currentRound = tournament.rounds[tournament.currentRound - 1];
+                description += `Match ${tournament.currentRoundIndex}/${currentRound?.length || 0}\n\n`;
+                
+                if (tournament.currentRoundIndex < currentRound?.length) {
+                  const nextGame = currentRound[tournament.currentRoundIndex];
+                  description += `**Next Match:**\n`;
+                  description += `🔵 Blue: <@${nextGame.blue.spymaster}> (SM) vs <@${nextGame.blue.guesser}> (G)\n`;
+                  description += `🔴 Red: <@${nextGame.red.spymaster}> (SM) vs <@${nextGame.red.guesser}> (G)\n\n`;
+                }
 
-            description += `**Scoreboard:**\n`;
-            const sortedScores = Array.from(tournament.scores.entries())
-              .sort((a, b) => b[1] - a[1])
-              .slice(0, 10);
-            sortedScores.forEach((entry, idx) => {
-              description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
-            });
-            
-            const embed = message.embeds[0];
-            const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
-            await message.edit({ embeds: [updatedEmbed] });
+                description += `**Scoreboard:**\n`;
+                const sortedScores = Array.from(tournament.scores.entries())
+                  .sort((a, b) => b[1] - a[1])
+                  .slice(0, 10);
+                sortedScores.forEach((entry, idx) => {
+                  description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+                });
+              }
+              
+              const embed = message.embeds[0];
+              const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
+              await message.edit({ embeds: [updatedEmbed] }).catch(err => {
+                console.error('Failed to edit message:', err.message);
+              });
+            }
           }
+        } catch (error) {
+          console.error('Failed to update scoreboard:', error.message);
         }
-      } catch (error) {
-        console.error('Failed to update scoreboard:', error.message);
-      }
       
-      await saveTournamentData();
+        await saveTournamentData();
 
       await interaction.reply(`Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}. Round completed.`);
       } catch (error) {
