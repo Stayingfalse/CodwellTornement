@@ -26,6 +26,7 @@ let tournament = {
   currentThread: null,
   setupMessage: null,
   rounds: [], // Array of rounds, each round contains multiple matches
+  started: false, // Track if tournament has started
 };
 
 const commands = [
@@ -62,6 +63,7 @@ async function loadTournamentData() {
     tournament.currentThread = parsed.currentThread;
     tournament.setupMessage = parsed.setupMessage;
     tournament.rounds = parsed.rounds || [];
+    tournament.started = parsed.started || false;
     console.log('Tournament data loaded from storage');
   } catch (error) {
     console.log('No previous tournament data found, starting fresh');
@@ -81,6 +83,7 @@ async function saveTournamentData() {
       currentThread: tournament.currentThread,
       setupMessage: tournament.setupMessage,
       rounds: tournament.rounds,
+      started: tournament.started,
     };
     await fs.writeFile(TOURNAMENT_FILE, JSON.stringify(data, null, 2));
   } catch (error) {
@@ -93,22 +96,69 @@ client.on('interactionCreate', async (interaction) => {
     const { commandName } = interaction;
 
     if (commandName === 'tournament') {
-      const embed = new EmbedBuilder()
-        .setTitle('Codenames Tournament')
-        .setDescription('Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet'))
-        .setColor(0x0099ff);
+      let embed;
+      let row;
 
-      const row = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder()
-            .setCustomId('signup')
-            .setLabel('Sign Up')
-            .setStyle(ButtonStyle.Primary),
-          new ButtonBuilder()
-            .setCustomId('admin')
-            .setLabel('Admin')
-            .setStyle(ButtonStyle.Secondary),
-        );
+      if (tournament.started) {
+        // Tournament is live - show current status and scores
+        let description = `**Tournament Live - Round ${tournament.currentRound}**\n`;
+        description += `Match ${tournament.currentRoundIndex}/${tournament.rounds[tournament.currentRound - 1]?.length || 0}\n\n`;
+        
+        if (tournament.currentGrouping) {
+          description += `**Current Match:**\n`;
+          description += `🔵 Blue: <@${tournament.currentGrouping.blue.spymaster}> (SM) vs <@${tournament.currentGrouping.blue.guesser}> (G)\n`;
+          description += `🔴 Red: <@${tournament.currentGrouping.red.spymaster}> (SM) vs <@${tournament.currentGrouping.red.guesser}> (G)\n\n`;
+        }
+
+        description += `**Scoreboard:**\n`;
+        const sortedScores = Array.from(tournament.scores.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 10);
+        sortedScores.forEach((entry, idx) => {
+          description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+        });
+
+        embed = new EmbedBuilder()
+          .setTitle('Codenames Tournament')
+          .setDescription(description)
+          .setColor(0x00ff00);
+
+        row = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId('admin')
+              .setLabel('Admin')
+              .setStyle(ButtonStyle.Secondary),
+          );
+      } else {
+        // Tournament not started - show sign-up
+        let description = 'Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n' + (tournament.players.size > 0 ? Array.from(tournament.players).map(id => `<@${id}>`).join('\n') : 'None yet');
+        
+        // Add prediction if 4+ players
+        if (tournament.players.size >= 4) {
+          const prediction = getTournamentPrediction(tournament.players.size);
+          if (prediction) {
+            description += `\n\n**Tournament Prediction:**\n${prediction.rounds} Rounds • ${prediction.totalGames} Total Games`;
+          }
+        }
+
+        embed = new EmbedBuilder()
+          .setTitle('Codenames Tournament')
+          .setDescription(description)
+          .setColor(0x0099ff);
+
+        row = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId('signup')
+              .setLabel('Sign Up')
+              .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+              .setCustomId('admin')
+              .setLabel('Admin')
+              .setStyle(ButtonStyle.Secondary),
+          );
+      }
 
       const response = await interaction.reply({ embeds: [embed], components: [row], withResponse: true });
       const message = response.resource.message;
@@ -119,6 +169,10 @@ client.on('interactionCreate', async (interaction) => {
     const { customId } = interaction;
 
     if (customId === 'signup') {
+      if (tournament.started) {
+        await interaction.reply({ content: 'Tournament has already started! Sign-ups are closed.', flags: MessageFlags.Ephemeral });
+        return;
+      }
       if (tournament.players.has(interaction.user.id)) {
         // User is already signed up, ask if they want to remove themselves
         const confirmRow = new ActionRowBuilder()
@@ -202,8 +256,36 @@ client.on('interactionCreate', async (interaction) => {
       }
       tournament.currentRound = 1;
       tournament.currentRoundIndex = 0;
+      tournament.started = true;
       tournament.scores = new Map([...tournament.players].map(id => [id, 0]));
       tournament.rounds = generateRounds(Array.from(tournament.players));
+      
+      // Update the setup message to show tournament live
+      try {
+        if (tournament.setupMessage) {
+          const channel = interaction.channel;
+          const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
+          if (message) {
+            let description = `**Tournament Live - Round ${tournament.currentRound}**\n`;
+            description += `Match ${tournament.currentRoundIndex}/${tournament.rounds[tournament.currentRound - 1]?.length || 0}\n\n`;
+            description += `**Scoreboard:**\n`;
+            const sortedScores = Array.from(tournament.scores.entries())
+              .sort((a, b) => b[1] - a[1]);
+            sortedScores.forEach((entry, idx) => {
+              description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+            });
+            
+            const embed = message.embeds[0];
+            const updatedEmbed = EmbedBuilder.from(embed)
+              .setDescription(description)
+              .setColor(0x00ff00);
+            await message.edit({ embeds: [updatedEmbed] });
+          }
+        }
+      } catch (error) {
+        console.error('Failed to update setup message:', error.message);
+      }
+      
       await saveTournamentData();
       await interaction.reply({ content: `Tournament started with ${tournament.players.size} players! Generated ${tournament.rounds.length} rounds.`, flags: MessageFlags.Ephemeral });
     } else if (customId === 'admin_allocate') {
@@ -287,11 +369,14 @@ client.on('interactionCreate', async (interaction) => {
       tournament = {
         players: new Set(),
         currentRound: 0,
+        currentRoundIndex: 0,
         playedGroupings: new Set(),
         scores: new Map(),
         currentGrouping: null,
         currentThread: null,
         setupMessage: null,
+        rounds: [],
+        started: false,
       };
       await saveTournamentData();
       await interaction.reply({ content: 'Tournament reset.', flags: MessageFlags.Ephemeral });
@@ -404,6 +489,40 @@ client.on('interactionCreate', async (interaction) => {
         console.error('Failed to archive thread:', error);
       }
       tournament.currentThread = null;
+      
+      // Update the main scoreboard embed
+      try {
+        if (tournament.setupMessage) {
+          const channel = interaction.channel;
+          const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
+          if (message) {
+            let description = `**Tournament Live - Round ${tournament.currentRound}**\n`;
+            const currentRound = tournament.rounds[tournament.currentRound - 1];
+            description += `Match ${tournament.currentRoundIndex}/${currentRound?.length || 0}\n\n`;
+            
+            if (tournament.currentGrouping) {
+              description += `**Current Match:**\n`;
+              description += `🔵 Blue: <@${tournament.currentGrouping.blue.spymaster}> (SM) vs <@${tournament.currentGrouping.blue.guesser}> (G)\n`;
+              description += `🔴 Red: <@${tournament.currentGrouping.red.spymaster}> (SM) vs <@${tournament.currentGrouping.red.guesser}> (G)\n\n`;
+            }
+
+            description += `**Scoreboard:**\n`;
+            const sortedScores = Array.from(tournament.scores.entries())
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 10);
+            sortedScores.forEach((entry, idx) => {
+              description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+            });
+            
+            const embed = message.embeds[0];
+            const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
+            await message.edit({ embeds: [updatedEmbed] });
+          }
+        }
+      } catch (error) {
+        console.error('Failed to update scoreboard:', error.message);
+      }
+      
       await saveTournamentData();
 
       await interaction.reply(`Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}. Round completed.`);
