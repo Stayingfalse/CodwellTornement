@@ -395,6 +395,8 @@ client.on('interactionCreate', async (interaction) => {
         .setCustomId('remaining_cards')
         .setLabel('Cards remaining? (0-8)')
         .setStyle(TextInputStyle.Short)
+        .setMinLength(1)
+        .setMaxLength(1)
         .setRequired(true)
         .setPlaceholder('e.g. 3');
 
@@ -402,6 +404,8 @@ client.on('interactionCreate', async (interaction) => {
         .setCustomId('assassin')
         .setLabel('Hit assassin? (yes/no)')
         .setStyle(TextInputStyle.Short)
+        .setMinLength(2)
+        .setMaxLength(3)
         .setRequired(true)
         .setPlaceholder('yes or no');
 
@@ -452,43 +456,53 @@ client.on('interactionCreate', async (interaction) => {
     const { customId } = interaction;
     if (customId.startsWith('outcome_modal_')) {
       const winner = customId.split('_')[2]; // blue or red
-      const remainingCards = parseInt(interaction.fields.getTextInputValue('remaining_cards'));
-      const assassin = interaction.fields.getTextInputValue('assassin').toLowerCase() === 'yes';
-
-      if (isNaN(remainingCards) || remainingCards < 0 || remainingCards > 8) {
-        await interaction.reply({ content: 'Invalid number of remaining cards. Must be 0-8.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-
-      // Calculate scores
-      const winPoints = 3;
-      let losePoints;
-      if (assassin) {
-        losePoints = -1;
-      } else {
-        losePoints = remainingCards <= 3 ? 1 : 0;
-      }
-
-      const bluePlayers = [tournament.currentGrouping.blue.spymaster, tournament.currentGrouping.blue.guesser];
-      const redPlayers = [tournament.currentGrouping.red.spymaster, tournament.currentGrouping.red.guesser];
-
-      if (winner === 'blue') {
-        bluePlayers.forEach(id => tournament.scores.set(id, tournament.scores.get(id) + winPoints));
-        redPlayers.forEach(id => tournament.scores.set(id, tournament.scores.get(id) + losePoints));
-      } else {
-        redPlayers.forEach(id => tournament.scores.set(id, tournament.scores.get(id) + winPoints));
-        bluePlayers.forEach(id => tournament.scores.set(id, tournament.scores.get(id) + losePoints));
-      }
-
-      tournament.currentRound++;
-      tournament.currentGrouping = null;
+      
       try {
-        const thread = interaction.guild.channels.cache.get(tournament.currentThread);
-        if (thread) await thread.setArchived(true);
-      } catch (error) {
-        console.error('Failed to archive thread:', error);
-      }
-      tournament.currentThread = null;
+        const remainingCardsValue = interaction.fields.getTextInputValue('remaining_cards');
+        const assassinValue = interaction.fields.getTextInputValue('assassin').toLowerCase();
+        
+        const remainingCards = parseInt(remainingCardsValue);
+        const assassin = assassinValue === 'yes' || assassinValue === 'y';
+
+        if (isNaN(remainingCards) || remainingCards < 0 || remainingCards > 8) {
+          await interaction.reply({ content: 'Invalid number of remaining cards. Must be 0-8.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        
+        if (assassinValue !== 'yes' && assassinValue !== 'y' && assassinValue !== 'no' && assassinValue !== 'n') {
+          await interaction.reply({ content: 'Invalid assassin answer. Please answer "yes" or "no".', flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        // Calculate scores
+        const winPoints = 3;
+        let losePoints;
+        if (assassin) {
+          losePoints = -1;
+        } else {
+          losePoints = remainingCards <= 3 ? 1 : 0;
+        }
+
+        const bluePlayers = [tournament.currentGrouping.blue.spymaster, tournament.currentGrouping.blue.guesser];
+        const redPlayers = [tournament.currentGrouping.red.spymaster, tournament.currentGrouping.red.guesser];
+
+        if (winner === 'blue') {
+          bluePlayers.forEach(id => tournament.scores.set(id, tournament.scores.get(id) + winPoints));
+          redPlayers.forEach(id => tournament.scores.set(id, tournament.scores.get(id) + losePoints));
+        } else {
+          redPlayers.forEach(id => tournament.scores.set(id, tournament.scores.get(id) + winPoints));
+          bluePlayers.forEach(id => tournament.scores.set(id, tournament.scores.get(id) + losePoints));
+        }
+
+        tournament.currentRound++;
+        tournament.currentGrouping = null;
+        try {
+          const thread = interaction.guild.channels.cache.get(tournament.currentThread);
+          if (thread) await thread.setArchived(true);
+        } catch (error) {
+          console.error('Failed to archive thread:', error);
+        }
+        tournament.currentThread = null;
       
       // Update the main scoreboard embed
       try {
@@ -526,6 +540,10 @@ client.on('interactionCreate', async (interaction) => {
       await saveTournamentData();
 
       await interaction.reply(`Outcome logged. ${winner === 'blue' ? 'Blue' : 'Red'} won with ${remainingCards} cards remaining${assassin ? ' by assassin' : ''}. Round completed.`);
+      } catch (error) {
+        console.error('Error processing outcome:', error);
+        await interaction.reply({ content: 'An error occurred while processing the outcome. Please try again.', flags: MessageFlags.Ephemeral });
+      }
     }
   }
 });
