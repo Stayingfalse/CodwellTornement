@@ -349,7 +349,7 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply({ content: result.message });
         return;
       }
-      await interaction.editReply({ embeds: result.embeds });
+      await interaction.editReply({ content: result.message });
     } else if (customId === 'admin_scores') {
       const scoreList = Array.from(tournament.scores.entries()).map(([id, score]) => `<@${id}>: ${score}`).join('\n');
       const embed = new EmbedBuilder()
@@ -377,20 +377,16 @@ client.on('interactionCreate', async (interaction) => {
       tournament.currentRoundIndex = 0;
       await saveTournamentData();
 
-      let allocEmbeds = [];
       let autoAllocated = false;
       if (tournament.currentRound <= tournament.rounds.length) {
         try {
           const allocResult = await allocateRound(interaction);
-          if (allocResult.success) { allocEmbeds = allocResult.embeds; autoAllocated = true; }
+          if (allocResult.success) { autoAllocated = true; }
         } catch (e) { console.error('Auto-allocate failed:', e.message); }
       }
 
       updateScoreboard(interaction.guild).catch(() => null);
       await interaction.editReply({ content: `Force ended ${skippedCount} active match(es) with 0 points.${autoAllocated ? ' Next round automatically allocated.' : ''}` });
-      if (allocEmbeds.length > 0) {
-        await interaction.followUp({ embeds: allocEmbeds }).catch(e => console.error('followUp failed:', e.message));
-      }
     } else if (customId === 'force_end_round') {
       await interaction.deferReply();
 
@@ -406,20 +402,16 @@ client.on('interactionCreate', async (interaction) => {
       tournament.currentRoundIndex = 0;
       await saveTournamentData();
 
-      let allocEmbeds2 = [];
       let autoAllocated2 = false;
       if (tournament.currentRound <= tournament.rounds.length) {
         try {
           const allocResult = await allocateRound(interaction);
-          if (allocResult.success) { allocEmbeds2 = allocResult.embeds; autoAllocated2 = true; }
+          if (allocResult.success) { autoAllocated2 = true; }
         } catch (e) { console.error('Auto-allocate failed:', e.message); }
       }
 
       updateScoreboard(interaction.guild).catch(() => null);
       await interaction.editReply({ content: `Round force ended. ${skippedCount2} match(es) skipped.${autoAllocated2 ? ' Next round automatically allocated.' : ''}` });
-      if (allocEmbeds2.length > 0) {
-        await interaction.followUp({ embeds: allocEmbeds2 }).catch(e => console.error('followUp failed:', e.message));
-      }
     } else if (customId === 'admin_reset') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       // Capture message/channel IDs before wiping them so we can update the embed after reset
@@ -618,7 +610,7 @@ client.on('interactionCreate', async (interaction) => {
             try {
               const allocResult = await allocateRound(interaction);
               if (allocResult.success) {
-                await interaction.followUp({ embeds: allocResult.embeds }).catch(e => console.error('followUp failed:', e.message));
+                await interaction.followUp({ content: allocResult.message }).catch(e => console.error('followUp failed:', e.message));
               }
             } catch (e) { console.error('Auto-allocation failed:', e.message); }
           }
@@ -712,21 +704,22 @@ async function allocateRound(interaction) {
 
   // Allocate all matches in this round simultaneously
   const channel = interaction.channel;
-  const embeds = [];
 
   for (let i = 0; i < currentRoundMatches.length; i++) {
     const grouping = currentRoundMatches[i];
     const matchNumber = i + 1;
 
     const embed = new EmbedBuilder()
-      .setTitle(`Round ${tournament.currentRound} \u2014 Match ${matchNumber}/${currentRoundMatches.length}`)
+      .setTitle(`Round ${tournament.currentRound} — Game ${matchNumber}`)
       .setDescription(
-        `**Blue Team:**\nSpymaster: <@${grouping.blue.spymaster}>\nGuesser: <@${grouping.blue.guesser}>\n\n` +
-        `**Red Team:**\nSpymaster: <@${grouping.red.spymaster}>\nGuesser: <@${grouping.red.guesser}>`
+        `<@${grouping.blue.spymaster}> - Spymaster, <@${grouping.blue.guesser}> - Guesser\n**vs**\n` +
+        `<@${grouping.red.spymaster}> - Spymaster, <@${grouping.red.guesser}> - Guesser`
       )
       .setColor(0x0099ff);
 
     try {
+      await channel.send({ embeds: [embed] });
+
       const thread = await channel.threads.create({
         name: `R${tournament.currentRound}M${matchNumber} Game`,
         autoArchiveDuration: 60,
@@ -752,8 +745,6 @@ async function allocateRound(interaction) {
     } catch (e) {
       console.error(`Failed to create thread for match ${matchNumber}:`, e.message);
     }
-
-    embeds.push(embed);
   }
 
   if (tournament.activeMatches.length === 0) {
@@ -761,7 +752,7 @@ async function allocateRound(interaction) {
   }
 
   await saveTournamentData();
-  return { success: true, embeds, message: `Round ${tournament.currentRound} allocated with ${tournament.activeMatches.length} match(es).` };
+  return { success: true, message: `Round ${tournament.currentRound} allocated with ${tournament.activeMatches.length} match(es).` };
 }
 
 
