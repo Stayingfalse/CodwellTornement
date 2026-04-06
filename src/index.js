@@ -330,21 +330,43 @@ client.on('interactionCreate', async (interaction) => {
       
       let autoAllocated = false;
       if (tournament.currentRoundIndex >= currentRoundMatches.length) {
+        console.log('=== ADMIN_FORCE_END ROUND ADVANCE ===');
+        console.log('All matches complete, advancing round');
+        console.log('- currentRound before:', tournament.currentRound);
+        console.log('- currentRoundIndex before:', tournament.currentRoundIndex);
+        
         // All matches in this round are complete, advance to next round
         tournament.currentRound++;
         tournament.currentRoundIndex = 0;
         
+        console.log('- currentRound after:', tournament.currentRound);
+        console.log('- currentRoundIndex after:', tournament.currentRoundIndex);
+        
+        // Save state before auto-allocation
+        await saveTournamentData();
+        console.log('State saved after advancing');
+        
         // Automatically allocate the next round if there are more rounds
         if (tournament.currentRound <= tournament.rounds.length) {
+          console.log('Attempting auto-allocation...');
+          console.log('VERIFY: currentRoundIndex right before allocateNextMatch:', tournament.currentRoundIndex);
           try {
             const allocResult = await allocateNextMatch(interaction);
+            console.log('allocateNextMatch result:', JSON.stringify(allocResult));
             if (allocResult.success && allocResult.embed) {
-              await interaction.followUp({ embeds: [allocResult.embed] });
+              try {
+                await interaction.followUp({ embeds: [allocResult.embed] });
+                console.log('Embed sent successfully');
+              } catch (followUpError) {
+                console.error('Failed to send followUp:', followUpError.message);
+              }
             }
-            autoAllocated = true;
+            autoAllocated = allocResult.success;
           } catch (allocError) {
             console.error('Failed to auto-allocate next round after force end match:', allocError);
           }
+        } else {
+          console.log('No auto-allocation: tournament complete');
         }
       }
       
@@ -438,21 +460,30 @@ client.on('interactionCreate', async (interaction) => {
       console.log('- new currentRoundIndex:', tournament.currentRoundIndex);
       console.log('- tournament.currentRound <= tournament.rounds.length:', tournament.currentRound <= tournament.rounds.length);
       
+      // Save state immediately after advancing
+      await saveTournamentData();
+      console.log('State saved after advancing round');
+      
       // Automatically allocate the next round if there are more rounds
       let autoAllocated = false;
       if (tournament.currentRound <= tournament.rounds.length) {
         console.log('Attempting auto-allocation...');
+        console.log('VERIFY: currentRoundIndex right before allocateNextMatch:', tournament.currentRoundIndex);
         try {
           const allocResult = await allocateNextMatch(interaction);
-          console.log('allocateNextMatch result:', allocResult);
+          console.log('allocateNextMatch result:', JSON.stringify(allocResult));
           if (allocResult.success && allocResult.embed) {
             console.log('Sending embed via followUp...');
-            await interaction.followUp({ embeds: [allocResult.embed] });
-            console.log('Embed sent successfully');
+            try {
+              await interaction.followUp({ embeds: [allocResult.embed] });
+              console.log('Embed sent successfully');
+            } catch (followUpError) {
+              console.error('Failed to send followUp:', followUpError.message);
+            }
           } else {
             console.log('Allocation failed or no embed:', allocResult.message);
           }
-          autoAllocated = true;
+          autoAllocated = allocResult.success;
         } catch (allocError) {
           console.error('Failed to auto-allocate next round after force end:', allocError);
         }
@@ -664,18 +695,27 @@ client.on('interactionCreate', async (interaction) => {
           console.log('- total rounds:', tournament.rounds.length);
           console.log('- should auto-allocate:', tournament.currentRound <= tournament.rounds.length);
           
+          // Save state before auto-allocation
+          await saveTournamentData();
+          console.log('State saved after advancing');
+          
           // Automatically allocate the next round if there are more rounds
           if (tournament.currentRound <= tournament.rounds.length) {
             console.log('Auto-allocating next round...');
+            console.log('VERIFY: currentRoundIndex right before allocateNextMatch:', tournament.currentRoundIndex);
             try {
               const allocResult = await allocateNextMatch(interaction);
-              console.log('Auto-allocation result:', allocResult);
+              console.log('Auto-allocation result:', JSON.stringify(allocResult));
               if (allocResult.success && allocResult.embed) {
                 console.log('Sending auto-allocation embed...');
-                await interaction.followUp({ embeds: [allocResult.embed] });
-                console.log('Auto-allocation embed sent');
+                try {
+                  await interaction.followUp({ embeds: [allocResult.embed] });
+                  console.log('Auto-allocation embed sent');
+                } catch (followUpError) {
+                  console.error('Failed to send followUp:', followUpError.message);
+                }
               }
-              autoAllocated = true;
+              autoAllocated = allocResult.success;
             } catch (allocError) {
               console.error('Failed to auto-allocate next round:', allocError);
             }
@@ -773,6 +813,14 @@ async function allocateNextMatch(interaction) {
   console.log('- rounds.length:', tournament.rounds.length);
   console.log('- currentRound:', tournament.currentRound);
   console.log('- currentRoundIndex:', tournament.currentRoundIndex);
+  console.log('- currentGrouping:', tournament.currentGrouping ? 'EXISTS' : 'NULL');
+  console.log('- currentThread:', tournament.currentThread);
+  
+  // Safety check: if there's already an active match, don't allocate another
+  if (tournament.currentGrouping) {
+    console.log('Allocation blocked: match already in progress');
+    return { success: false, message: 'A match is already in progress. Complete or force-end it first.' };
+  }
   
   if (tournament.players.size < 4) {
     console.log('Allocation failed: not enough players');
@@ -823,10 +871,12 @@ async function allocateNextMatch(interaction) {
   
   let currentRoundMatches = tournament.rounds[tournament.currentRound - 1];
   console.log('Current round matches:', currentRoundMatches ? currentRoundMatches.length : 'undefined');
+  console.log('Check: currentRoundIndex >= currentRoundMatches.length:', tournament.currentRoundIndex, '>=', currentRoundMatches?.length);
   
   // Check if all matches in current round have been allocated
-  if (tournament.currentRoundIndex >= currentRoundMatches.length) {
-    console.log('Allocation failed: all matches in round already allocated');
+  if (!currentRoundMatches || tournament.currentRoundIndex >= currentRoundMatches.length) {
+    console.log('Allocation failed: all matches in round already allocated or no matches');
+    console.log('This likely means allocateNextMatch was called twice, or currentRoundIndex was not reset properly');
     return { success: false, message: `All matches in Round ${tournament.currentRound} have been allocated. Wait for outcomes to complete, then allocate the next round.` };
   }
   
