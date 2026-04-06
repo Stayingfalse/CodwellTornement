@@ -528,28 +528,29 @@ client.on('interactionCreate', async (interaction) => {
                   const matchesCompleted = tournament.currentRoundIndex;
                   const totalMatches = currentRound?.length || 0;
                   description += `Match ${matchesCompleted}/${totalMatches}\n\n`;
-                
-                if (matchesCompleted < totalMatches) {
-                  description += `**Round in progress**\n`;
-                } else {
-                  description += `**Round Complete!** Click Allocate to start Round ${tournament.currentRound + 1}\n`;
-                }
-                description += '\n';
+                  
+                  if (matchesCompleted < totalMatches) {
+                    description += `**Round in progress**\n`;
+                  } else {
+                    description += `**Round Complete!** Click Allocate to start Round ${tournament.currentRound + 1}\n`;
+                  }
+                  description += '\n';
 
-                description += `**Scoreboard:**\n`;
-                const sortedScores = Array.from(tournament.scores.entries())
-                  .sort((a, b) => b[1] - a[1])
-                  .slice(0, 10);
-                sortedScores.forEach((entry, idx) => {
-                  description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+                  description += `**Scoreboard:**\n`;
+                  const sortedScores = Array.from(tournament.scores.entries())
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 10);
+                  sortedScores.forEach((entry, idx) => {
+                    description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`;
+                  });
+                }
+                
+                const embed = message.embeds[0];
+                const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
+                await message.edit({ embeds: [updatedEmbed] }).catch(err => {
+                  console.error('Failed to edit message:', err.message);
                 });
               }
-              
-              const embed = message.embeds[0];
-              const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
-              await message.edit({ embeds: [updatedEmbed] }).catch(err => {
-                console.error('Failed to edit message:', err.message);
-              });
             }
           }
         } catch (error) {
