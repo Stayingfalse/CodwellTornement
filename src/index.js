@@ -443,7 +443,7 @@ client.on('interactionCreate', async (interaction) => {
       updateScoreboard(interaction.guild).catch(() => null);
       await interaction.editReply({ content: `Force ended ${skippedCount} active match(es) with 0 points. Next round allocating...` });
     } else if (customId === 'force_end_round') {
-      await interaction.deferReply();
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       for (const match of tournament.activeMatches) {
         try {
@@ -736,11 +736,15 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
         await saveTournamentData();
         updateSignupMessage(interaction.channel); // fire-and-forget
+      } else {
+        await interaction.reply({ content: 'You cannot confirm removal for another user.', flags: MessageFlags.Ephemeral });
       }
     } else if (customId.startsWith('cancel_remove_')) {
       const userId = customId.split('_')[2];
       if (interaction.user.id === userId) {
         await interaction.reply({ content: 'Cancelled. You remain signed up.', flags: MessageFlags.Ephemeral });
+      } else {
+        await interaction.reply({ content: 'This button is not for you.', flags: MessageFlags.Ephemeral });
       }
     }
   } else if (interaction.isModalSubmit()) {
