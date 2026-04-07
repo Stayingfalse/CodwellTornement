@@ -168,6 +168,19 @@ client.on('interactionCreate', async (interaction) => {
     const { commandName } = interaction;
 
     if (commandName === 'tournament') {
+      // Delete the old setup message if one exists
+      if (tournament.setupMessage && tournament.setupChannelId) {
+        try {
+          const oldChannel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+          if (oldChannel) {
+            const oldMessage = await oldChannel.messages.fetch(tournament.setupMessage).catch(() => null);
+            if (oldMessage) await oldMessage.delete().catch(() => null);
+          }
+        } catch (err) {
+          console.warn('[tournament] Could not delete old setup message:', err.message);
+        }
+      }
+
       let embed;
       let row;
 
