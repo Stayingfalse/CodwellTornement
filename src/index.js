@@ -729,10 +729,10 @@ client.on('interactionCreate', async (interaction) => {
         new ButtonBuilder().setCustomId('log_red_win').setLabel('Red Wins').setStyle(ButtonStyle.Danger),
       );
       await interaction.reply({ content: '⚠️ Previous result reversed. Please re-submit the correct outcome:', components: [relogRow] });
+    } else if (customId.startsWith('confirm_remove_')) {
       const userId = customId.split('_')[2];
       if (interaction.user.id === userId) {
         tournament.players.delete(userId);
-        // Reply immediately to avoid interaction timeout, then update message in background
         await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
         await saveTournamentData();
         updateSignupMessage(interaction.channel); // fire-and-forget
