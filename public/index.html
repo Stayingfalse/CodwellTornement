@@ -417,8 +417,8 @@
     .empty h2 { font-size: 1.05rem; color: var(--text-dim); margin-bottom: 0.35rem; }
     .empty p { font-size: 0.82rem; }
 
-    /* ── Refresh widget ── */
-    #refresh-widget {
+    /* ── Refresh button ── */
+    #refresh-btn {
       position: fixed;
       bottom: 1.25rem;
       right: 1.25rem;
@@ -428,16 +428,20 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 9999px;
-      padding: 0.35rem 0.85rem;
-      font-size: 0.72rem;
+      padding: 0.35rem 0.9rem;
+      font-size: 0.75rem;
+      font-weight: 600;
       color: var(--text-dim);
       z-index: 200;
       box-shadow: var(--shadow);
-      transition: border-color 0.2s, color 0.2s;
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s, background 0.2s;
       animation: fadeUp 0.4s ease;
+      user-select: none;
     }
 
-    #refresh-widget.fetching { border-color: rgba(59,130,246,0.4); color: #93c5fd; }
+    #refresh-btn:hover:not(.fetching) { border-color: var(--border-hi); color: var(--text); background: var(--surface2); }
+    #refresh-btn.fetching { border-color: rgba(59,130,246,0.4); color: #93c5fd; cursor: default; }
 
     .spinner {
       width: 10px; height: 10px;
@@ -448,7 +452,8 @@
       display: none;
     }
 
-    #refresh-widget.fetching .spinner { display: block; }
+    #refresh-btn.fetching .spinner { display: block; }
+    #refresh-btn.fetching .refresh-icon { display: none; }
 
     /* ── Keyframes ── */
     @keyframes fadeUp {
@@ -514,16 +519,15 @@
   </main>
 </div>
 
-<div id="refresh-widget">
+<button id="refresh-btn" onclick="fetchData()" aria-label="Refresh data">
   <div class="spinner"></div>
-  <span id="refresh-label">Refreshing in 15s</span>
-</div>
+  <span class="refresh-icon">↻</span>
+  <span id="refresh-label">Refresh</span>
+</button>
 
 <script>
   // ── State ──────────────────────────────────────────────────────────────────
   let D = null; // tournament data
-  let countdown = 15;
-  let countdownTimer = null;
   // Track which rounds are manually toggled (roundIdx -> bool)
   const manualToggles = {};
 
@@ -817,9 +821,10 @@
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
   async function fetchData() {
-    const widget  = document.getElementById('refresh-widget');
-    const lbl     = document.getElementById('refresh-label');
-    widget.classList.add('fetching');
+    const btn = document.getElementById('refresh-btn');
+    const lbl = document.getElementById('refresh-label');
+    if (btn.classList.contains('fetching')) return; // prevent double-click
+    btn.classList.add('fetching');
     lbl.textContent = 'Refreshing…';
 
     try {
@@ -829,28 +834,12 @@
       renderMeta();
       renderScoreboard();
       renderRounds();
+      lbl.textContent = 'Refresh';
     } catch {
-      lbl.textContent = 'Error — retrying';
+      lbl.textContent = 'Error — try again';
     } finally {
-      widget.classList.remove('fetching');
-      startCountdown();
+      btn.classList.remove('fetching');
     }
-  }
-
-  function startCountdown() {
-    if (countdownTimer) clearInterval(countdownTimer);
-    countdown = 15;
-    const lbl = document.getElementById('refresh-label');
-    lbl.textContent = `Refreshing in ${countdown}s`;
-    countdownTimer = setInterval(() => {
-      countdown--;
-      if (countdown <= 0) {
-        clearInterval(countdownTimer);
-        fetchData();
-      } else {
-        lbl.textContent = `Refreshing in ${countdown}s`;
-      }
-    }, 1000);
   }
 
   fetchData();
