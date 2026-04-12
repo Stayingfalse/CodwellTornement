@@ -769,9 +769,6 @@
           </div>`;
       }).join('');
 
-      // max-height: calculate roughly for expanded state
-      const approxHeight = roundMatches.length * 180 + 20;
-
       return `
         <div class="round-block" style="animation-delay:${(roundIdx * 0.05).toFixed(2)}s">
           <div class="round-header ${headerClass}" onclick="toggleRound(${roundIdx})">
@@ -785,7 +782,7 @@
           </div>
           <div class="round-matches ${isOpen ? 'expanded' : 'collapsed'}"
                id="rm-${roundIdx}"
-               style="${isOpen ? `max-height:${approxHeight}px` : 'max-height:0'}">
+               style="${isOpen ? 'max-height:none' : 'max-height:0'}">
             ${matchesHtml}
           </div>
         </div>`;
@@ -813,9 +810,13 @@
     } else {
       matchesEl.classList.remove('collapsed');
       matchesEl.classList.add('expanded');
+      // animate open via scrollHeight, then release to none so content never clips
       const h = matchesEl.scrollHeight;
       matchesEl.style.maxHeight = h + 'px';
       chevron && chevron.classList.add('open');
+      matchesEl.addEventListener('transitionend', () => {
+        if (matchesEl.classList.contains('expanded')) matchesEl.style.maxHeight = 'none';
+      }, { once: true });
     }
   }
 
