@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const http = require('http');
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, PermissionsBitField } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -49,7 +49,24 @@ const commands = [
 
 client.once('clientReady', async () => {
   console.log('Bot is ready!');
-  
+
+  // Print a permissions URL so you can verify the bot has everything it needs
+  const requiredPermissions = new PermissionsBitField([
+    PermissionsBitField.Flags.ViewChannel,           // see the tournament channel
+    PermissionsBitField.Flags.SendMessages,           // post match embeds + round headers
+    PermissionsBitField.Flags.SendMessagesInThreads,  // post inside game threads
+    PermissionsBitField.Flags.EmbedLinks,             // send rich embeds
+    PermissionsBitField.Flags.ReadMessageHistory,     // fetch messages to delete between rounds
+    PermissionsBitField.Flags.ManageMessages,         // delete old round messages
+    PermissionsBitField.Flags.CreatePublicThreads,    // create game threads
+    PermissionsBitField.Flags.ManageThreads,          // archive threads after a match
+    PermissionsBitField.Flags.UseApplicationCommands, // slash command support
+  ]);
+  const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=${requiredPermissions.bitfield}&scope=bot+applications.commands`;
+  console.log('\n=== BOT PERMISSIONS URL ===');
+  console.log(inviteUrl);
+  console.log('===========================\n');
+
   // Load tournament data on startup
   await loadTournamentData();
 
