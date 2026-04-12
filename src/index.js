@@ -22,13 +22,18 @@ let tournament = {
   currentRoundIndex: 0, // Index of current match within the round
   playedGroupings: new Set(),
   scores: new Map(),
-  activeMatches: [], // [{grouping, threadId, matchNumber}]
-  roundResults: [], // [{matchNumber, grouping, winner, assassin, remainingCards, winPoints, losePoints}]
+  activeMatches: [], // [{grouping, threadId, matchNumber, gamePhase, game1Result, matchCreatedAt}]
+  roundResults: [], // [{matchNumber, gameIndex, grouping, winner, assassin, remainingCards, winPoints, losePoints}]
   setupMessage: null,
   setupChannelId: null, // Channel where setup message was posted
   rounds: [], // Array of rounds, each round contains multiple matches
   started: false, // Track if tournament has started
   roundDeadline: null, // Unix ms timestamp when current round expires
+  // Rich history — never cleared, accumulates all game results for export
+  history: [], // [{roundNumber, matchNumber, game, grouping, winner, assassin, remainingCards, winPoints, losePoints, matchCreatedAt, submittedAt, submittedBy}]
+  playerNames: {}, // {userId: displayName} snapshot taken at tournament start
+  tournamentStartedAt: null, // ISO timestamp when tournament was started
+  roundStartedAt: null, // ISO timestamp when current round was allocated
 };
 
 // Round timer handles (in-memory only)
@@ -94,6 +99,10 @@ async function loadTournamentData() {
     tournament.setupChannelId = parsed.setupChannelId;
     tournament.rounds = parsed.rounds || [];
     tournament.started = parsed.started || false;
+    tournament.history = parsed.history || [];
+    tournament.playerNames = parsed.playerNames || {};
+    tournament.tournamentStartedAt = parsed.tournamentStartedAt || null;
+    tournament.roundStartedAt = parsed.roundStartedAt || null;
     console.log('Tournament data loaded from storage');
   } catch (error) {
     console.log('No previous tournament data found, starting fresh');
@@ -116,6 +125,10 @@ async function saveTournamentData() {
       setupChannelId: tournament.setupChannelId,
       rounds: tournament.rounds,
       started: tournament.started,
+      history: tournament.history,
+      playerNames: tournament.playerNames,
+      tournamentStartedAt: tournament.tournamentStartedAt,
+      roundStartedAt: tournament.roundStartedAt,
     };
     await fs.writeFile(TOURNAMENT_FILE, JSON.stringify(data, null, 2));
   } catch (error) {
@@ -344,8 +357,22 @@ client.on('interactionCreate', async (interaction) => {
       tournament.currentRound = 1;
       tournament.currentRoundIndex = 0;
       tournament.started = true;
+      tournament.tournamentStartedAt = new Date().toISOString();
       tournament.scores = new Map([...tournament.players].map(id => [id, 0]));
       tournament.rounds = generateRounds(Array.from(tournament.players));
+
+      // Snapshot display names for all players
+      tournament.playerNames = {};
+      for (const id of tournament.players) {
+        if (id.startsWith('debug_')) {
+          tournament.playerNames[id] = id;
+        } else {
+          try {
+            const member = await interaction.guild.members.fetch(id).catch(() => null);
+            tournament.playerNames[id] = member ? member.displayName : id;
+          } catch { tournament.playerNames[id] = id; }
+        }
+      }
       
       // Update the setup message to show tournament live
       try {
@@ -487,6 +514,10 @@ client.on('interactionCreate', async (interaction) => {
         setupChannelId: prevSetupChannelId,
         rounds: [],
         started: false,
+        history: [],
+        playerNames: {},
+        tournamentStartedAt: null,
+        roundStartedAt: null,
       };
       await saveTournamentData();
 
@@ -998,7 +1029,7 @@ async function allocateRound(interaction) {
         );
 
       await thread.send({ embeds: [threadEmbed], components: [row] });
-      tournament.activeMatches.push({ grouping, threadId: thread.id, matchNumber, gamePhase: 1, game1Result: null });
+      tournament.activeMatches.push({ grouping, threadId: thread.id, matchNumber, gamePhase: 1, game1Result: null, matchCreatedAt: new Date().toISOString() });
     } catch (e) {
       console.error(`Failed to create thread for match ${matchNumber}:`, e.message);
     }
@@ -1011,6 +1042,7 @@ async function allocateRound(interaction) {
   // Set round deadline and schedule warning + expiry timers
   const timeoutDays = parseFloat(process.env.ROUND_TIMEOUT_DAYS) || 14;
   tournament.roundDeadline = Date.now() + timeoutDays * 24 * 60 * 60 * 1000;
+  tournament.roundStartedAt = new Date().toISOString();
   await saveTournamentData();
   scheduleRoundTimers(interaction.guild);
   return { success: true, message: `Round ${tournament.currentRound} allocated with ${tournament.activeMatches.length} match(es).` };
@@ -1263,6 +1295,8 @@ function checkAndMarkConfigs(assignment, playedConfigs) {
 }
 
 async function processGameResult(interaction, matchData, winner, assassin, remainingCards) {
+  const submittedBy = interaction.user.id;
+  const submittedAt = new Date().toISOString();
   const gamePhase = matchData.gamePhase ?? 1;
   const currentGrouping = gamePhase === 2 ? getSwappedGrouping(matchData.grouping) : matchData.grouping;
 
@@ -1284,7 +1318,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
   const howStr = assassin ? 'assassin hit' : `${remainingCards} card${remainingCards !== 1 ? 's' : ''} remaining`;
 
   if (gamePhase === 1) {
-    matchData.game1Result = { winner, assassin, remainingCards, winPoints, losePoints };
+    matchData.game1Result = { winner, assassin, remainingCards, winPoints, losePoints, submittedAt, submittedBy };
     matchData.gamePhase = 2;
     await saveTournamentData();
     updateScoreboard(interaction.guild).catch(() => null);
@@ -1310,15 +1344,16 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
     await interaction.channel.send({ embeds: [game2Embed], components: [game2Row] });
   } else {
     // Game 2 complete — push both results and clean up
+    const g1 = matchData.game1Result;
     tournament.roundResults.push({
       matchNumber: matchData.matchNumber,
       gameIndex: 1,
       grouping: matchData.grouping,
-      winner: matchData.game1Result.winner,
-      assassin: matchData.game1Result.assassin,
-      remainingCards: matchData.game1Result.remainingCards,
-      winPoints: matchData.game1Result.winPoints,
-      losePoints: matchData.game1Result.losePoints,
+      winner: g1.winner,
+      assassin: g1.assassin,
+      remainingCards: g1.remainingCards,
+      winPoints: g1.winPoints,
+      losePoints: g1.losePoints,
     });
     tournament.roundResults.push({
       matchNumber: matchData.matchNumber,
@@ -1329,6 +1364,36 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
       remainingCards,
       winPoints,
       losePoints,
+    });
+
+    // Push both games to the permanent history
+    tournament.history.push({
+      roundNumber: tournament.currentRound,
+      matchNumber: matchData.matchNumber,
+      game: 1,
+      grouping: matchData.grouping,
+      winner: g1.winner,
+      assassin: g1.assassin,
+      remainingCards: g1.remainingCards,
+      winPoints: g1.winPoints,
+      losePoints: g1.losePoints,
+      matchCreatedAt: matchData.matchCreatedAt || null,
+      submittedAt: g1.submittedAt || null,
+      submittedBy: g1.submittedBy || null,
+    });
+    tournament.history.push({
+      roundNumber: tournament.currentRound,
+      matchNumber: matchData.matchNumber,
+      game: 2,
+      grouping: currentGrouping,
+      winner,
+      assassin,
+      remainingCards,
+      winPoints,
+      losePoints,
+      matchCreatedAt: matchData.matchCreatedAt || null,
+      submittedAt,
+      submittedBy,
     });
 
     tournament.activeMatches = tournament.activeMatches.filter(m => m.threadId !== interaction.channelId);
