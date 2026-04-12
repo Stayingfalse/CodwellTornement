@@ -70,6 +70,24 @@ client.once('clientReady', async () => {
           console.log('[startup] Scoreboard rebuilt');
           // Re-schedule round timers after restart
           if (tournament.roundDeadline) scheduleRoundTimers(guild);
+
+          // Recovery: if the current round has no active matches and isn't complete,
+          // the threads were never created (e.g. permission error or crash during allocateRound).
+          // Re-run allocateRound automatically so no manual intervention is needed.
+          const roundNotFinished = tournament.currentRound <= tournament.rounds.length;
+          if (roundNotFinished && tournament.activeMatches.length === 0) {
+            console.log(`[startup] Round ${tournament.currentRound} has no active matches — re-allocating threads...`);
+            try {
+              const result = await allocateRound(guild);
+              if (result.success) {
+                console.log(`[startup] Recovery allocation succeeded: ${result.message}`);
+              } else {
+                console.warn(`[startup] Recovery allocation failed: ${result.message}`);
+              }
+            } catch (e) {
+              console.error('[startup] Recovery allocation threw:', e.message);
+            }
+          }
         } else {
           await updateSignupMessage(channel);
           console.log('[startup] Signup message rebuilt');
@@ -406,7 +424,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.editReply({ content: `Tournament started with ${tournament.players.size} players! Generated ${tournament.rounds.length} rounds.` });
     } else if (customId === 'admin_allocate') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const result = await allocateRound(interaction);
+      const result = await allocateRound(interaction.guild);
       if (!result.success) {
         await interaction.editReply({ content: result.message });
         return;
@@ -465,7 +483,7 @@ client.on('interactionCreate', async (interaction) => {
 
       let autoAllocated = false;
       if (tournament.currentRound <= tournament.rounds.length) {
-        allocateRound(interaction).catch(e => console.error('Auto-allocate failed:', e.message));
+        allocateRound(interaction.guild).catch(e => console.error('Auto-allocate failed:', e.message));
       }
 
       updateScoreboard(interaction.guild).catch(() => null);
@@ -488,7 +506,7 @@ client.on('interactionCreate', async (interaction) => {
 
       let autoAllocated2 = false;
       if (tournament.currentRound <= tournament.rounds.length) {
-        allocateRound(interaction).catch(e => console.error('Auto-allocate failed:', e.message));
+        allocateRound(interaction.guild).catch(e => console.error('Auto-allocate failed:', e.message));
         autoAllocated2 = true;
       }
 
@@ -683,7 +701,7 @@ client.on('interactionCreate', async (interaction) => {
       await saveTournamentData();
       updateScoreboard(interaction.guild).catch(() => null);
       if (tournament.currentRound <= tournament.rounds.length) {
-        allocateRound(interaction).catch(e => console.error('Auto-allocate after timeout failed:', e.message));
+        allocateRound(interaction.guild).catch(e => console.error('Auto-allocate after timeout failed:', e.message));
       }
       await interaction.editReply({ content: `Timeout force end: ${skippedT} match(es) skipped. Advancing...` });
     } else if (customId.startsWith('correct_result_')) {
@@ -918,7 +936,7 @@ async function updateScoreboard(guild) {
   }
 }
 
-async function allocateRound(interaction) {
+async function allocateRound(guild) {
   if (!tournament.started || tournament.rounds.length === 0) {
     return { success: false, message: 'Tournament has not been started. Use the Start button first.' };
   }
@@ -934,8 +952,8 @@ async function allocateRound(interaction) {
     return { success: false, message: `Round ${tournament.currentRound} has no matches.` };
   }
 
-  // Always use the main tournament channel, not interaction.channel (which may be a thread)
-  const mainChannel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+  // Always use the main tournament channel, not any thread channel
+  const mainChannel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
   if (!mainChannel) return { success: false, message: 'Could not find the tournament channel.' };
 
   // Clean up channel and post round summary when starting a subsequent round
@@ -1045,7 +1063,7 @@ async function allocateRound(interaction) {
   tournament.roundDeadline = Date.now() + timeoutDays * 24 * 60 * 60 * 1000;
   tournament.roundStartedAt = new Date().toISOString();
   await saveTournamentData();
-  scheduleRoundTimers(interaction.guild);
+  scheduleRoundTimers(guild);
   return { success: true, message: `Round ${tournament.currentRound} allocated with ${tournament.activeMatches.length} match(es).` };
 }
 
@@ -1424,7 +1442,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
       tournament.currentRoundIndex = 0;
       await saveTournamentData();
       if (tournament.currentRound <= tournament.rounds.length) {
-        allocateRound(interaction).catch(e => console.error('Auto-allocation failed:', e.message));
+        allocateRound(interaction.guild).catch(e => console.error('Auto-allocation failed:', e.message));
       }
     }
   }
