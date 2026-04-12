@@ -440,6 +440,116 @@
       user-select: none;
     }
 
+    /* ── How it Works button ── */
+    #how-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.28rem 0.75rem;
+      border-radius: 9999px;
+      border: 1px solid var(--border);
+      background: var(--surface2);
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    #how-btn:hover { border-color: var(--border-hi); color: var(--text); background: var(--surface3); }
+
+    /* ── Modal overlay ── */
+    #how-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 500;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      background: rgba(5,5,18,0.75);
+      backdrop-filter: blur(6px);
+    }
+    #how-modal.open { display: flex; animation: fadeIn 0.2s ease; }
+
+    @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
+
+    .modal-box {
+      background: var(--surface);
+      border: 1px solid var(--border-hi);
+      border-radius: var(--radius);
+      box-shadow: 0 24px 64px rgba(0,0,0,0.7);
+      max-width: 640px;
+      width: 100%;
+      max-height: 90vh;
+      overflow-y: auto;
+      animation: slideUp 0.25s cubic-bezier(0.4,0,0.2,1);
+    }
+
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(22px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.1rem 1.4rem;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--surface);
+      z-index: 1;
+    }
+
+    .modal-head h2 { font-size: 1rem; font-weight: 800; }
+
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--text-faint);
+      font-size: 1.2rem;
+      cursor: pointer;
+      line-height: 1;
+      padding: 0.1rem 0.3rem;
+      border-radius: 4px;
+      transition: color 0.15s;
+    }
+    .modal-close:hover { color: var(--text); }
+
+    .modal-body {
+      padding: 1.3rem 1.4rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.4rem;
+    }
+
+    .modal-section h3 {
+      font-size: 0.78rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--purple);
+      margin-bottom: 0.6rem;
+    }
+
+    .modal-section p, .modal-section li {
+      font-size: 0.82rem;
+      color: var(--text-dim);
+      line-height: 1.65;
+    }
+
+    .modal-section ul { padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.3rem; }
+
+    .modal-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      margin-top: 0.55rem;
+    }
+
+    .modal-divider { border: none; border-top: 1px solid var(--border); }
+
     #refresh-btn:hover:not(.fetching) { border-color: var(--border-hi); color: var(--text); background: var(--surface2); }
     #refresh-btn.fetching { border-color: rgba(59,130,246,0.4); color: #93c5fd; cursor: default; }
 
@@ -498,9 +608,74 @@
       <div class="brand-title">🕵️ Codenames Tournament</div>
       <div class="brand-sub" id="started-sub">Loading…</div>
     </div>
-    <div class="header-badges" id="header-badges"></div>
+    <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+      <div class="header-badges" id="header-badges"></div>
+      <button id="how-btn" onclick="document.getElementById('how-modal').classList.add('open')">❓ How it works</button>
+    </div>
   </div>
 </header>
+
+<!-- How it Works modal -->
+<div id="how-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2 id="modal-title">🕵️ How the Tournament Works</h2>
+      <button class="modal-close" onclick="closeModal()" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="modal-section">
+        <h3>Overview</h3>
+        <p>This is a round-robin Codenames tournament. Every player is paired with every other player across multiple rounds, so everyone gets to work with different teammates and face different opponents.</p>
+      </div>
+
+      <hr class="modal-divider">
+
+      <div class="modal-section">
+        <h3>Match Format — Two Games Per Match</h3>
+        <p>Each match-up consists of <strong>two games</strong>. After Game 1 the roles are swapped — spymasters become guessers and vice versa — so each player tries both roles against the same opponents.</p>
+        <ul>
+          <li><strong>Game 1</strong> — Blue Spymaster A &amp; Blue Guesser B vs Red Spymaster C &amp; Red Guesser D</li>
+          <li><strong>Game 2</strong> — Roles swapped: Blue Spymaster B &amp; Blue Guesser A vs Red Spymaster D &amp; Red Guesser C</li>
+        </ul>
+      </div>
+
+      <hr class="modal-divider">
+
+      <div class="modal-section">
+        <h3>Scoring</h3>
+        <p>Points are awarded per game based on how convincingly the winning team won:</p>
+        <ul>
+          <li><strong>Assassin word hit</strong> — The guessing team accidentally picks the assassin, immediately losing. The winning team earns a large bonus.</li>
+          <li><strong>Cards remaining</strong> — A standard win where the winning team clears their cards first. More cards left on the board for the opposing team = more points for the winners.</li>
+          <li>The losing team may also receive a small consolation score depending on how close the game was.</li>
+        </ul>
+      </div>
+
+      <hr class="modal-divider">
+
+      <div class="modal-section">
+        <h3>Rounds</h3>
+        <p>Matches within a round all run simultaneously in their own Discord threads. A round ends once every match has both games completed (or is skipped by an admin). The next round is then allocated automatically.</p>
+      </div>
+
+      <hr class="modal-divider">
+
+      <div class="modal-section">
+        <h3>Status Guide</h3>
+        <div class="modal-chips">
+          <span class="result-chip chip-pending">⏳ Upcoming</span>
+          <span class="result-chip chip-waiting">⏳ After Game 1</span>
+          <span class="result-chip chip-active">⚡ In Progress</span>
+          <span class="result-chip chip-blue-win">🔵 Blue Won</span>
+          <span class="result-chip chip-red-win">🔴 Red Won</span>
+          <span class="result-chip chip-skipped">⏭ Skipped</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
 
 <div class="layout">
   <aside class="sidebar">
@@ -526,6 +701,12 @@
 </button>
 
 <script>
+  // ── Modal ──────────────────────────────────────────────────────────────────
+  function closeModal() {
+    document.getElementById('how-modal').classList.remove('open');
+  }
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
   // ── State ──────────────────────────────────────────────────────────────────
   let D = null; // tournament data
   // Track which rounds are manually toggled (roundIdx -> bool)
