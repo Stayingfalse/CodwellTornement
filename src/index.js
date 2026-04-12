@@ -556,89 +556,65 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      const winner = customId === 'log_blue_win' ? 'blue' : 'red';
+      const isGame2 = customId.endsWith('_g2');
+      const expectedPhase = isGame2 ? 2 : 1;
+      const currentPhase = matchData.gamePhase ?? 1;
+      if (currentPhase !== expectedPhase) {
+        await interaction.reply({ content: `These buttons are for Game ${expectedPhase}, but this match is currently on Game ${currentPhase}.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const winner = (customId === 'log_blue_win' || customId === 'log_blue_win_g2') ? 'blue' : 'red';
 
       // Show buttons for assassin question instead of modal
       const assassinRow = new ActionRowBuilder()
         .addComponents(
           new ButtonBuilder()
-            .setCustomId(`assassin_yes_${winner}`)
+            .setCustomId(`assassin_yes_${winner}_${expectedPhase}`)
             .setLabel('Yes, Assassin Hit')
             .setStyle(ButtonStyle.Danger),
           new ButtonBuilder()
-            .setCustomId(`assassin_no_${winner}`)
+            .setCustomId(`assassin_no_${winner}_${expectedPhase}`)
             .setLabel('No, Not Assassin')
             .setStyle(ButtonStyle.Primary),
         );
 
-      await interaction.reply({ content: 'Was the winning move an assassin hit?', components: [assassinRow], flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: `Game ${expectedPhase}: Was the winning move an assassin hit?`, components: [assassinRow], flags: MessageFlags.Ephemeral });
     } else if (customId.startsWith('assassin_')) {
       const parts = customId.split('_');
       const wasAssassin = parts[1] === 'yes';
       const winner = parts[2];
+      const expectedPhase = parts[3] ? parseInt(parts[3]) : 1;
 
-      // Only players in this game or admins may answer
       const matchData2 = tournament.activeMatches.find(m => m.threadId === interaction.channelId);
-      if (matchData2) {
-        const adminRoleId = process.env.ADMIN_ROLE_ID;
-        const isAdmin2 = interaction.member.roles.cache.has(adminRoleId);
-        const g2 = matchData2.grouping;
-        const matchPlayers2 = [g2.blue.spymaster, g2.blue.guesser, g2.red.spymaster, g2.red.guesser];
-        if (!isAdmin2 && !matchPlayers2.includes(interaction.user.id)) {
-          await interaction.reply({ content: 'You are not a player in this game.', flags: MessageFlags.Ephemeral });
-          return;
-        }
+      if (!matchData2) {
+        await interaction.reply({ content: 'Could not find an active match for this thread.', flags: MessageFlags.Ephemeral });
+        return;
       }
 
-      // If assassin hit, no need to ask for cards remaining — process immediately
+      const adminRoleId = process.env.ADMIN_ROLE_ID;
+      const isAdmin2 = interaction.member.roles.cache.has(adminRoleId);
+      const g2 = matchData2.grouping;
+      const matchPlayers2 = [g2.blue.spymaster, g2.blue.guesser, g2.red.spymaster, g2.red.guesser];
+      if (!isAdmin2 && !matchPlayers2.includes(interaction.user.id)) {
+        await interaction.reply({ content: 'You are not a player in this game.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if ((matchData2.gamePhase ?? 1) !== expectedPhase) {
+        await interaction.reply({ content: `Cannot submit — this match is on Game ${matchData2.gamePhase ?? 1}, not Game ${expectedPhase}.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
       if (wasAssassin) {
-        const matchDataA = tournament.activeMatches.find(m => m.threadId === interaction.channelId);
-        if (!matchDataA) {
-          await interaction.reply({ content: 'Could not find an active match for this thread.', flags: MessageFlags.Ephemeral });
-          return;
-        }
-        const gA = matchDataA.grouping;
-        const winPoints = 3;
-        const losePoints = -1;
-        const bluePlayers = [gA.blue.spymaster, gA.blue.guesser];
-        const redPlayers  = [gA.red.spymaster,  gA.red.guesser];
-        if (winner === 'blue') {
-          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + winPoints));
-          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) + losePoints));
-        } else {
-          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) + winPoints));
-          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + losePoints));
-        }
-        tournament.activeMatches = tournament.activeMatches.filter(m => m.threadId !== interaction.channelId);
-        tournament.currentRoundIndex++;
-        tournament.roundResults.push({ matchNumber: matchDataA.matchNumber, grouping: gA, winner, assassin: true, remainingCards: 0, winPoints, losePoints });
-        const remainingActiveA = tournament.activeMatches.length;
-        const roundCompleteA = remainingActiveA === 0;
-        const winnerLabelA = winner === 'blue' ? '🔵 Blue' : '🔴 Red';
-        let replyTextA = `Result logged: **${winnerLabelA}** won by assassin hit.\nWin: **+3 pts** · Lose: **-1 pts**`;
-        if (roundCompleteA) replyTextA += '\nAll matches complete — round advancing.';
-        else replyTextA += `\n${remainingActiveA} match(es) still active this round.`;
-        const correctRowA = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`correct_result_${matchDataA.matchNumber}`).setLabel('Correct This Result').setStyle(ButtonStyle.Danger),
-        );
-        await interaction.reply({ content: replyTextA, components: [correctRowA] });
-        await saveTournamentData();
-        updateScoreboard(interaction.guild).catch(() => null);
-        if (roundCompleteA) {
-          tournament.currentRound++;
-          tournament.currentRoundIndex = 0;
-          await saveTournamentData();
-          if (tournament.currentRound <= tournament.rounds.length) {
-            allocateRound(interaction).catch(e => console.error('Auto-allocation failed:', e.message));
-          }
-        }
+        await processGameResult(interaction, matchData2, winner, true, 0);
         return;
       }
 
       // Not an assassin — show modal for remaining cards
       const modal = new ModalBuilder()
-        .setCustomId(`outcome_modal_${winner}_${wasAssassin ? 'assassin' : 'normal'}`)
-        .setTitle(`${winner === 'blue' ? 'Blue' : 'Red'} Won - Game Details`);
+        .setCustomId(`outcome_modal_${winner}_normal_${expectedPhase}`)
+        .setTitle(`${winner === 'blue' ? 'Blue' : 'Red'} Won — Game ${expectedPhase} Details`);
 
       const remainingCardsInput = new TextInputBuilder()
         .setCustomId('remaining_cards')
@@ -683,52 +659,118 @@ client.on('interactionCreate', async (interaction) => {
       const adminRoleId = process.env.ADMIN_ROLE_ID;
       const isAdminC = interaction.member.roles.cache.has(adminRoleId);
 
-      // Find the recorded result for this thread
-      const matchNumToCorrect = parseInt(customId.split('_')[2]);
-      const resultIdx = tournament.roundResults.findIndex(r => r.matchNumber === matchNumToCorrect);
-      if (resultIdx === -1) {
-        await interaction.reply({ content: 'No recorded result found to correct. It may have already been corrected.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      const prevResult = tournament.roundResults[resultIdx];
-      const matchPlayers = [
-        prevResult.grouping.blue.spymaster, prevResult.grouping.blue.guesser,
-        prevResult.grouping.red.spymaster,  prevResult.grouping.red.guesser,
-      ];
-      if (!isAdminC && !matchPlayers.includes(interaction.user.id)) {
-        await interaction.reply({ content: 'Only players in this game or an admin can correct this result.', flags: MessageFlags.Ephemeral });
-        return;
-      }
+      const corrParts = customId.split('_');
+      const matchNumToCorrect = parseInt(corrParts[2]);
+      const gameIndexToCorrect = corrParts[3] ? parseInt(corrParts[3]) : 1;
 
-      // Reverse previous score changes
-      const bluePlayers = [prevResult.grouping.blue.spymaster, prevResult.grouping.blue.guesser];
-      const redPlayers  = [prevResult.grouping.red.spymaster,  prevResult.grouping.red.guesser];
-      if (prevResult.winner === 'blue') {
-        bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult.winPoints));
-        redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult.losePoints));
+      if (gameIndexToCorrect === 2) {
+        // Correct Game 2 result
+        const result2Idx = tournament.roundResults.findIndex(r => r.matchNumber === matchNumToCorrect && r.gameIndex === 2);
+        if (result2Idx === -1) {
+          await interaction.reply({ content: 'No recorded Game 2 result found to correct. It may have already been corrected.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const prevResult2 = tournament.roundResults[result2Idx];
+        const result1Idx = tournament.roundResults.findIndex(r => r.matchNumber === matchNumToCorrect && r.gameIndex === 1);
+        const prevResult1 = result1Idx !== -1 ? tournament.roundResults[result1Idx] : null;
+
+        const matchPlayers2 = [
+          prevResult2.grouping.blue.spymaster, prevResult2.grouping.blue.guesser,
+          prevResult2.grouping.red.spymaster,  prevResult2.grouping.red.guesser,
+        ];
+        if (!isAdminC && !matchPlayers2.includes(interaction.user.id)) {
+          await interaction.reply({ content: 'Only players in this game or an admin can correct this result.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        // Reverse Game 2 scores
+        const bluePlayers2 = [prevResult2.grouping.blue.spymaster, prevResult2.grouping.blue.guesser];
+        const redPlayers2  = [prevResult2.grouping.red.spymaster,  prevResult2.grouping.red.guesser];
+        if (prevResult2.winner === 'blue') {
+          bluePlayers2.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult2.winPoints));
+          redPlayers2.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult2.losePoints));
+        } else {
+          redPlayers2.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult2.winPoints));
+          bluePlayers2.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult2.losePoints));
+        }
+
+        // Remove both results from roundResults (remove highest index first to avoid shifting)
+        const indicesToRemove = [result2Idx, result1Idx !== -1 ? result1Idx : -1].filter(i => i !== -1).sort((a, b) => b - a);
+        for (const idx of indicesToRemove) tournament.roundResults.splice(idx, 1);
+
+        // Game 2 grouping IS the swapped grouping — swap back to get the original
+        const originalGrouping = getSwappedGrouping(prevResult2.grouping);
+        const game1Result = prevResult1 ? {
+          winner: prevResult1.winner,
+          assassin: prevResult1.assassin,
+          remainingCards: prevResult1.remainingCards,
+          winPoints: prevResult1.winPoints,
+          losePoints: prevResult1.losePoints,
+        } : null;
+
+        tournament.currentRoundIndex = Math.max(0, tournament.currentRoundIndex - 1);
+        tournament.activeMatches.push({
+          grouping: originalGrouping,
+          threadId: interaction.channelId,
+          matchNumber: matchNumToCorrect,
+          gamePhase: 2,
+          game1Result,
+        });
+
+        await saveTournamentData();
+        updateScoreboard(interaction.guild).catch(() => null);
+
+        const relogRow2 = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('log_blue_win_g2').setLabel('Blue Wins').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId('log_red_win_g2').setLabel('Red Wins').setStyle(ButtonStyle.Danger),
+        );
+        await interaction.reply({ content: '⚠️ Game 2 result reversed. Please re-submit the correct outcome:', components: [relogRow2] });
       } else {
-        redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult.winPoints));
-        bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult.losePoints));
+        // Legacy correction (pre-update results that have no gameIndex)
+        const resultIdx = tournament.roundResults.findIndex(r => r.matchNumber === matchNumToCorrect && !r.gameIndex);
+        if (resultIdx === -1) {
+          await interaction.reply({ content: 'No recorded result found to correct. It may have already been corrected.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const prevResult = tournament.roundResults[resultIdx];
+        const matchPlayers = [
+          prevResult.grouping.blue.spymaster, prevResult.grouping.blue.guesser,
+          prevResult.grouping.red.spymaster,  prevResult.grouping.red.guesser,
+        ];
+        if (!isAdminC && !matchPlayers.includes(interaction.user.id)) {
+          await interaction.reply({ content: 'Only players in this game or an admin can correct this result.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        const bluePlayers = [prevResult.grouping.blue.spymaster, prevResult.grouping.blue.guesser];
+        const redPlayers  = [prevResult.grouping.red.spymaster,  prevResult.grouping.red.guesser];
+        if (prevResult.winner === 'blue') {
+          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult.winPoints));
+          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult.losePoints));
+        } else {
+          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult.winPoints));
+          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - prevResult.losePoints));
+        }
+
+        tournament.roundResults.splice(resultIdx, 1);
+        tournament.currentRoundIndex = Math.max(0, tournament.currentRoundIndex - 1);
+        tournament.activeMatches.push({
+          grouping: prevResult.grouping,
+          threadId: interaction.channelId,
+          matchNumber: prevResult.matchNumber,
+          gamePhase: 1,
+          game1Result: null,
+        });
+
+        await saveTournamentData();
+        updateScoreboard(interaction.guild).catch(() => null);
+
+        const relogRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('log_blue_win').setLabel('Blue Wins').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId('log_red_win').setLabel('Red Wins').setStyle(ButtonStyle.Danger),
+        );
+        await interaction.reply({ content: '⚠️ Previous result reversed. Please re-submit the correct outcome:', components: [relogRow] });
       }
-
-      // Remove from round results and re-add to active matches
-      tournament.roundResults.splice(resultIdx, 1);
-      tournament.currentRoundIndex = Math.max(0, tournament.currentRoundIndex - 1);
-      tournament.activeMatches.push({
-        grouping: prevResult.grouping,
-        threadId: interaction.channelId,
-        matchNumber: prevResult.matchNumber,
-      });
-
-      await saveTournamentData();
-      updateScoreboard(interaction.guild).catch(() => null);
-
-      // Re-post the log buttons in the thread
-      const relogRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('log_blue_win').setLabel('Blue Wins').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('log_red_win').setLabel('Red Wins').setStyle(ButtonStyle.Danger),
-      );
-      await interaction.reply({ content: '⚠️ Previous result reversed. Please re-submit the correct outcome:', components: [relogRow] });
     } else if (customId.startsWith('confirm_remove_')) {
       const userId = customId.split('_')[2];
       if (interaction.user.id === userId) {
@@ -753,6 +795,7 @@ client.on('interactionCreate', async (interaction) => {
       const parts = customId.split('_');
       const winner = parts[2]; // blue or red
       const assassin = parts[3] === 'assassin';
+      const gamePhase = parts[4] ? parseInt(parts[4]) : 1;
 
       try {
         const remainingCardsValue = interaction.fields.getTextInputValue('remaining_cards');
@@ -763,77 +806,18 @@ client.on('interactionCreate', async (interaction) => {
           return;
         }
 
-        // Find the active match for this thread
         const matchData = tournament.activeMatches.find(m => m.threadId === interaction.channelId);
         if (!matchData) {
           await interaction.reply({ content: 'Could not find an active match for this thread. It may have already been completed.', flags: MessageFlags.Ephemeral });
           return;
         }
-        const grouping = matchData.grouping;
 
-        // Calculate scores
-        const winPoints = 3;
-        const losePoints = assassin ? -1 : (remainingCards <= 3 ? 1 : 0);
-
-        const bluePlayers = [grouping.blue.spymaster, grouping.blue.guesser];
-        const redPlayers = [grouping.red.spymaster, grouping.red.guesser];
-
-        if (winner === 'blue') {
-          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + winPoints));
-          redPlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + losePoints));
-        } else {
-          redPlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + winPoints));
-          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + losePoints));
+        if ((matchData.gamePhase ?? 1) !== gamePhase) {
+          await interaction.reply({ content: `This submission is for Game ${gamePhase}, but the match is on Game ${matchData.gamePhase ?? 1}.`, flags: MessageFlags.Ephemeral });
+          return;
         }
 
-        // Remove this match from active matches
-        tournament.activeMatches = tournament.activeMatches.filter(m => m.threadId !== interaction.channelId);
-        tournament.currentRoundIndex++;
-
-        // Record this match's outcome for the round summary
-        tournament.roundResults.push({
-          matchNumber: matchData.matchNumber,
-          grouping,
-          winner,
-          assassin,
-          remainingCards,
-          winPoints,
-          losePoints,
-        });
-
-        const remainingActive = tournament.activeMatches.length;
-        const roundComplete = remainingActive === 0;
-
-        // Reply with result summary and a Correct button (don't archive yet)
-        const winnerLabel = winner === 'blue' ? '🔵 Blue' : '🔴 Red';
-        const howStr = assassin ? 'assassin hit' : `${remainingCards} card${remainingCards !== 1 ? 's' : ''} remaining`;
-        let replyText = `Result logged: **${winnerLabel}** won (${howStr}).
-Win: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**`;
-        if (roundComplete) replyText += '\nAll matches complete — round advancing.';
-        else replyText += `\n${remainingActive} match(es) still active this round.`;
-
-        const correctRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`correct_result_${matchData.matchNumber}`)
-            .setLabel('Correct This Result')
-            .setStyle(ButtonStyle.Danger),
-        );
-        await interaction.reply({ content: replyText, components: [correctRow] });
-
-        await saveTournamentData();
-        updateScoreboard(interaction.guild).catch(() => null);
-
-        // If all matches in round are done, advance and auto-allocate
-        if (roundComplete) {
-          clearRoundTimers();
-          tournament.currentRound++;
-          tournament.currentRoundIndex = 0;
-          await saveTournamentData();
-
-          if (tournament.currentRound <= tournament.rounds.length) {
-            allocateRound(interaction).catch(e => console.error('Auto-allocation failed:', e.message));
-          }
-        }
+        await processGameResult(interaction, matchData, winner, assassin, remainingCards);
       } catch (error) {
         console.error('Error processing outcome:', error);
         try {
@@ -882,7 +866,9 @@ async function updateScoreboard(guild) {
       if (tournament.activeMatches.length > 0) {
         description += `**Active Matches:**\n`;
         tournament.activeMatches.forEach(m => {
-          description += `Match ${m.matchNumber}: \ud83d\udd35 <@${m.grouping.blue.spymaster}> & <@${m.grouping.blue.guesser}> vs \ud83d\udd34 <@${m.grouping.red.spymaster}> & <@${m.grouping.red.guesser}>\n`;
+          const activePhase = m.gamePhase ?? 1;
+          const activeGrouping = activePhase === 2 ? getSwappedGrouping(m.grouping) : m.grouping;
+          description += `Match ${m.matchNumber} (Game ${activePhase}/2): 🔵 <@${activeGrouping.blue.spymaster}> & <@${activeGrouping.blue.guesser}> vs 🔴 <@${activeGrouping.red.spymaster}> & <@${activeGrouping.red.guesser}>\n`;
         });
         description += '\n';
       }
@@ -933,7 +919,7 @@ async function allocateRound(interaction) {
         .setTitle(`📊 Round ${completedRound} Complete!`)
         .setColor(0x0099ff);
 
-      const results = tournament.roundResults.slice().sort((a, b) => a.matchNumber - b.matchNumber);
+      const results = tournament.roundResults.slice().sort((a, b) => a.matchNumber - b.matchNumber || (a.gameIndex || 1) - (b.gameIndex || 1));
       if (results.length > 0) {
         results.forEach(r => {
           const howStr = r.assassin ? 'assassin' : `${r.remainingCards} card${r.remainingCards !== 1 ? 's' : ''} left`;
@@ -945,8 +931,9 @@ async function allocateRound(interaction) {
           const ptsLine = r.losePoints !== 0
             ? `+${r.winPoints} / ${r.losePoints > 0 ? '+' : ''}${r.losePoints} pts`
             : `+${r.winPoints} / +0 pts`;
+          const gameLabel = r.gameIndex ? ` (Game ${r.gameIndex})` : '';
           summaryEmbed.addFields({
-            name: `Game ${r.matchNumber} — ${winnerLabel} (${howStr})`,
+            name: `Match ${r.matchNumber}${gameLabel} — ${winnerLabel} (${howStr})`,
             value: `🔵 <@${r.grouping.blue.spymaster}> & <@${r.grouping.blue.guesser}> vs 🔴 <@${r.grouping.red.spymaster}> & <@${r.grouping.red.guesser}>\n` +
                    `🏆 <@${wSpy}> & <@${wGues}>  ${ptsLine}  ·  😔 <@${lSpy}> & <@${lGues}>`,
           });
@@ -997,10 +984,10 @@ async function allocateRound(interaction) {
       });
 
       const threadEmbed = new EmbedBuilder()
-        .setTitle(`Round ${tournament.currentRound} \u2014 Match ${matchNumber}`)
+        .setTitle(`Round ${tournament.currentRound} \u2014 Match ${matchNumber} (Game 1 of 2)`)
         .setDescription(
           `**Blue Team:**\nSpymaster: <@${grouping.blue.spymaster}>\nGuesser: <@${grouping.blue.guesser}>\n\n` +
-          `**Red Team:**\nSpymaster: <@${grouping.red.spymaster}>\nGuesser: <@${grouping.red.guesser}>\n\nPlay your game then log the result below.`
+          `**Red Team:**\nSpymaster: <@${grouping.red.spymaster}>\nGuesser: <@${grouping.red.guesser}>\n\nPlay Game 1 then log the result below. Game 2 will start automatically with roles swapped.`
         )
         .setColor(0x00ff00);
 
@@ -1011,7 +998,7 @@ async function allocateRound(interaction) {
         );
 
       await thread.send({ embeds: [threadEmbed], components: [row] });
-      tournament.activeMatches.push({ grouping, threadId: thread.id, matchNumber });
+      tournament.activeMatches.push({ grouping, threadId: thread.id, matchNumber, gamePhase: 1, game1Result: null });
     } catch (e) {
       console.error(`Failed to create thread for match ${matchNumber}:`, e.message);
     }
@@ -1125,7 +1112,7 @@ function getTournamentPrediction(playerCount) {
   // = N*(N-1).  floor(N/4) games can run simultaneously per round.
   const totalGames = playerCount * (playerCount - 1);
   const concurrentGames = Math.floor(playerCount / 4);
-  const totalRounds = Math.ceil(totalGames / concurrentGames);
+  const totalRounds = Math.ceil((totalGames / 2) / concurrentGames);
 
   return {
     rounds: totalRounds,
@@ -1140,6 +1127,13 @@ function generateGrouping(players) {
   return {
     blue: { spymaster: shuffled[0], guesser: shuffled[1] },
     red: { spymaster: shuffled[2], guesser: shuffled[3] },
+  };
+}
+
+function getSwappedGrouping(grouping) {
+  return {
+    blue: { spymaster: grouping.blue.guesser, guesser: grouping.blue.spymaster },
+    red:  { spymaster: grouping.red.guesser,  guesser: grouping.red.spymaster },
   };
 }
 
@@ -1248,26 +1242,126 @@ function generateRounds(players) {
 }
 
 function checkAndMarkConfigs(assignment, playedConfigs) {
+  const swapped = getSwappedGrouping(assignment);
   const configs = [
     `${assignment.blue.spymaster}-${assignment.blue.guesser}-blue-spymaster`,
     `${assignment.blue.guesser}-${assignment.blue.spymaster}-blue-guesser`,
     `${assignment.red.spymaster}-${assignment.red.guesser}-red-spymaster`,
     `${assignment.red.guesser}-${assignment.red.spymaster}-red-guesser`,
+    `${swapped.blue.spymaster}-${swapped.blue.guesser}-blue-spymaster`,
+    `${swapped.blue.guesser}-${swapped.blue.spymaster}-blue-guesser`,
+    `${swapped.red.spymaster}-${swapped.red.guesser}-red-spymaster`,
+    `${swapped.red.guesser}-${swapped.red.spymaster}-red-guesser`,
   ];
-  
-  // Check if all are unplayed
   for (const config of configs) {
-    if (playedConfigs.has(config)) {
-      return false;
-    }
+    if (playedConfigs.has(config)) return false;
   }
-  
-  // Mark all as played
   for (const config of configs) {
     playedConfigs.add(config);
   }
-  
   return true;
+}
+
+async function processGameResult(interaction, matchData, winner, assassin, remainingCards) {
+  const gamePhase = matchData.gamePhase ?? 1;
+  const currentGrouping = gamePhase === 2 ? getSwappedGrouping(matchData.grouping) : matchData.grouping;
+
+  const winPoints = 3;
+  const losePoints = assassin ? -1 : (remainingCards <= 3 ? 1 : 0);
+
+  const bluePlayers = [currentGrouping.blue.spymaster, currentGrouping.blue.guesser];
+  const redPlayers  = [currentGrouping.red.spymaster,  currentGrouping.red.guesser];
+
+  if (winner === 'blue') {
+    bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + winPoints));
+    redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) + losePoints));
+  } else {
+    redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) + winPoints));
+    bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + losePoints));
+  }
+
+  const winnerLabel = winner === 'blue' ? '🔵 Blue' : '🔴 Red';
+  const howStr = assassin ? 'assassin hit' : `${remainingCards} card${remainingCards !== 1 ? 's' : ''} remaining`;
+
+  if (gamePhase === 1) {
+    matchData.game1Result = { winner, assassin, remainingCards, winPoints, losePoints };
+    matchData.gamePhase = 2;
+    await saveTournamentData();
+    updateScoreboard(interaction.guild).catch(() => null);
+
+    const replyText = `**Game 1** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**\n\n_Game 2 is starting — roles have been swapped!_`;
+    await interaction.reply({ content: replyText });
+
+    const swapped = getSwappedGrouping(matchData.grouping);
+    const game2Embed = new EmbedBuilder()
+      .setTitle(`Match ${matchData.matchNumber} — Game 2 of 2`)
+      .setDescription(
+        `Roles have been swapped!\n\n` +
+        `**Blue Team:**\nSpymaster: <@${swapped.blue.spymaster}>\nGuesser: <@${swapped.blue.guesser}>\n\n` +
+        `**Red Team:**\nSpymaster: <@${swapped.red.spymaster}>\nGuesser: <@${swapped.red.guesser}>\n\nPlay Game 2 then log the result below.`
+      )
+      .setColor(0xff9900);
+
+    const game2Row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('log_blue_win_g2').setLabel('Blue Wins').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('log_red_win_g2').setLabel('Red Wins').setStyle(ButtonStyle.Danger),
+    );
+
+    await interaction.channel.send({ embeds: [game2Embed], components: [game2Row] });
+  } else {
+    // Game 2 complete — push both results and clean up
+    tournament.roundResults.push({
+      matchNumber: matchData.matchNumber,
+      gameIndex: 1,
+      grouping: matchData.grouping,
+      winner: matchData.game1Result.winner,
+      assassin: matchData.game1Result.assassin,
+      remainingCards: matchData.game1Result.remainingCards,
+      winPoints: matchData.game1Result.winPoints,
+      losePoints: matchData.game1Result.losePoints,
+    });
+    tournament.roundResults.push({
+      matchNumber: matchData.matchNumber,
+      gameIndex: 2,
+      grouping: currentGrouping,
+      winner,
+      assassin,
+      remainingCards,
+      winPoints,
+      losePoints,
+    });
+
+    tournament.activeMatches = tournament.activeMatches.filter(m => m.threadId !== interaction.channelId);
+    tournament.currentRoundIndex++;
+
+    const remainingActive = tournament.activeMatches.length;
+    const roundComplete = remainingActive === 0;
+
+    let replyText = `**Game 2** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**`;
+    if (roundComplete) replyText += '\nAll matches complete — round advancing.';
+    else replyText += `\n${remainingActive} match(es) still active this round.`;
+
+    const correctRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`correct_result_${matchData.matchNumber}_2`)
+        .setLabel('Correct Game 2 Result')
+        .setStyle(ButtonStyle.Danger),
+    );
+    await interaction.reply({ content: replyText, components: [correctRow] });
+
+    await saveTournamentData();
+    updateScoreboard(interaction.guild).catch(() => null);
+
+    if (roundComplete) {
+      clearRoundTimers();
+      tournament.currentRound++;
+      tournament.currentRoundIndex = 0;
+      await saveTournamentData();
+      if (tournament.currentRound <= tournament.rounds.length) {
+        allocateRound(interaction).catch(e => console.error('Auto-allocation failed:', e.message));
+      }
+    }
+  }
 }
 
 client.on('error', (error) => {
