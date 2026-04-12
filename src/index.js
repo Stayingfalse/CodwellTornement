@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const http = require('http');
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
@@ -1432,6 +1433,44 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
 client.on('error', (error) => {
   console.error('Client error:', error);
 });
+
+// ----- Web dashboard -----
+function buildWebData() {
+  return {
+    started: tournament.started,
+    currentRound: tournament.currentRound,
+    totalRounds: tournament.rounds.length,
+    tournamentStartedAt: tournament.tournamentStartedAt,
+    roundStartedAt: tournament.roundStartedAt,
+    playerNames: tournament.playerNames,
+    scores: Array.from(tournament.scores.entries()).sort((a, b) => b[1] - a[1]),
+    rounds: tournament.rounds,
+    history: tournament.history,
+    activeMatches: tournament.activeMatches,
+  };
+}
+
+let cachedDashboardHtml = null;
+try {
+  cachedDashboardHtml = require('fs').readFileSync(path.join(__dirname, '..', 'public', 'index.html'));
+} catch {
+  console.warn('[web] public/index.html not found — dashboard will return 404');
+}
+
+const WEB_PORT = parseInt(process.env.WEB_PORT) || 80;
+http.createServer((req, res) => {
+  if (req.url === '/api') {
+    const payload = JSON.stringify(buildWebData());
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(payload);
+  } else if (cachedDashboardHtml) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(cachedDashboardHtml);
+  } else {
+    res.writeHead(404);
+    res.end('Dashboard not available. Ensure public/index.html exists.');
+  }
+}).listen(WEB_PORT, () => console.log(`[web] Dashboard running on port ${WEB_PORT}`));
 
 console.log('Attempting to login with token:', process.env.BOT_TOKEN ? 'Token found' : 'Token missing');
 client.login(process.env.BOT_TOKEN);

@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Codenames Tournament</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #0b0b18;
+      --surface:     #13132a;
+      --surface2:    #1a1a35;
+      --surface3:    #22223f;
+      --border:      #28284a;
+      --border-hi:   #3a3a66;
+      --blue:        #3b82f6;
+      --blue-dim:    rgba(59,130,246,0.15);
+      --blue-glow:   rgba(59,130,246,0.25);
+      --red:         #ef4444;
+      --red-dim:     rgba(239,68,68,0.15);
+      --green:       #22c55e;
+      --green-dim:   rgba(34,197,94,0.15);
+      --amber:       #f59e0b;
+      --amber-dim:   rgba(245,158,11,0.12);
+      --purple:      #a78bfa;
+      --text:        #e2e8f0;
+      --text-dim:    #94a3b8;
+      --text-faint:  #4a4a7a;
+      --radius:      14px;
+      --radius-sm:   8px;
+      --shadow:      0 4px 24px rgba(0,0,0,0.45);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.55;
+    }
+
+    /* ── Header ── */
+    header {
+      background: linear-gradient(135deg, #0d0d22 0%, #161630 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 1.25rem 2rem;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+    }
+
+    .header-inner {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+
+    .brand-title {
+      font-size: 1.4rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      background: linear-gradient(130deg, #60a5fa 0%, #a78bfa 60%, #f472b6 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .brand-sub {
+      font-size: 0.72rem;
+      color: var(--text-faint);
+      letter-spacing: 0.03em;
+    }
+
+    .header-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    /* ── Badges ── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.2rem 0.65rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .badge-blue   { background: var(--blue-dim);  color: #93c5fd; border: 1px solid var(--blue-glow); }
+    .badge-green  { background: var(--green-dim);  color: #86efac; border: 1px solid rgba(34,197,94,0.3); }
+    .badge-amber  { background: var(--amber-dim);  color: #fcd34d; border: 1px solid rgba(245,158,11,0.3); animation: badgePulse 2s ease-in-out infinite; }
+    .badge-purple { background: rgba(167,139,250,0.12); color: #c4b5fd; border: 1px solid rgba(167,139,250,0.25); }
+    .badge-dim    { background: rgba(74,74,122,0.2); color: var(--text-faint); border: 1px solid var(--border); }
+
+    /* ── Layout ── */
+    .layout {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 1.75rem 2rem;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 1.75rem;
+      align-items: start;
+    }
+
+    @media (max-width: 920px) {
+      .layout { grid-template-columns: 1fr; padding: 1rem; }
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      position: sticky;
+      top: 84px;
+    }
+
+    /* ── Card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .card-title {
+      padding: 0.8rem 1.1rem;
+      font-size: 0.72rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-faint);
+      border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+    }
+
+    /* ── Meta card ── */
+    .meta-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.6rem 1.1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8rem;
+    }
+
+    .meta-row:last-child { border-bottom: none; }
+    .meta-label { color: var(--text-faint); }
+    .meta-value { font-weight: 600; color: var(--text-dim); }
+
+    /* ── Scoreboard ── */
+    .score-row {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.55rem 1.1rem;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.15s;
+      animation: slideDown 0.35s ease both;
+    }
+
+    .score-row:last-child { border-bottom: none; }
+    .score-row:hover { background: var(--surface2); }
+
+    .score-rank {
+      font-size: 0.8rem;
+      font-weight: 800;
+      width: 1.6rem;
+      text-align: center;
+      color: var(--text-faint);
+      flex-shrink: 0;
+    }
+
+    .score-name { flex: 1; font-size: 0.85rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .score-bar-wrap {
+      width: 48px;
+      height: 3px;
+      background: var(--border);
+      border-radius: 9999px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    .score-bar {
+      height: 100%;
+      border-radius: 9999px;
+      background: linear-gradient(90deg, var(--blue), var(--purple));
+      transition: width 0.6s cubic-bezier(0.4,0,0.2,1);
+    }
+
+    .score-pts {
+      font-size: 0.8rem;
+      font-weight: 800;
+      color: var(--blue);
+      font-variant-numeric: tabular-nums;
+      width: 2.2rem;
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    /* ── Rounds ── */
+    .rounds-list { display: flex; flex-direction: column; gap: 1rem; }
+
+    .round-block { animation: fadeUp 0.4s ease both; }
+
+    .round-header {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.8rem 1.1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.15s, border-color 0.2s;
+    }
+
+    .round-header:hover { background: var(--surface2); border-color: var(--border-hi); }
+
+    .round-header.is-active   { border-color: rgba(245,158,11,0.45); background: rgba(245,158,11,0.04); }
+    .round-header.is-complete { border-color: rgba(34,197,94,0.3); }
+    .round-header.is-future   { opacity: 0.65; }
+
+    .round-label { font-size: 0.9rem; font-weight: 700; }
+
+    .round-progress-wrap {
+      flex: 1;
+      height: 3px;
+      background: var(--border);
+      border-radius: 9999px;
+      overflow: hidden;
+      max-width: 100px;
+    }
+
+    .round-progress-bar {
+      height: 100%;
+      border-radius: 9999px;
+      transition: width 0.5s ease;
+    }
+
+    .round-progress-bar.complete { background: var(--green); }
+    .round-progress-bar.active   { background: var(--amber); }
+    .round-progress-bar.future   { background: var(--border-hi); }
+
+    .round-count { font-size: 0.72rem; color: var(--text-faint); white-space: nowrap; }
+
+    .round-chevron {
+      color: var(--text-faint);
+      font-size: 0.75rem;
+      transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+      flex-shrink: 0;
+    }
+
+    .round-chevron.open { transform: rotate(180deg); }
+
+    /* ── Matches container ── */
+    .round-matches {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      overflow: hidden;
+      transition: max-height 0.4s cubic-bezier(0.4,0,0.2,1), opacity 0.3s ease, margin-top 0.3s ease;
+    }
+
+    .round-matches.collapsed { max-height: 0 !important; opacity: 0; margin-top: 0; }
+    .round-matches.expanded  { opacity: 1; margin-top: 0.75rem; }
+
+    /* ── Match card ── */
+    .match-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      animation: fadeUp 0.35s ease both;
+    }
+
+    .match-card.match-active {
+      border-color: rgba(245,158,11,0.4);
+      animation: fadeUp 0.35s ease both, matchGlow 2.8s ease-in-out infinite;
+    }
+
+    .match-head {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.6rem 1.1rem;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .match-label { font-size: 0.8rem; font-weight: 700; }
+
+    /* ── Games grid ── */
+    .games-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+
+    @media (max-width: 640px) { .games-grid { grid-template-columns: 1fr; } }
+
+    .game-cell {
+      padding: 0.9rem 1.1rem;
+      border-right: 1px solid var(--border);
+      position: relative;
+    }
+
+    .game-cell:last-child { border-right: none; }
+
+    .game-cell + .game-cell::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 12px; bottom: 12px;
+      width: 1px;
+      background: var(--border);
+    }
+
+    .game-num {
+      font-size: 0.68rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--text-faint);
+      margin-bottom: 0.55rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .game-num .swap-note {
+      font-weight: 500;
+      color: var(--text-faint);
+      font-style: italic;
+      letter-spacing: 0;
+    }
+
+    .teams { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.65rem; }
+
+    .team-row {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.78rem;
+    }
+
+    .team-pip {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .pip-blue { background: var(--blue); }
+    .pip-red  { background: var(--red); }
+
+    .player-name { font-weight: 600; color: var(--text); }
+    .role-tag    { color: var(--text-faint); font-size: 0.68rem; font-style: italic; }
+
+    .vs-sep {
+      font-size: 0.65rem;
+      font-weight: 800;
+      color: var(--text-faint);
+      text-align: center;
+      letter-spacing: 0.05em;
+      margin: 0.1rem 0;
+    }
+
+    /* ── Result chips ── */
+    .result-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.2rem 0.55rem;
+      border-radius: 6px;
+      font-size: 0.72rem;
+      font-weight: 700;
+    }
+
+    .chip-pending  { background: rgba(74,74,122,0.2); color: var(--text-faint); border: 1px solid var(--border); }
+    .chip-waiting  { background: rgba(74,74,122,0.12); color: var(--text-faint); border: 1px dashed var(--border); }
+    .chip-active   { background: var(--amber-dim); color: #fcd34d; border: 1px solid rgba(245,158,11,0.35); animation: chipPulse 1.4s ease-in-out infinite; }
+    .chip-blue-win { background: var(--blue-dim);  color: #93c5fd; border: 1px solid var(--blue-glow); }
+    .chip-red-win  { background: var(--red-dim);   color: #fca5a5; border: 1px solid rgba(239,68,68,0.3); }
+    .chip-skipped  { background: rgba(74,74,122,0.1); color: var(--text-faint); border: 1px dashed rgba(74,74,122,0.3); }
+
+    .result-detail { font-weight: 400; opacity: 0.72; font-style: italic; }
+
+    /* ── Empty / loading states ── */
+    .empty {
+      text-align: center;
+      padding: 4rem 1rem;
+      color: var(--text-faint);
+    }
+
+    .empty-icon { font-size: 2.5rem; margin-bottom: 0.75rem; display: block; }
+    .empty h2 { font-size: 1.05rem; color: var(--text-dim); margin-bottom: 0.35rem; }
+    .empty p { font-size: 0.82rem; }
+
+    /* ── Refresh widget ── */
+    #refresh-widget {
+      position: fixed;
+      bottom: 1.25rem;
+      right: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 9999px;
+      padding: 0.35rem 0.85rem;
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      z-index: 200;
+      box-shadow: var(--shadow);
+      transition: border-color 0.2s, color 0.2s;
+      animation: fadeUp 0.4s ease;
+    }
+
+    #refresh-widget.fetching { border-color: rgba(59,130,246,0.4); color: #93c5fd; }
+
+    .spinner {
+      width: 10px; height: 10px;
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.65s linear infinite;
+      display: none;
+    }
+
+    #refresh-widget.fetching .spinner { display: block; }
+
+    /* ── Keyframes ── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(14px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes matchGlow {
+      0%,100% { box-shadow: 0 0 0 1px rgba(245,158,11,0.12), 0 4px 20px rgba(245,158,11,0.07); }
+      50%      { box-shadow: 0 0 0 2px rgba(245,158,11,0.25), 0 6px 28px rgba(245,158,11,0.16); }
+    }
+
+    @keyframes badgePulse {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.72; }
+    }
+
+    @keyframes chipPulse {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.6; }
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #5a5a9a; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="brand">
+      <div class="brand-title">🕵️ Codenames Tournament</div>
+      <div class="brand-sub" id="started-sub">Loading…</div>
+    </div>
+    <div class="header-badges" id="header-badges"></div>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="card" id="meta-card">
+      <div class="card-title">Overview</div>
+      <div id="meta-rows"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Scoreboard</div>
+      <div id="scoreboard"></div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="rounds-list" id="rounds-list"></div>
+  </main>
+</div>
+
+<div id="refresh-widget">
+  <div class="spinner"></div>
+  <span id="refresh-label">Refreshing in 15s</span>
+</div>
+
+<script>
+  // ── State ──────────────────────────────────────────────────────────────────
+  let D = null; // tournament data
+  let countdown = 15;
+  let countdownTimer = null;
+  // Track which rounds are manually toggled (roundIdx -> bool)
+  const manualToggles = {};
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function displayName(id) {
+    return (D && D.playerNames && D.playerNames[id]) ? D.playerNames[id] : id;
+  }
+
+  function swapGrouping(g) {
+    return {
+      blue: { spymaster: g.blue.guesser, guesser: g.blue.spymaster },
+      red:  { spymaster: g.red.guesser,  guesser: g.red.spymaster },
+    };
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
+      + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function historyEntry(roundNumber, matchNumber, game) {
+    if (!D) return null;
+    return D.history.find(h => h.roundNumber === roundNumber && h.matchNumber === matchNumber && h.game === game) || null;
+  }
+
+  function activeMatch(matchNumber) {
+    if (!D) return null;
+    return D.activeMatches.find(m => m.matchNumber === matchNumber) || null;
+  }
+
+  // ── Result chip HTML ───────────────────────────────────────────────────────
+  function resultChip(result, active, gameIndex, isPast) {
+    if (result) {
+      const cls = result.winner === 'blue' ? 'chip-blue-win' : 'chip-red-win';
+      const icon = result.winner === 'blue' ? '🔵' : '🔴';
+      const label = result.winner === 'blue' ? 'Blue Won' : 'Red Won';
+      const how = result.assassin
+        ? 'assassin'
+        : result.remainingCards != null ? `${result.remainingCards} left` : '';
+      const pts = `+${result.winPoints} / ${result.losePoints > 0 ? '+' : ''}${result.losePoints}`;
+      return `<span class="result-chip ${cls}">${icon} ${label} <span class="result-detail">${how ? how + ' · ' : ''}${pts}</span></span>`;
+    }
+    const phase = active ? (active.gamePhase ?? 1) : null;
+    if (active && phase === gameIndex) {
+      return `<span class="result-chip chip-active">⚡ In Progress</span>`;
+    }
+    if (active && gameIndex === 2 && phase === 1) {
+      return `<span class="result-chip chip-waiting">⏳ After Game 1</span>`;
+    }
+    if (isPast) {
+      return `<span class="result-chip chip-skipped">⏭ Skipped</span>`;
+    }
+    return `<span class="result-chip chip-pending">⏳ Upcoming</span>`;
+  }
+
+  // ── Team rows HTML ─────────────────────────────────────────────────────────
+  function teamRows(grouping) {
+    return `
+      <div class="team-row">
+        <div class="team-pip pip-blue"></div>
+        <span class="player-name">${esc(displayName(grouping.blue.spymaster))}</span>
+        <span class="role-tag">spy</span>
+        &nbsp;·&nbsp;
+        <span class="player-name">${esc(displayName(grouping.blue.guesser))}</span>
+        <span class="role-tag">guess</span>
+      </div>
+      <div class="vs-sep">VS</div>
+      <div class="team-row">
+        <div class="team-pip pip-red"></div>
+        <span class="player-name">${esc(displayName(grouping.red.spymaster))}</span>
+        <span class="role-tag">spy</span>
+        &nbsp;·&nbsp;
+        <span class="player-name">${esc(displayName(grouping.red.guesser))}</span>
+        <span class="role-tag">guess</span>
+      </div>`;
+  }
+
+  // ── Render: header ─────────────────────────────────────────────────────────
+  function renderHeader() {
+    const sub = document.getElementById('started-sub');
+    const badges = document.getElementById('header-badges');
+
+    if (!D) { sub.textContent = 'Loading…'; badges.innerHTML = ''; return; }
+
+    if (!D.started) {
+      sub.textContent = 'Tournament not yet started';
+      badges.innerHTML = '<span class="badge badge-dim">⏸ Not Started</span>';
+      return;
+    }
+
+    sub.textContent = D.tournamentStartedAt ? `Started ${fmtDate(D.tournamentStartedAt)}` : '';
+
+    const isComplete = D.currentRound > D.totalRounds;
+    const roundBadge = isComplete
+      ? '<span class="badge badge-green">🏆 Tournament Complete</span>'
+      : `<span class="badge badge-amber">Round ${D.currentRound} / ${D.totalRounds}</span>`;
+
+    const activeCount = D.activeMatches.length;
+    const activeBadge = activeCount > 0
+      ? `<span class="badge badge-blue">⚡ ${activeCount} Active</span>`
+      : '';
+
+    const totalGames = D.history.length;
+    const gamesBadge = `<span class="badge badge-purple">🎮 ${totalGames} Game${totalGames !== 1 ? 's' : ''} Played</span>`;
+
+    badges.innerHTML = roundBadge + activeBadge + gamesBadge;
+  }
+
+  // ── Render: meta card ──────────────────────────────────────────────────────
+  function renderMeta() {
+    const el = document.getElementById('meta-rows');
+    if (!D || !D.started) { el.innerHTML = '<div class="meta-row"><span class="meta-label">Status</span><span class="meta-value">Not started</span></div>'; return; }
+
+    const isComplete = D.currentRound > D.totalRounds;
+    const totalMatchSlots = D.rounds.reduce((s, r) => s + r.length, 0);
+    const totalGames = totalMatchSlots * 2;
+    const playedGames = D.history.length;
+
+    el.innerHTML = `
+      <div class="meta-row">
+        <span class="meta-label">Round</span>
+        <span class="meta-value">${isComplete ? 'Complete' : `${D.currentRound} of ${D.totalRounds}`}</span>
+      </div>
+      <div class="meta-row">
+        <span class="meta-label">Games played</span>
+        <span class="meta-value">${playedGames} / ${totalGames}</span>
+      </div>
+      <div class="meta-row">
+        <span class="meta-label">Players</span>
+        <span class="meta-value">${Object.keys(D.playerNames).length}</span>
+      </div>
+      ${D.roundStartedAt ? `
+      <div class="meta-row">
+        <span class="meta-label">Round started</span>
+        <span class="meta-value" style="font-size:0.72rem">${fmtDate(D.roundStartedAt)}</span>
+      </div>` : ''}
+    `;
+  }
+
+  // ── Render: scoreboard ────────────────────────────────────────────────────
+  function renderScoreboard() {
+    const el = document.getElementById('scoreboard');
+    if (!D || !D.started || D.scores.length === 0) {
+      el.innerHTML = '<div style="padding:0.8rem 1.1rem;color:var(--text-faint);font-size:0.78rem">No scores yet</div>';
+      return;
+    }
+
+    const maxPts = Math.max(1, D.scores[0][1]);
+    const medals = ['🥇', '🥈', '🥉'];
+
+    el.innerHTML = D.scores.map(([id, pts], i) => `
+      <div class="score-row" style="animation-delay:${(i * 0.04).toFixed(2)}s">
+        <div class="score-rank">${medals[i] || i + 1}</div>
+        <div class="score-name">${esc(displayName(id))}</div>
+        <div class="score-bar-wrap">
+          <div class="score-bar" style="width:${Math.max(4, (pts / maxPts) * 100).toFixed(1)}%"></div>
+        </div>
+        <div class="score-pts">${pts}</div>
+      </div>
+    `).join('');
+  }
+
+  // ── Render: rounds ────────────────────────────────────────────────────────
+  function renderRounds() {
+    const container = document.getElementById('rounds-list');
+
+    if (!D) {
+      container.innerHTML = '<div class="empty"><span class="empty-icon">⏳</span><h2>Loading…</h2></div>';
+      return;
+    }
+
+    if (!D.started || D.rounds.length === 0) {
+      container.innerHTML = '<div class="empty"><span class="empty-icon">🕵️</span><h2>Tournament not started</h2><p>Waiting for the admin to kick things off.</p></div>';
+      return;
+    }
+
+    const html = D.rounds.map((roundMatches, roundIdx) => {
+      const roundNumber = roundIdx + 1;
+      const isCurrent  = roundNumber === D.currentRound;
+      const isPast     = roundNumber < D.currentRound;
+      const isFuture   = roundNumber > D.currentRound;
+
+      // Completion stats
+      const playedCount = D.history.filter(h => h.roundNumber === roundNumber).length;
+      const totalGames  = roundMatches.length * 2;
+      const pct = totalGames > 0 ? (playedCount / totalGames) * 100 : 0;
+
+      const headerClass = isCurrent ? 'is-active' : isPast ? 'is-complete' : 'is-future';
+      const barClass    = isPast ? 'complete' : isCurrent ? 'active' : 'future';
+
+      const statusBadge = isPast
+        ? '<span class="badge badge-green" style="font-size:0.68rem">✓ Complete</span>'
+        : isCurrent
+          ? '<span class="badge badge-amber" style="font-size:0.68rem">⚡ Active</span>'
+          : '<span class="badge badge-dim" style="font-size:0.68rem">Upcoming</span>';
+
+      // Whether this round is expanded
+      const defaultOpen = isCurrent || isPast;
+      const isOpen = roundIdx in manualToggles ? manualToggles[roundIdx] : defaultOpen;
+
+      const matchesHtml = roundMatches.map((g1grouping, matchIdx) => {
+        const matchNumber = matchIdx + 1;
+        const g2grouping  = swapGrouping(g1grouping);
+        const active      = isCurrent ? activeMatch(matchNumber) : null;
+        const isMatchActive = !!active;
+
+        const r1 = (isCurrent || isPast) ? historyEntry(roundNumber, matchNumber, 1) : null;
+        const r2 = (isCurrent || isPast) ? historyEntry(roundNumber, matchNumber, 2) : null;
+
+        const activePhase = active ? (active.gamePhase ?? 1) : null;
+
+        return `
+          <div class="match-card ${isMatchActive ? 'match-active' : ''}" style="animation-delay:${(matchIdx * 0.07).toFixed(2)}s">
+            <div class="match-head">
+              <span class="match-label">Match ${matchNumber}</span>
+              ${isMatchActive ? `<span class="badge badge-amber" style="font-size:0.68rem">⚡ Game ${activePhase} in progress</span>` : ''}
+            </div>
+            <div class="games-grid">
+              <div class="game-cell">
+                <div class="game-num">Game 1</div>
+                <div class="teams">${teamRows(g1grouping)}</div>
+                ${resultChip(r1, active, 1, isPast)}
+              </div>
+              <div class="game-cell">
+                <div class="game-num">Game 2 <span class="swap-note">roles swapped</span></div>
+                <div class="teams">${teamRows(g2grouping)}</div>
+                ${resultChip(r2, active, 2, isPast)}
+              </div>
+            </div>
+          </div>`;
+      }).join('');
+
+      // max-height: calculate roughly for expanded state
+      const approxHeight = roundMatches.length * 180 + 20;
+
+      return `
+        <div class="round-block" style="animation-delay:${(roundIdx * 0.05).toFixed(2)}s">
+          <div class="round-header ${headerClass}" onclick="toggleRound(${roundIdx})">
+            <span class="round-label">Round ${roundNumber}</span>
+            ${statusBadge}
+            <div class="round-progress-wrap">
+              <div class="round-progress-bar ${barClass}" style="width:${pct.toFixed(1)}%"></div>
+            </div>
+            <span class="round-count">${playedCount}/${totalGames}</span>
+            <span class="round-chevron ${isOpen ? 'open' : ''}">▾</span>
+          </div>
+          <div class="round-matches ${isOpen ? 'expanded' : 'collapsed'}"
+               id="rm-${roundIdx}"
+               style="${isOpen ? `max-height:${approxHeight}px` : 'max-height:0'}">
+            ${matchesHtml}
+          </div>
+        </div>`;
+    }).join('');
+
+    container.innerHTML = html;
+  }
+
+  // ── Toggle ────────────────────────────────────────────────────────────────
+  function toggleRound(idx) {
+    const matchesEl = document.getElementById(`rm-${idx}`);
+    const chevron   = document.querySelector(`[onclick="toggleRound(${idx})"] .round-chevron`);
+    const isOpen    = !matchesEl.classList.contains('collapsed');
+
+    manualToggles[idx] = !isOpen;
+
+    if (isOpen) {
+      matchesEl.style.maxHeight = matchesEl.scrollHeight + 'px';
+      requestAnimationFrame(() => {
+        matchesEl.style.maxHeight = '0';
+        matchesEl.classList.remove('expanded');
+        matchesEl.classList.add('collapsed');
+        chevron && chevron.classList.remove('open');
+      });
+    } else {
+      matchesEl.classList.remove('collapsed');
+      matchesEl.classList.add('expanded');
+      const h = matchesEl.scrollHeight;
+      matchesEl.style.maxHeight = h + 'px';
+      chevron && chevron.classList.add('open');
+    }
+  }
+
+  // ── Fetch ─────────────────────────────────────────────────────────────────
+  async function fetchData() {
+    const widget  = document.getElementById('refresh-widget');
+    const lbl     = document.getElementById('refresh-label');
+    widget.classList.add('fetching');
+    lbl.textContent = 'Refreshing…';
+
+    try {
+      const res = await fetch('/api');
+      D = await res.json();
+      renderHeader();
+      renderMeta();
+      renderScoreboard();
+      renderRounds();
+    } catch {
+      lbl.textContent = 'Error — retrying';
+    } finally {
+      widget.classList.remove('fetching');
+      startCountdown();
+    }
+  }
+
+  function startCountdown() {
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdown = 15;
+    const lbl = document.getElementById('refresh-label');
+    lbl.textContent = `Refreshing in ${countdown}s`;
+    countdownTimer = setInterval(() => {
+      countdown--;
+      if (countdown <= 0) {
+        clearInterval(countdownTimer);
+        fetchData();
+      } else {
+        lbl.textContent = `Refreshing in ${countdown}s`;
+      }
+    }, 1000);
+  }
+
+  fetchData();
+</script>
+</body>
+</html>
