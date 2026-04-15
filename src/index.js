@@ -1155,7 +1155,7 @@ async function sendThreadKeepAlive(guild) {
   const msg = KEEPALIVE_MESSAGES[Math.floor(Math.random() * KEEPALIVE_MESSAGES.length)];
   for (const match of tournament.activeMatches) {
     try {
-      let thread = await guild.channels.fetch(match.threadId).catch(() => null);
+      const thread = await guild.channels.fetch(match.threadId).catch(() => null);
       if (!thread) continue;
       // Unarchive if Discord auto-archived it
       if (thread.archived) await thread.setArchived(false).catch(() => null);
@@ -1212,7 +1212,7 @@ async function sendRoundWarning(guild) {
   const ts = Math.floor(tournament.roundDeadline / 1000);
   for (const match of tournament.activeMatches) {
     try {
-      let thread = await guild.channels.fetch(match.threadId).catch(() => null);
+      const thread = await guild.channels.fetch(match.threadId).catch(() => null);
       if (!thread) continue;
       if (thread.archived) await thread.setArchived(false).catch(() => null);
       await thread.send(`⚠️ **Round timer warning:** This round ends <t:${ts}:F> (<t:${ts}:R>). Please complete your game soon!`);
