@@ -1584,7 +1584,7 @@ try {
   console.warn('[web] public/index.html not found — dashboard will return 404');
 }
 
-const WEB_PORT = parseInt(process.env.WEB_PORT) || 80;
+const WEB_PORT = parseInt(process.env.WEB_PORT) || 3000;
 http.createServer((req, res) => {
   if (req.url === '/api') {
     const payload = JSON.stringify(buildWebData());
