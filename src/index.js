@@ -40,6 +40,61 @@ let tournament = {
 // Round timer handles (in-memory only)
 let roundWarningTimer = null;
 let roundExpiryTimer = null;
+let threadKeepAliveTimer = null;
+
+// Funny keep-alive messages posted to active match threads every 2–3 days
+const KEEPALIVE_MESSAGES = [
+  "📣 Just checking in — this thread is still alive, unlike your opponent's chances of winning! 🎯",
+  "🕵️ The spymaster sees all... including the fact that nobody has submitted a result yet. Tick tock!",
+  "🃏 Fun fact: a Codenames game left unfinished is like a clue with no words — technically valid, deeply unsatisfying.",
+  "🔵🔴 Neither blue nor red has won yet. The real winner right now is procrastination.",
+  "🎲 The dice gods grow restless. They demand a result. Feed them.",
+  "📖 Page 47 of the Codenames rulebook: 'Games shall not linger in limbo for eternity.' We checked — it's in there.",
+  "🤔 Somewhere, a spymaster is staring at the board wondering if 'CLOUD' connects to 'BANK', 'STORM', and 'NINE'. It does not. Please play.",
+  "⏳ This thread is kept alive by sheer willpower and the bot's undying devotion to your tournament.",
+  "🎯 Friendly reminder: the assassin word is out there. Don't let *time* be the assassin of this match.",
+  "🧠 A spymaster's greatest clue: 'HURRY… 1.' The word? YOUR RESULT. Submit it.",
+  "🏓 Ping! This is your board game conscience speaking. It says: finish the game.",
+  "🚨 ALERT: Thread detected in the wild. Status: unresolved. Solution: play Codenames.",
+  "☕ The bot has had three coffees waiting for this result. Please, for the bot's sake.",
+  "🎮 According to our calculations, the average Codenames game takes 15–30 minutes. This round has been running longer. Considerably longer.",
+  "🧩 Puzzle: two teams, one board, zero submitted results. What are you? *A mystery.* 🔍",
+  "👀 The leaderboard is watching. The leaderboard is *judging*. Don't disappoint the leaderboard.",
+  "🛎️ *ding ding ding* That's the sound of this thread reminding you it exists and misses you dearly.",
+  "🐢 A tortoise playing Codenames would have finished by now. Are you slower than a tortoise? Prove us wrong.",
+  "📡 Transmission received from deep space: 'Finish... your... game...' — probably aliens who are also waiting.",
+  "🎭 Act 1: Players join the tournament. Act 2: The game is played. Act 3: **??** — we're still in Act 2, folks.",
+  "🦆 If a Codenames game is played and no one submits the result, did it even happen? Philosophically speaking — no.",
+  "💤 Zzzzzz— oh! Sorry, the thread dozed off. It's awake now. Are YOU?",
+  "🌮 Fun tournament tip: results are best submitted before they get cold, like tacos. Don't let your victory get cold.",
+  "🎪 Step right up! See the longest-running Codenames match in recorded history! Admission: just a result submission.",
+  "📜 Ancient tournament scroll, decoded: *'Ye who doth not submit their result shall be haunted by ping messages for eternity.'*",
+  "🤖 Beep boop. Bot online. Thread alive. Result: missing. Conclusion: please help the bot.",
+  "🏆 Somewhere in this tournament, someone is going to win. It could be you! But first you have to *play*.",
+  "🎯 Clue: 'SUBMIT' — 1. The word? Your game result. The board is waiting.",
+  "🌈 Every time a Codenames result gets submitted, a rainbow appears. The sky has been suspiciously clear lately.",
+  "🦁 Be the spymaster you wish to see in the world. Also be the person who submits results on time.",
+  "🏰 The tournament castle stands strong. Its gates are open. The drawbridge is down. Just come in and submit your result.",
+  "🔮 The tournament oracle predicts: *someone will win this match*. Prophecy pending result submission.",
+  "🎸 🎵 *Don't stop believin'... hold on to that game result...* 🎵 — Journey (probably, if they played board games)",
+  "🌍 Seven billion people on Earth. Only you four are standing between this thread and a result. No pressure.",
+  "🍕 Results are like pizza — even when they're late, they're still welcome. Bring your result. We have metaphorical pizza.",
+  "📱 You have 1 unread message from: your unfinished Codenames match. It says: 'please come back, I miss you.'",
+  "🧲 This message is magnetically attracted to your attention. Its purpose: remind you a game awaits completion.",
+  "⚔️ Two teams. One board. Twenty-five words. Infinite procrastination potential. Please reduce the potential.",
+  "🎰 The slot machine of destiny has been spinning since this round began. Pull the lever. Submit the result.",
+  "🌊 Like a wave that never reaches the shore, this game result floats somewhere in the ether. Bring it home.",
+  "🦅 Freedom is submitting your Codenames result and watching the scoreboard update in real time. Fly free.",
+  "🧁 Every game result submitted earns exactly zero cupcakes. But the emotional satisfaction? Priceless.",
+  "🎬 *[Director's voice]* Okay team, we've been on this scene for a while. Let's get that result and move on to the next round!",
+  "🧸 Even the tournament mascot (a small imaginary bear named Gerald) is rooting for you to finish this game.",
+  "🏄 Ride the wave of tournament glory. It starts with one small step: clicking that result button.",
+  "💡 Hot tip from a Codenames grandmaster: *winning is better when you actually finish the game.*",
+  "🗺️ You are HERE → [unfinished match]. The treasure is HERE → [submitted result]. Adventure awaits.",
+  "🎻 *plays world's smallest violin for the unsubmitted game result* 🎻 It's a touching melody. Very sad.",
+  "🚀 Houston, we have a match. It's in progress. Mission control is standing by for your result transmission.",
+  "🌟 Stars aligned, players assembled, board laid out, clues given — the only thing missing is *your result*. You've got this!",
+];
 
 const commands = [
   new SlashCommandBuilder()
@@ -86,7 +141,10 @@ client.once('clientReady', async () => {
           await updateScoreboard(guild);
           console.log('[startup] Scoreboard rebuilt');
           // Re-schedule round timers after restart
-          if (tournament.roundDeadline) scheduleRoundTimers(guild);
+          if (tournament.roundDeadline) {
+            scheduleRoundTimers(guild);
+            if (tournament.activeMatches.length > 0) startThreadKeepAlive(guild);
+          }
 
           // Recovery: if the current round has no active matches and isn't complete,
           // the threads were never created (e.g. permission error or crash during allocateRound).
@@ -1046,7 +1104,7 @@ async function allocateRound(guild) {
 
       const thread = await channel.threads.create({
         name: `R${tournament.currentRound}M${matchNumber} Game`,
-        autoArchiveDuration: 60,
+        autoArchiveDuration: 10080,
         reason: 'Tournament game thread',
       });
 
@@ -1081,13 +1139,47 @@ async function allocateRound(guild) {
   tournament.roundStartedAt = new Date().toISOString();
   await saveTournamentData();
   scheduleRoundTimers(guild);
+  startThreadKeepAlive(guild);
   return { success: true, message: `Round ${tournament.currentRound} allocated with ${tournament.activeMatches.length} match(es).` };
 }
 
 
 function clearRoundTimers() {
-  if (roundWarningTimer) { clearTimeout(roundWarningTimer); roundWarningTimer = null; }
-  if (roundExpiryTimer)  { clearTimeout(roundExpiryTimer);  roundExpiryTimer  = null; }
+  if (roundWarningTimer)   { clearTimeout(roundWarningTimer);   roundWarningTimer   = null; }
+  if (roundExpiryTimer)    { clearTimeout(roundExpiryTimer);    roundExpiryTimer    = null; }
+  if (threadKeepAliveTimer){ clearTimeout(threadKeepAliveTimer); threadKeepAliveTimer = null; }
+}
+
+async function sendThreadKeepAlive(guild) {
+  if (!tournament.started || tournament.activeMatches.length === 0) return;
+  const msg = KEEPALIVE_MESSAGES[Math.floor(Math.random() * KEEPALIVE_MESSAGES.length)];
+  for (const match of tournament.activeMatches) {
+    try {
+      const thread = await guild.channels.fetch(match.threadId).catch(() => null);
+      if (!thread) continue;
+      // Unarchive if Discord auto-archived it
+      if (thread.archived) await thread.setArchived(false).catch(() => null);
+      await thread.send(msg);
+    } catch (e) { console.error(`[keepalive] Thread ${match.threadId} failed:`, e.message); }
+  }
+  // Schedule next keep-alive in 2–3 days (random to avoid predictability)
+  scheduleNextKeepAlive(guild);
+}
+
+function scheduleNextKeepAlive(guild) {
+  if (threadKeepAliveTimer) { clearTimeout(threadKeepAliveTimer); threadKeepAliveTimer = null; }
+  if (!tournament.started || tournament.activeMatches.length === 0) return;
+  // Random delay between 2 and 3 days in ms
+  const TWO_DAYS   = 2 * 24 * 60 * 60 * 1000;
+  const THREE_DAYS = 3 * 24 * 60 * 60 * 1000;
+  const delay = TWO_DAYS + Math.random() * (THREE_DAYS - TWO_DAYS);
+  threadKeepAliveTimer = setTimeout(() => {
+    sendThreadKeepAlive(guild).catch(e => console.error('[keepalive] Failed:', e.message));
+  }, delay);
+}
+
+function startThreadKeepAlive(guild) {
+  scheduleNextKeepAlive(guild);
 }
 
 function scheduleRoundTimers(guild) {
@@ -1121,9 +1213,9 @@ async function sendRoundWarning(guild) {
   for (const match of tournament.activeMatches) {
     try {
       const thread = await guild.channels.fetch(match.threadId).catch(() => null);
-      if (thread) {
-        await thread.send(`⚠️ **Round timer warning:** This round ends <t:${ts}:F> (<t:${ts}:R>). Please complete your game soon!`);
-      }
+      if (!thread) continue;
+      if (thread.archived) await thread.setArchived(false).catch(() => null);
+      await thread.send(`⚠️ **Round timer warning:** This round ends <t:${ts}:F> (<t:${ts}:R>). Please complete your game soon!`);
     } catch (e) { console.error(`[timer] Warning in thread ${match.threadId} failed:`, e.message); }
   }
 }
