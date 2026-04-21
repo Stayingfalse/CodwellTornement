@@ -493,8 +493,12 @@ client.on('interactionCreate', async (interaction) => {
             const embed = message.embeds[0];
             const updatedEmbed = EmbedBuilder.from(embed)
               .setDescription(description)
+              .setFields([])
               .setColor(0x00ff00);
-            await message.edit({ embeds: [updatedEmbed] });
+            const websiteRow = new ActionRowBuilder().addComponents(
+              new ButtonBuilder().setLabel('🌐 Website').setStyle(ButtonStyle.Link).setURL(getWebBaseUrl()),
+            );
+            await message.edit({ embeds: [updatedEmbed], components: [websiteRow] });
           }
         }
       } catch (error) {
@@ -909,6 +913,7 @@ async function updateScoreboard(guild) {
     if (!message) return;
 
     let description;
+    const fields = [];
     if (tournament.currentRound > tournament.rounds.length) {
       description = `**Tournament Complete!**\n\n**Final Scoreboard:**\n`;
       Array.from(tournament.scores.entries())
@@ -920,13 +925,16 @@ async function updateScoreboard(guild) {
       description = `**Tournament Live - Round ${tournament.currentRound}/${tournament.rounds.length}**\n`;
       description += `${completedInRound}/${roundMatches.length} matches completed\n\n`;
       if (tournament.activeMatches.length > 0) {
-        description += `**Active Matches:**\n`;
+        description += `**⚔️ Active Matches**\n`;
         tournament.activeMatches.forEach(m => {
           const activePhase = m.gamePhase ?? 1;
           const activeGrouping = activePhase === 2 ? getSwappedGrouping(m.grouping) : m.grouping;
-          description += `Match ${m.matchNumber} (Game ${activePhase}/2): 🔵 <@${activeGrouping.blue.spymaster}> & <@${activeGrouping.blue.guesser}> vs 🔴 <@${activeGrouping.red.spymaster}> & <@${activeGrouping.red.guesser}>\n`;
+          fields.push({
+            name: `Match ${m.matchNumber} — Game ${activePhase}/2`,
+            value: `🔵 <@${activeGrouping.blue.spymaster}> & <@${activeGrouping.blue.guesser}>\nvs 🔴 <@${activeGrouping.red.spymaster}> & <@${activeGrouping.red.guesser}>`,
+            inline: true,
+          });
         });
-        description += '\n';
       }
       description += `**Scoreboard:**\n`;
       Array.from(tournament.scores.entries())
@@ -934,9 +942,11 @@ async function updateScoreboard(guild) {
         .forEach((entry, idx) => { description += `${idx + 1}. <@${entry[0]}> - ${entry[1]} pts\n`; });
     }
 
-    const embed = message.embeds[0];
-    const updatedEmbed = EmbedBuilder.from(embed).setDescription(description);
-    await message.edit({ embeds: [updatedEmbed] });
+    const websiteRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setLabel('🌐 Website').setStyle(ButtonStyle.Link).setURL(getWebBaseUrl()),
+    );
+    const updatedEmbed = EmbedBuilder.from(message.embeds[0]).setDescription(description).setFields(fields);
+    await message.edit({ embeds: [updatedEmbed], components: [websiteRow] });
   } catch (error) {
     console.error('[updateScoreboard] Failed:', error.message);
   }
