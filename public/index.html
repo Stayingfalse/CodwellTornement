@@ -946,7 +946,8 @@
     return String(s)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
   function displayName(id) {
@@ -1174,7 +1175,7 @@
         // For an active match in Game 2, Game 1 result is stored in activeMatches
         const g1ResultFromActive = (active && active.gamePhase === 2 && active.game1Result)
           ? active.game1Result : null;
-        const displayR1 = r1 || (g1ResultFromActive ? { ...g1ResultFromActive, winner: g1ResultFromActive.winner } : null);
+        const displayR1 = r1 || g1ResultFromActive || null;
 
         const activePhase = active ? (active.gamePhase ?? 1) : null;
 
@@ -1433,7 +1434,7 @@
   }
 
   function setResultEditWinner(w) {
-    resultEditState = resultEditState ? { ...resultEditState, winner: w } : { winner: w };
+    if (resultEditState) resultEditState.winner = w;
     document.getElementById('re-blue-btn').classList.toggle('selected', w === 'blue');
     document.getElementById('re-red-btn').classList.toggle('selected', w === 'red');
   }

@@ -696,12 +696,12 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       // Deduplication guard — prevent two simultaneous submissions for the same game
-      const procKey = `${interaction.channelId}:${expectedPhase}`;
-      if (processingThreads.has(procKey)) {
+      const submissionKey = `${interaction.channelId}:${expectedPhase}`;
+      if (processingThreads.has(submissionKey)) {
         await interaction.reply({ content: 'A result is already being submitted for this game. Please wait.', flags: MessageFlags.Ephemeral });
         return;
       }
-      processingThreads.add(procKey); // synchronous — set before any await
+      processingThreads.add(submissionKey); // synchronous — set before any await
 
       const winner = (customId === 'log_blue_win' || customId === 'log_blue_win_g2') ? 'blue' : 'red';
 
@@ -721,7 +721,7 @@ client.on('interactionCreate', async (interaction) => {
       try {
         await interaction.reply({ content: `Game ${expectedPhase}: Was the winning move an assassin hit?`, components: [assassinRow], flags: MessageFlags.Ephemeral });
       } finally {
-        processingThreads.delete(procKey);
+        processingThreads.delete(submissionKey);
       }
     } else if (customId.startsWith('assassin_')) {
       const parts = customId.split('_');
@@ -750,24 +750,24 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       // Deduplication guard for the assassin→result step
-      const procKey2 = `${interaction.channelId}:${expectedPhase}:result`;
-      if (processingThreads.has(procKey2)) {
+      const resultProcessingKey = `${interaction.channelId}:${expectedPhase}:result`;
+      if (processingThreads.has(resultProcessingKey)) {
         await interaction.reply({ content: 'A result is already being submitted for this game. Please wait.', flags: MessageFlags.Ephemeral });
         return;
       }
-      processingThreads.add(procKey2); // synchronous
+      processingThreads.add(resultProcessingKey); // synchronous
 
       if (wasAssassin) {
         try {
           await processGameResult(interaction, matchData2, winner, true, 0);
         } finally {
-          processingThreads.delete(procKey2);
+          processingThreads.delete(resultProcessingKey);
         }
         return;
       }
 
       // Not an assassin — show modal for remaining cards
-      processingThreads.delete(procKey2); // modal submission is a separate interaction
+      processingThreads.delete(resultProcessingKey); // modal submission is a separate interaction
       const modal = new ModalBuilder()
         .setCustomId(`outcome_modal_${winner}_normal_${expectedPhase}`)
         .setTitle(`${winner === 'blue' ? 'Blue' : 'Red'} Won — Game ${expectedPhase} Details`);
@@ -843,12 +843,12 @@ client.on('interactionCreate', async (interaction) => {
       const gamePhase = parts[4] ? parseInt(parts[4]) : 1;
 
       // Deduplication guard for the modal→result step
-      const procKeyM = `${interaction.channelId}:${gamePhase}:result`;
-      if (processingThreads.has(procKeyM)) {
+      const modalProcessingKey = `${interaction.channelId}:${gamePhase}:result`;
+      if (processingThreads.has(modalProcessingKey)) {
         await interaction.reply({ content: 'A result is already being submitted for this game. Please wait.', flags: MessageFlags.Ephemeral });
         return;
       }
-      processingThreads.add(procKeyM); // synchronous
+      processingThreads.add(modalProcessingKey); // synchronous
 
       try {
         const remainingCardsValue = interaction.fields.getTextInputValue('remaining_cards');
@@ -877,7 +877,7 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.reply({ content: 'An error occurred while processing the outcome. Please try again.', flags: MessageFlags.Ephemeral });
         } catch {}
       } finally {
-        processingThreads.delete(procKeyM);
+        processingThreads.delete(modalProcessingKey);
       }
     } else if (customId === 'adjust_score_modal') {
       const rawId = interaction.fields.getTextInputValue('adjust_player_id').trim().replace(/[<@!>]/g, '');
