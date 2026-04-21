@@ -998,10 +998,15 @@ async function allocateRound(guild) {
       }
       await channel.send({ embeds: [summaryEmbed] });
 
-      // Clear results for the next round
+      // Clear results only after the summary has been successfully posted
       tournament.roundResults = [];
       await saveTournamentData();
-    } catch (e) { console.error('Failed to post round summary:', e.message); }
+    } catch (e) {
+      console.error('Failed to post round summary:', e.message);
+      // Still clear roundResults so the next round starts cleanly, but log the failure
+      tournament.roundResults = [];
+      await saveTournamentData().catch(() => null);
+    }
   }
 
   // Allocate all matches in this round simultaneously
@@ -1408,6 +1413,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
       remainingCards: g1.remainingCards,
       winPoints: g1.winPoints,
       losePoints: g1.losePoints,
+      threadId: matchData.threadId,
     });
     tournament.roundResults.push({
       matchNumber: matchData.matchNumber,
@@ -1418,6 +1424,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
       remainingCards,
       winPoints,
       losePoints,
+      threadId: matchData.threadId,
     });
 
     // Push both games to the permanent history
@@ -1431,6 +1438,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
       remainingCards: g1.remainingCards,
       winPoints: g1.winPoints,
       losePoints: g1.losePoints,
+      threadId: matchData.threadId,
       matchCreatedAt: matchData.matchCreatedAt || null,
       submittedAt: g1.submittedAt || null,
       submittedBy: g1.submittedBy || null,
@@ -1445,6 +1453,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
       remainingCards,
       winPoints,
       losePoints,
+      threadId: matchData.threadId,
       matchCreatedAt: matchData.matchCreatedAt || null,
       submittedAt,
       submittedBy,
@@ -2075,6 +2084,26 @@ async function handleHttpRequest(req, res) {
         await saveTournamentData();
         const guildOverride = client.guilds.cache.get(process.env.GUILD_ID);
         if (guildOverride) updateScoreboard(guildOverride).catch(() => null);
+
+        // Post a notification to the game thread if it still exists
+        const threadId = (histIdx !== -1 ? tournament.history[histIdx].threadId : null)
+          || (activeMatchForG1 ? activeMatchForG1.threadId : null);
+        if (threadId && guildOverride) {
+          try {
+            const thread = await guildOverride.channels.fetch(threadId).catch(() => null);
+            if (thread) {
+              const overrideWinnerLabel = winner === 'blue' ? '🔵 Blue' : '🔴 Red';
+              const overrideHow = isAssassin ? 'assassin hit' : `${rCards} card${rCards !== 1 ? 's' : ''} remaining`;
+              const adminName = session.globalName || session.username;
+              const notifyMsg = `⚠️ **Admin result correction** (by ${adminName})\n` +
+                `Round ${rNum} · Match ${mNum} · Game ${gNum}: result changed to **${overrideWinnerLabel} wins** (${overrideHow}).`;
+              await thread.send(notifyMsg);
+            }
+          } catch (e) {
+            console.error('[override-result] Failed to post thread notification:', e.message);
+          }
+        }
+
         sendJson(res, 200, { ok: true, message: `Round ${rNum} Match ${mNum} Game ${gNum} updated: ${winner === 'blue' ? 'Blue' : 'Red'} wins.` });
         return;
       }
