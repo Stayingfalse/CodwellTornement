@@ -1,43 +1,285 @@
-# Codenames Tournament Bot
+# 🕵️ Codenames Tournament Bot
 
-A Discord bot for organizing and managing Codenames tournaments with round robin pairings.
+A Discord bot and web dashboard for running fully-automated round-robin Codenames tournaments. Players sign up in Discord, the bot generates every matchup, creates a private thread per game, tracks scores, and publishes a live web scoreboard — all with zero manual scheduling.
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+  - [Node.js (direct)](#nodejs-direct)
+  - [Docker / Docker Compose](#docker--docker-compose)
+- [Configuration](#configuration)
+  - [Environment Variables](#environment-variables)
+  - [Required Bot Permissions](#required-bot-permissions)
+  - [Discord Application Setup](#discord-application-setup)
+- [Running the Bot](#running-the-bot)
+- [Discord Usage](#discord-usage)
+  - [Slash Commands](#slash-commands)
+  - [Player Buttons](#player-buttons)
+  - [Admin Panel](#admin-panel)
+  - [In-Game Buttons](#in-game-buttons)
+- [Tournament Format](#tournament-format)
+- [Scoring](#scoring)
+- [Web Dashboard](#web-dashboard)
+  - [Public View](#public-view)
+  - [Admin View (web)](#admin-view-web)
+- [Data Persistence](#data-persistence)
+- [Debug Mode](#debug-mode)
+
+---
 
 ## Features
 
-- Interactive sign-up via buttons
-- Automatic allocation of pairings with embeds
-- Thread creation for each game round
-- Outcome logging via buttons in threads
-- Score tracking with embeds
-- Round progression
+- **One slash command** — `/tournament` posts the signup embed anywhere in your server
+- **Interactive sign-up** — players join (or withdraw) with a single button click; the embed updates in real time with the current player list and a tournament size prediction
+- **Full round-robin scheduling** — every player plays every other player in all four role configurations (blue spymaster, blue guesser, red spymaster, red guesser)
+- **Two games per match** — roles are automatically swapped after Game 1 so every player tries both roles against the same opponents in the same sitting
+- **Automatic thread creation** — a dedicated Discord thread is created for each match; players submit results with buttons inside their thread
+- **Result correction** — players (and admins) can undo and re-submit a wrong result at any time before the round ends
+- **Score tracking** — a live scoreboard embed is kept up-to-date in the tournament channel throughout the event
+- **Round deadlines** — configurable deadline per round; a warning fires 2 days before expiry and an expiry notice with a Force End button fires when time runs out
+- **Thread keep-alive messages** — the bot posts a random humorous message every 2–3 days into active match threads to prevent Discord from auto-archiving them and to nudge players to finish
+- **Round summaries** — a rich embed summarising every result is posted at the start of each new round
+- **Admin controls** — in Discord (ephemeral) and on the web dashboard
+- **Web dashboard** — public live scoreboard, round browser, match history, and a full admin panel accessible via Discord OAuth2 login
+- **Persistent state** — all tournament data is saved to disk; the bot safely recovers across restarts
 
-## Setup
+---
 
-1. Create a Discord bot at https://discord.com/developers/applications
-2. Get the bot token, guild ID, and admin role ID
-3. Copy `.env.example` to `.env` and fill in the values
-4. Install dependencies: `npm install`
-5. Run the bot: `npm start`
+## Prerequisites
 
-### Docker Setup
+- **Node.js 18+** (or Docker)
+- A **Discord application** with a bot user — create one at <https://discord.com/developers/applications>
+- The bot must be a member of your Discord server
 
-1. Ensure Docker and Docker Compose are installed
-2. Copy `.env.example` to `.env` and fill in the values
-3. Run with Docker Compose: `docker-compose up -d`
-4. Or build and run manually: `docker build -t codenames-bot .` then `docker run --env-file .env codenames-bot`
+---
 
-## Commands
+## Installation
 
-- `/tournament`: Post the tournament setup embed with sign-up and admin buttons
+### Node.js (direct)
+
+```bash
+git clone https://github.com/Stayingfalse/CodwellTornement.git
+cd CodwellTornement
+npm install
+cp .env.example .env
+# Edit .env with your values (see Configuration below)
+npm start
+```
+
+For development with auto-restart on file changes:
+
+```bash
+npm run dev
+```
+
+### Docker / Docker Compose
+
+```bash
+cp .env.example .env
+# Edit .env with your values
+docker-compose up -d
+```
+
+Or build and run manually:
+
+```bash
+docker build -t codenames-bot .
+docker run --env-file .env -v $(pwd)/data:/app/data codenames-bot
+```
+
+The `data/` directory is mounted as a volume so tournament state survives container restarts.
+
+---
+
+## Configuration
+
+Copy `.env.example` to `.env` and fill in the values before starting the bot.
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `BOT_TOKEN` | ✅ | — | Discord bot token from the Developer Portal |
+| `GUILD_ID` | ✅ | — | Numeric ID of your Discord server |
+| `ADMIN_ROLE_ID` | ✅ | — | Numeric ID of the role that grants admin access to bot controls |
+| `DISCORD_CLIENT_ID` | ⬜ | — | OAuth2 application client ID — required for web dashboard login |
+| `DISCORD_CLIENT_SECRET` | ⬜ | — | OAuth2 application client secret — required for web dashboard login |
+| `WEB_URL` | ⬜ | auto-detected | Public base URL of the dashboard (e.g. `https://tournament.example.com`). Used for the OAuth2 redirect URI and the 🌐 Website button on the Discord embed. |
+| `WEB_PORT` | ⬜ | `80` | Port the web server listens on |
+| `ROUND_TIMEOUT_DAYS` | ⬜ | `14` | Days before a round deadline fires (supports decimals, e.g. `0.01` for testing) |
+| `DEBUG_MODE` | ⬜ | `false` | Set to `true` to enable the Seed Players debug button in the Discord admin panel |
+| `DEBUG_PLAYER_COUNT` | ⬜ | `8` | How many fake players to seed when Debug Mode is on |
+
+### Required Bot Permissions
+
+When you invite the bot to your server it needs the following permissions (the bot prints a ready-made invite URL to the console on startup):
+
+| Permission | Why |
+|---|---|
+| View Channels | See the tournament channel |
+| Send Messages | Post match embeds and round headers |
+| Send Messages in Threads | Post inside game threads |
+| Embed Links | Send rich embeds |
+| Read Message History | Fetch old messages to delete between rounds |
+| Manage Messages | Delete old round messages when a new round starts |
+| Create Public Threads | Create a thread for each game |
+| Manage Threads | Archive threads after a match completes |
+| Use Application Commands | Register and handle slash commands |
+
+### Discord Application Setup
+
+1. Go to <https://discord.com/developers/applications> and open (or create) your application.
+2. Under **Bot**, copy the token → `BOT_TOKEN`.
+3. Under **OAuth2 → General**, copy the **Client ID** → `DISCORD_CLIENT_ID` and generate a **Client Secret** → `DISCORD_CLIENT_SECRET`.
+4. Add a redirect URI: `https://yourdomain.com/auth/discord/callback` (replace with your actual `WEB_URL`).
+5. Invite the bot using the URL printed to the console on first start, or build one manually with `scope=bot+applications.commands` and the permissions listed above.
+
+---
+
+## Running the Bot
+
+```bash
+npm start
+```
+
+On startup the bot will:
+
+1. Print a permissions invite URL to the console.
+2. Load any previously saved tournament state from `data/tournament.json`.
+3. Re-register the `/tournament` slash command in your guild.
+4. Rebuild the signup/scoreboard embed from saved state.
+5. Re-schedule any round deadline timers that were active before restart.
+6. Automatically re-allocate the current round if it had no active threads (crash recovery).
+
+---
+
+## Discord Usage
+
+### Slash Commands
+
+| Command | Description |
+|---|---|
+| `/tournament` | Post the tournament signup embed in the current channel. If an embed already exists it is replaced. |
+
+### Player Buttons
+
+These appear on the main tournament embed:
+
+| Button | Behaviour |
+|---|---|
+| **Sign Up** | Adds you to the tournament player list. Click again to get a confirmation prompt to remove yourself. |
+| **🌐 Website** | Opens the live web dashboard in your browser. |
+
+### Admin Panel
+
+Clicking **Admin** on the signup embed (requires the configured admin role) opens an ephemeral admin panel with the following buttons:
+
+| Button | What it does |
+|---|---|
+| **Start Tournament** | Locks sign-ups, generates the full round-robin schedule, snapshots display names, and updates the embed to show the live scoreboard. Requires at least 4 players. |
+| **Allocate Next Round** | Creates all game threads for the current round and posts a round header embed with the deadline timestamp. Can only be used when no matches are currently active. |
+| **View Scores** | Shows a private (ephemeral) embed with the current scores of all players. |
+| **Force End Match** | Immediately archives all active threads in the current round, awards 0 points to incomplete matches, and advances to the next round (which is auto-allocated). |
+| **Adjust Score** | Opens a modal to enter a player ID and a point delta (positive or negative) to manually correct a score. |
+| **Reset Tournament** | Wipes all tournament data (players, scores, rounds, history) and resets the signup embed. The embed and channel ID are preserved so the same message can be reused. |
+| **[DEBUG] Seed Players** | Only visible when `DEBUG_MODE=true`. Adds fake players up to `DEBUG_PLAYER_COUNT` so you can test without real sign-ups. |
+
+### In-Game Buttons
+
+These appear inside each match thread:
+
+| Button | What it does |
+|---|---|
+| **Blue Wins** / **Red Wins** | Starts the result submission flow for Game 1 (or Game 2 after the swap). Only the four players in the match or an admin may press these. |
+| **Yes, Assassin Hit** / **No, Not Assassin** | Follows the win button — records whether the win was via the assassin word. If not an assassin, a modal prompts for the number of cards remaining (0–8). |
+| **Correct Result** | Appears after a result is recorded. Reverses the recorded scores and re-opens the result buttons so the correct outcome can be submitted. |
+
+---
+
+## Tournament Format
+
+The tournament uses a **full round-robin** schedule where every player is paired with every other player across four distinct role configurations:
+
+1. Player A as Blue Spymaster, Player B as Blue Guesser
+2. Player A as Blue Guesser, Player B as Blue Spymaster
+3. Player A as Red Spymaster, Player B as Red Guesser
+4. Player A as Red Guesser, Player B as Red Spymaster
+
+**Rounds** are generated so that as many matches as possible run concurrently (up to ⌊N/4⌋ simultaneous games per round). All matches within a round start at the same time in their own threads.
+
+**Each match consists of two games:**
+
+- **Game 1** — Blue Spymaster A & Blue Guesser B vs Red Spymaster C & Red Guesser D
+- **Game 2** — Roles swapped: Blue Spymaster B & Blue Guesser A vs Red Spymaster D & Red Guesser C
+
+After Game 1 the thread automatically updates with new buttons for Game 2. Once both games are logged the thread is archived and the scoreboard updated. When all threads in a round are complete, the next round is allocated automatically.
+
+**Round deadlines** are configurable via `ROUND_TIMEOUT_DAYS` (default 14 days). A warning message is posted to all active threads 2 days before the deadline. When the deadline expires, an expiry embed is posted in the tournament channel with a **Force End** button for admins.
+
+---
 
 ## Scoring
 
-- Winning team: 3 points per player
-- Losing team: 
-  - 1 point per player if 3 or fewer cards remaining
-  - 0 points if more than 3 cards remaining
-  - -1 point per player if lost by hitting the assassin (regardless of cards remaining)
+Points are awarded per game:
 
-## Usage
+| Outcome | Winning team (per player) | Losing team (per player) |
+|---|---|---|
+| Standard win, ≤ 3 cards remaining | **+3** | **+1** |
+| Standard win, > 3 cards remaining | **+3** | **+0** |
+| Win by assassin hit | **+3** | **−1** |
 
-Invite the bot to your server with permissions to manage threads and send messages. Use `/tournament` to start the setup. Players sign up via button, admins access controls via the Admin button (requires specific role). The bot creates threads for each game round to keep discussions organized.
+The number of "cards remaining" means the opponent's unrevealed cards still on the board when the game ends.
+
+---
+
+## Web Dashboard
+
+The bot starts an HTTP server alongside the Discord bot. Port defaults to `80` and is configurable via `WEB_PORT`.
+
+### Public View
+
+Accessible at your `WEB_URL` (no login required):
+
+- **Overview** — tournament status, current round, round deadline countdown, player count
+- **Scoreboard** — live rankings with points
+- **Round browser** — expandable list of every round showing all matches, team compositions, and game results with scores
+- **Match history** — full chronological game log
+
+The dashboard auto-updates via the **↻ Refresh** button or can be refreshed manually.
+
+### Admin View (web)
+
+Log in with **Discord** (OAuth2) using the login button in the top-right corner. You must be a member of the configured server and hold the admin role.
+
+Once logged in, an **Admin Controls** panel appears above the rounds list with:
+
+| Button | Action |
+|---|---|
+| **▶ Start Tournament** | Same as the Discord admin Start button |
+| **⚡ Allocate Round** | Same as the Discord admin Allocate Next Round button |
+| **⏭ Force End Round** | Same as the Discord admin Force End Match button |
+| **🔀 Shuffle Remaining Rounds** | Randomly reorders all future (not yet started) rounds |
+| **🗑 Reset Tournament** | Same as the Discord admin Reset button (with a confirmation prompt) |
+| **Adjust Score** | Enter a player ID and delta directly in the admin panel |
+
+All admin actions are reflected immediately in both the web dashboard and the Discord embed.
+
+---
+
+## Data Persistence
+
+All tournament state is written to `data/tournament.json` after every change. On startup the bot loads this file and resumes where it left off — including active matches, scores, round schedules, and deadline timers.
+
+When running with Docker Compose the `data/` directory is mounted as a host volume (`./data:/app/data`) so data persists across container rebuilds.
+
+---
+
+## Debug Mode
+
+Set `DEBUG_MODE=true` in your `.env` to enable a **Seed Players** button in the Discord admin panel. Pressing it adds `DEBUG_PLAYER_COUNT` fake players (using synthetic IDs) so you can run through the entire tournament flow without real sign-ups.
+
+Remove or set `DEBUG_MODE=false` before running a real tournament.
