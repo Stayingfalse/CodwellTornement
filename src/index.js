@@ -1,6 +1,8 @@
 require('dotenv').config();
 
 const http = require('http');
+const https = require('https');
+const crypto = require('crypto');
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, PermissionsBitField } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
@@ -321,9 +323,9 @@ client.on('interactionCreate', async (interaction) => {
         row = new ActionRowBuilder()
           .addComponents(
             new ButtonBuilder()
-              .setCustomId('admin')
-              .setLabel('Admin')
-              .setStyle(ButtonStyle.Secondary),
+              .setLabel('🌐 Website')
+              .setStyle(ButtonStyle.Link)
+              .setURL(getWebBaseUrl()),
           );
       } else {
         // Tournament not started - show sign-up
@@ -339,9 +341,9 @@ client.on('interactionCreate', async (interaction) => {
               .setLabel('Sign Up')
               .setStyle(ButtonStyle.Primary),
             new ButtonBuilder()
-              .setCustomId('admin')
-              .setLabel('Admin')
-              .setStyle(ButtonStyle.Secondary),
+              .setLabel('🌐 Website')
+              .setStyle(ButtonStyle.Link)
+              .setURL(getWebBaseUrl()),
           );
       }
 
@@ -629,9 +631,9 @@ client.on('interactionCreate', async (interaction) => {
                     .setLabel('Sign Up')
                     .setStyle(ButtonStyle.Primary),
                   new ButtonBuilder()
-                    .setCustomId('admin')
-                    .setLabel('Admin')
-                    .setStyle(ButtonStyle.Secondary),
+                    .setLabel('🌐 Website')
+                    .setStyle(ButtonStyle.Link)
+                    .setURL(getWebBaseUrl()),
                 );
               const resetEmbed = new EmbedBuilder()
                 .setTitle('Codenames Tournament')
@@ -1561,7 +1563,153 @@ client.on('error', (error) => {
   console.error('Client error:', error);
 });
 
-// ----- Web dashboard -----
+// ----- Web dashboard & OAuth -----
+
+// ── Session & OAuth state stores ──────────────────────────────────────────
+// Map<sessionId, { userId, username, globalName, avatar, isAdmin, expiresAt }>
+const sessions = new Map();
+// Map<state, { expiresAt, baseUrl }>
+const oauthStates = new Map();
+
+// Clean up expired entries every 15 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, sess] of sessions) {
+    if (sess.expiresAt < now) sessions.delete(id);
+  }
+  for (const [state, entry] of oauthStates) {
+    if (entry.expiresAt < now) oauthStates.delete(state);
+  }
+}, 15 * 60 * 1000);
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function getWebBaseUrl(req) {
+  if (process.env.WEB_URL) return process.env.WEB_URL.replace(/\/$/, '');
+  const port = parseInt(process.env.WEB_PORT) || 80;
+  if (req) {
+    const proto = (req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim();
+    const host = req.headers['x-forwarded-host'] || req.headers['host'] || `localhost:${port}`;
+    return `${proto}://${host}`;
+  }
+  const host = process.env.WEB_HOST || process.env.HOSTNAME || 'localhost';
+  return `http://${host}${port === 80 ? '' : ':' + port}`;
+}
+
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  if (!cookieHeader) return cookies;
+  for (const part of cookieHeader.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx < 0) continue;
+    const name = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    try { cookies[name] = decodeURIComponent(value); } catch { cookies[name] = value; }
+  }
+  return cookies;
+}
+
+function getSession(req) {
+  const cookies = parseCookies(req.headers.cookie);
+  const sid = cookies['sid'];
+  if (!sid) return null;
+  const sess = sessions.get(sid);
+  if (!sess) return null;
+  if (sess.expiresAt < Date.now()) { sessions.delete(sid); return null; }
+  return { sid, ...sess };
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString()));
+    req.on('error', reject);
+  });
+}
+
+function httpsGet(url, headers) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const options = { hostname: u.hostname, path: u.pathname + u.search, method: 'GET', headers: headers || {} };
+    const r = https.request(options, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, data: JSON.parse(Buffer.concat(chunks).toString()) }); }
+        catch { resolve({ status: res.statusCode, data: null }); }
+      });
+    });
+    r.on('error', reject);
+    r.end();
+  });
+}
+
+function httpsPost(url, body, extraHeaders) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const buf = Buffer.from(body, 'utf-8');
+    const options = {
+      hostname: u.hostname,
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': buf.length }, extraHeaders || {}),
+    };
+    const r = https.request(options, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, data: JSON.parse(Buffer.concat(chunks).toString()) }); }
+        catch { resolve({ status: res.statusCode, data: null }); }
+      });
+    });
+    r.on('error', reject);
+    r.write(buf);
+    r.end();
+  });
+}
+
+async function exchangeDiscordCode(code, redirectUri) {
+  const body = new URLSearchParams({
+    client_id: process.env.DISCORD_CLIENT_ID,
+    client_secret: process.env.DISCORD_CLIENT_SECRET,
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: redirectUri,
+  }).toString();
+  return httpsPost('https://discord.com/api/oauth2/token', body);
+}
+
+async function fetchDiscordUser(accessToken) {
+  return httpsGet('https://discord.com/api/users/@me', { Authorization: `Bearer ${accessToken}` });
+}
+
+async function isUserAdmin(userId) {
+  const guild = client.guilds.cache.get(process.env.GUILD_ID);
+  if (!guild) return false;
+  const adminRoleId = process.env.ADMIN_ROLE_ID;
+  if (!adminRoleId) return false;
+  try {
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) return false;
+    return member.roles.cache.has(adminRoleId);
+  } catch { return false; }
+}
+
+function sendJson(res, status, data) {
+  const payload = JSON.stringify(data);
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(payload);
+}
+
+function shuffleArray(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 function buildWebData() {
   return {
     started: tournament.started,
@@ -1585,18 +1733,333 @@ try {
 }
 
 const WEB_PORT = parseInt(process.env.WEB_PORT) || 80;
-http.createServer((req, res) => {
-  if (req.url === '/api') {
-    const payload = JSON.stringify(buildWebData());
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-    res.end(payload);
-  } else if (cachedDashboardHtml) {
+
+// ── HTTP request handler ───────────────────────────────────────────────────
+async function handleHttpRequest(req, res) {
+  try {
+    const rawUrl = req.url || '/';
+    const qIdx = rawUrl.indexOf('?');
+    const pathname = qIdx >= 0 ? rawUrl.slice(0, qIdx) : rawUrl;
+    const search = qIdx >= 0 ? rawUrl.slice(qIdx + 1) : '';
+    const query = Object.fromEntries(new URLSearchParams(search));
+    const method = (req.method || 'GET').toUpperCase();
+
+    // ── Public tournament data ───────────────────────────────────────────────
+    if (pathname === '/api' && method === 'GET') {
+      const payload = JSON.stringify(buildWebData());
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(payload);
+      return;
+    }
+
+    // ── Auth: start OAuth2 flow ──────────────────────────────────────────────
+    if (pathname === '/auth/discord' && method === 'GET') {
+      if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_CLIENT_SECRET) {
+        res.writeHead(503);
+        res.end('OAuth is not configured on this server.');
+        return;
+      }
+      const state = crypto.randomBytes(16).toString('hex');
+      const baseUrl = getWebBaseUrl(req);
+      oauthStates.set(state, { expiresAt: Date.now() + 10 * 60 * 1000, baseUrl });
+      const redirectUri = encodeURIComponent(`${baseUrl}/auth/discord/callback`);
+      const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${process.env.DISCORD_CLIENT_ID}&redirect_uri=${redirectUri}&response_type=code&scope=identify&state=${state}`;
+      res.writeHead(302, { Location: authUrl });
+      res.end();
+      return;
+    }
+
+    // ── Auth: OAuth2 callback ────────────────────────────────────────────────
+    if (pathname === '/auth/discord/callback' && method === 'GET') {
+      const { code, state, error } = query;
+
+      if (error) {
+        res.writeHead(302, { Location: `/?auth_error=${encodeURIComponent(error)}` });
+        res.end();
+        return;
+      }
+
+      const stateEntry = oauthStates.get(state);
+      if (!code || !state || !stateEntry || stateEntry.expiresAt < Date.now()) {
+        oauthStates.delete(state);
+        res.writeHead(302, { Location: '/?auth_error=invalid_state' });
+        res.end();
+        return;
+      }
+      oauthStates.delete(state);
+
+      const redirectUri = `${stateEntry.baseUrl}/auth/discord/callback`;
+
+      // Exchange code for access token
+      const tokenResult = await exchangeDiscordCode(code, redirectUri);
+      if (!tokenResult.data || !tokenResult.data.access_token) {
+        res.writeHead(302, { Location: '/?auth_error=token_exchange_failed' });
+        res.end();
+        return;
+      }
+
+      // Fetch Discord user info
+      const userResult = await fetchDiscordUser(tokenResult.data.access_token);
+      if (!userResult.data || !userResult.data.id) {
+        res.writeHead(302, { Location: '/?auth_error=user_fetch_failed' });
+        res.end();
+        return;
+      }
+
+      const user = userResult.data;
+      const admin = await isUserAdmin(user.id);
+
+      // Create session
+      const sid = crypto.randomBytes(32).toString('hex');
+      const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 hours
+      sessions.set(sid, {
+        userId: user.id,
+        username: user.username,
+        globalName: user.global_name || user.username,
+        avatar: user.avatar || null,
+        isAdmin: admin,
+        expiresAt: Date.now() + SESSION_TTL,
+      });
+
+      const isHttps = (process.env.WEB_URL || '').toLowerCase().startsWith('https://');
+      const cookieFlags = `HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL / 1000}${isHttps ? '; Secure' : ''}`;
+      res.writeHead(302, { Location: '/', 'Set-Cookie': `sid=${sid}; ${cookieFlags}` });
+      res.end();
+      return;
+    }
+
+    // ── Auth: logout ─────────────────────────────────────────────────────────
+    if (pathname === '/auth/logout' && method === 'POST') {
+      const session = getSession(req);
+      if (session) sessions.delete(session.sid);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': 'sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // ── Auth: current user ───────────────────────────────────────────────────
+    if (pathname === '/auth/me' && method === 'GET') {
+      const oauthEnabled = !!(process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET);
+      const session = getSession(req);
+      if (!session) {
+        sendJson(res, 200, { loggedIn: false, oauthEnabled });
+        return;
+      }
+      // Re-verify admin status on every /auth/me call
+      const admin = await isUserAdmin(session.userId);
+      if (admin !== session.isAdmin) {
+        sessions.set(session.sid, { ...sessions.get(session.sid), isAdmin: admin });
+      }
+      sendJson(res, 200, {
+        loggedIn: true,
+        userId: session.userId,
+        username: session.username,
+        globalName: session.globalName,
+        avatar: session.avatar,
+        isAdmin: admin,
+        oauthEnabled,
+      });
+      return;
+    }
+
+    // ── Admin API endpoints ──────────────────────────────────────────────────
+    if (pathname.startsWith('/api/admin/') && method === 'POST') {
+      // Require authenticated session
+      const session = getSession(req);
+      if (!session) { sendJson(res, 401, { error: 'Not authenticated. Please log in.' }); return; }
+
+      // Re-verify admin role on every request
+      const admin = await isUserAdmin(session.userId);
+      if (!admin) { sendJson(res, 403, { error: 'Forbidden. You do not have the tournament admin role.' }); return; }
+
+      // CSRF mitigation: when WEB_URL is configured, reject requests from other origins
+      if (process.env.WEB_URL) {
+        const origin = req.headers.origin || '';
+        const expectedBase = process.env.WEB_URL.replace(/\/$/, '');
+        if (origin && origin !== expectedBase) {
+          sendJson(res, 403, { error: 'CSRF check failed.' });
+          return;
+        }
+      }
+
+      const action = pathname.slice('/api/admin/'.length);
+
+      // ── start ──────────────────────────────────────────────────────────────
+      if (action === 'start') {
+        if (tournament.started) { sendJson(res, 400, { error: 'Tournament has already started.' }); return; }
+        if (tournament.players.size < 4) { sendJson(res, 400, { error: 'Need at least 4 players to start.' }); return; }
+
+        tournament.currentRound = 1;
+        tournament.currentRoundIndex = 0;
+        tournament.started = true;
+        tournament.tournamentStartedAt = new Date().toISOString();
+        tournament.scores = new Map([...tournament.players].map(id => [id, 0]));
+        tournament.rounds = generateRounds(Array.from(tournament.players));
+
+        // Snapshot display names
+        tournament.playerNames = {};
+        const guild = client.guilds.cache.get(process.env.GUILD_ID);
+        for (const id of tournament.players) {
+          if (id.startsWith('debug_')) {
+            tournament.playerNames[id] = id;
+          } else {
+            try {
+              const member = guild ? await guild.members.fetch(id).catch(() => null) : null;
+              tournament.playerNames[id] = member ? member.displayName : id;
+            } catch { tournament.playerNames[id] = id; }
+          }
+        }
+
+        await saveTournamentData();
+        if (guild) updateScoreboard(guild).catch(() => null);
+
+        sendJson(res, 200, { ok: true, message: `Tournament started with ${tournament.players.size} players! Generated ${tournament.rounds.length} rounds.` });
+        return;
+      }
+
+      // ── allocate ───────────────────────────────────────────────────────────
+      if (action === 'allocate') {
+        const guild = client.guilds.cache.get(process.env.GUILD_ID);
+        if (!guild) { sendJson(res, 500, { error: 'Discord guild not available.' }); return; }
+        const result = await allocateRound(guild);
+        sendJson(res, result.success ? 200 : 400, { ok: result.success, message: result.message });
+        return;
+      }
+
+      // ── force-end ──────────────────────────────────────────────────────────
+      if (action === 'force-end') {
+        if (tournament.activeMatches.length === 0) { sendJson(res, 400, { error: 'No active matches to force-end.' }); return; }
+        const guild = client.guilds.cache.get(process.env.GUILD_ID);
+        for (const match of tournament.activeMatches) {
+          try {
+            const t = guild ? guild.channels.cache.get(match.threadId) : null;
+            if (t) t.setArchived(true).catch(() => null);
+          } catch {}
+        }
+        const count = tournament.activeMatches.length;
+        tournament.activeMatches = [];
+        clearRoundTimers();
+        tournament.currentRound++;
+        tournament.currentRoundIndex = 0;
+        await saveTournamentData();
+        if (guild) {
+          updateScoreboard(guild).catch(() => null);
+          if (tournament.currentRound <= tournament.rounds.length) {
+            allocateRound(guild).catch(e => console.error('[web] Auto-allocate after force-end:', e.message));
+          }
+        }
+        sendJson(res, 200, { ok: true, message: `Force-ended ${count} active match(es). Advancing to next round.` });
+        return;
+      }
+
+      // ── reset ──────────────────────────────────────────────────────────────
+      if (action === 'reset') {
+        const prevSetupMessage = tournament.setupMessage;
+        const prevSetupChannelId = tournament.setupChannelId;
+        const guild = client.guilds.cache.get(process.env.GUILD_ID);
+
+        clearRoundTimers();
+        tournament = {
+          players: new Set(),
+          currentRound: 0,
+          currentRoundIndex: 0,
+          playedGroupings: new Set(),
+          scores: new Map(),
+          currentGrouping: null,
+          activeMatches: [],
+          roundResults: [],
+          roundDeadline: null,
+          setupMessage: prevSetupMessage,
+          setupChannelId: prevSetupChannelId,
+          rounds: [],
+          started: false,
+          history: [],
+          playerNames: {},
+          tournamentStartedAt: null,
+          roundStartedAt: null,
+        };
+        await saveTournamentData();
+
+        // Update the Discord embed to show the cleared state
+        if (prevSetupMessage && prevSetupChannelId && guild) {
+          try {
+            const channel = await guild.channels.fetch(prevSetupChannelId).catch(() => null);
+            if (channel) {
+              const message = await channel.messages.fetch(prevSetupMessage).catch(() => null);
+              if (message) {
+                const signupRow = new ActionRowBuilder().addComponents(
+                  new ButtonBuilder().setCustomId('signup').setLabel('Sign Up').setStyle(ButtonStyle.Primary),
+                  new ButtonBuilder().setLabel('🌐 Website').setStyle(ButtonStyle.Link).setURL(getWebBaseUrl()),
+                );
+                const resetEmbed = new EmbedBuilder()
+                  .setTitle('Codenames Tournament')
+                  .setDescription(buildSignupDescription())
+                  .setColor(0x0099ff);
+                await message.edit({ embeds: [resetEmbed], components: [signupRow] });
+              }
+            }
+          } catch (err) { console.error('[web admin reset] Failed to update Discord embed:', err.message); }
+        }
+
+        sendJson(res, 200, { ok: true, message: 'Tournament has been reset.' });
+        return;
+      }
+
+      // ── adjust-score ───────────────────────────────────────────────────────
+      if (action === 'adjust-score') {
+        let data;
+        try { data = JSON.parse(await readBody(req)); } catch { sendJson(res, 400, { error: 'Invalid JSON body.' }); return; }
+        const { userId, delta } = data || {};
+        const d = parseInt(delta);
+        if (!userId || isNaN(d)) { sendJson(res, 400, { error: 'Provide userId (string) and delta (integer).' }); return; }
+        if (!tournament.scores.has(userId)) { sendJson(res, 404, { error: `No score found for player ID "${userId}".` }); return; }
+        const oldScore = tournament.scores.get(userId);
+        tournament.scores.set(userId, oldScore + d);
+        await saveTournamentData();
+        const guild2 = client.guilds.cache.get(process.env.GUILD_ID);
+        if (guild2) updateScoreboard(guild2).catch(() => null);
+        sendJson(res, 200, { ok: true, message: `Score adjusted: ${oldScore} → ${oldScore + d} pts (${d >= 0 ? '+' : ''}${d})` });
+        return;
+      }
+
+      // ── shuffle-rounds ─────────────────────────────────────────────────────
+      if (action === 'shuffle-rounds') {
+        if (!tournament.started) { sendJson(res, 400, { error: 'Tournament has not started yet.' }); return; }
+        // Rounds that have not started: index currentRound onwards (currentRound is 1-indexed)
+        const startIdx = tournament.currentRound; // = first future round in 0-indexed array
+        if (startIdx >= tournament.rounds.length) {
+          sendJson(res, 400, { error: 'No remaining rounds to shuffle.' });
+          return;
+        }
+        const futureRounds = tournament.rounds.slice(startIdx);
+        shuffleArray(futureRounds);
+        futureRounds.forEach(round => shuffleArray(round));
+        tournament.rounds = [...tournament.rounds.slice(0, startIdx), ...futureRounds];
+        await saveTournamentData();
+        sendJson(res, 200, { ok: true, message: `Shuffled ${futureRounds.length} remaining round(s).` });
+        return;
+      }
+
+      sendJson(res, 404, { error: `Unknown admin action "${action}".` });
+      return;
+    }
+
+    // ── Static dashboard HTML ────────────────────────────────────────────────
+    if (!cachedDashboardHtml) {
+      res.writeHead(404);
+      res.end('Dashboard not available. Ensure public/index.html exists.');
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(cachedDashboardHtml);
-  } else {
-    res.writeHead(404);
-    res.end('Dashboard not available. Ensure public/index.html exists.');
+  } catch (err) {
+    console.error('[web] Unhandled request error:', err);
+    if (!res.headersSent) { res.writeHead(500); res.end('Internal Server Error'); }
   }
+}
+
+http.createServer((req, res) => {
+  handleHttpRequest(req, res);
 }).listen(WEB_PORT, () => console.log(`[web] Dashboard running on port ${WEB_PORT}`));
 
 console.log('Attempting to login with token:', process.env.BOT_TOKEN ? 'Token found' : 'Token missing');
