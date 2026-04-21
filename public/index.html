@@ -553,6 +553,40 @@
     #refresh-btn:hover:not(.fetching) { border-color: var(--border-hi); color: var(--text); background: var(--surface2); }
     #refresh-btn.fetching { border-color: rgba(59,130,246,0.4); color: #93c5fd; cursor: default; }
 
+    /* ── Admin-clickable result chips ── */
+    .admin-clickable {
+      cursor: pointer;
+      transition: opacity 0.15s, outline 0.15s;
+    }
+    .admin-clickable:hover {
+      opacity: 0.82;
+      outline: 1px dashed rgba(239,68,68,0.5);
+      outline-offset: 2px;
+    }
+    .admin-clickable::after {
+      content: ' ✏️';
+      font-size: 0.65em;
+      opacity: 0.6;
+    }
+
+    /* ── Result edit modal ── */
+    #result-edit-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 500;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      background: rgba(5,5,18,0.75);
+      backdrop-filter: blur(6px);
+    }
+    #result-edit-modal.open { display: flex; animation: fadeIn 0.2s ease; }
+
+    /* Winner button selected state */
+    #re-blue-btn.selected { border-color: rgba(59,130,246,0.8); background: rgba(59,130,246,0.15); color: #93c5fd; }
+    #re-red-btn.selected  { border-color: rgba(239,68,68,0.8);  background: rgba(239,68,68,0.15);  color: #fca5a5; }
+
     .spinner {
       width: 10px; height: 10px;
       border: 2px solid currentColor;
@@ -803,6 +837,47 @@
   </div>
 </div>
 
+<!-- Result Edit Modal — admin only -->
+<div id="result-edit-modal" role="dialog" aria-modal="true" aria-labelledby="result-edit-title" onclick="if(event.target===this)closeResultEdit()">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2 id="result-edit-title">✏️ Override Game Result</h2>
+      <button class="modal-close" onclick="closeResultEdit()" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body" style="gap:1rem">
+      <p id="result-edit-desc" style="font-size:0.82rem;color:var(--text-dim)"></p>
+      <div style="display:flex;flex-direction:column;gap:0.75rem">
+        <div>
+          <div class="admin-section-label" style="margin-bottom:0.4rem">Winner</div>
+          <div style="display:flex;gap:0.5rem">
+            <button id="re-blue-btn" class="admin-btn btn-blue" onclick="setResultEditWinner('blue')" style="flex:1">🔵 Blue Wins</button>
+            <button id="re-red-btn"  class="admin-btn btn-red"  onclick="setResultEditWinner('red')"  style="flex:1">🔴 Red Wins</button>
+          </div>
+        </div>
+        <div>
+          <div class="admin-section-label" style="margin-bottom:0.4rem">How did they win?</div>
+          <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.8rem;color:var(--text-dim);cursor:pointer">
+              <input type="checkbox" id="re-assassin" onchange="toggleAssassinEdit(this.checked)" style="accent-color:var(--red)">
+              Assassin hit
+            </label>
+            <span style="font-size:0.78rem;color:var(--text-faint)">— or —</span>
+            <div style="display:flex;align-items:center;gap:0.4rem">
+              <label for="re-remaining" style="font-size:0.78rem;color:var(--text-dim)">Cards remaining:</label>
+              <input id="re-remaining" type="number" min="0" max="8" class="admin-input" style="width:70px" placeholder="0–8">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="result-edit-feedback" style="font-size:0.77rem;min-height:1.4rem"></div>
+      <div style="display:flex;justify-content:flex-end;gap:0.5rem">
+        <button class="admin-btn" onclick="closeResultEdit()">Cancel</button>
+        <button class="admin-btn btn-amber" onclick="submitResultEdit()">✓ Save Override</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="layout">
   <aside class="sidebar">
     <div class="card" id="meta-card">
@@ -818,23 +893,28 @@
   <main>
     <!-- Admin Panel — shown only to logged-in admins via JS -->
     <div id="admin-panel" style="display:none" class="admin-panel">
-      <div class="admin-panel-title">🔴 Admin Controls</div>
-      <div class="admin-grid">
-        <button class="admin-btn btn-green" onclick="adminAction('start')">▶ Start Tournament</button>
-        <button class="admin-btn btn-blue"  onclick="adminAction('allocate')">⚡ Allocate Round</button>
-        <button class="admin-btn btn-amber" onclick="adminAction('force-end')">⏭ Force End Round</button>
-        <button class="admin-btn btn-amber" onclick="adminAction('shuffle-rounds')">🔀 Shuffle Remaining Rounds</button>
-        <button class="admin-btn btn-red"   onclick="confirmReset()">🗑 Reset Tournament</button>
+      <div class="admin-panel-title" onclick="toggleAdminPanel()" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
+        <span>🔴 Admin Controls</span>
+        <span id="admin-panel-chevron" style="font-size:0.85rem;transition:transform 0.3s cubic-bezier(0.4,0,0.2,1);transform:rotate(0deg)">▾</span>
       </div>
-      <div class="admin-section">
-        <div class="admin-section-label">Adjust Score</div>
-        <div class="admin-form-row">
-          <input class="admin-input" id="adj-player" placeholder="Player ID" style="flex:1;min-width:140px">
-          <input class="admin-input" id="adj-delta"  placeholder="+/− points" style="width:110px">
-          <button class="admin-btn btn-blue" onclick="adminAdjustScore()" style="padding:0.35rem 0.75rem">Apply</button>
+      <div id="admin-panel-body" style="display:none">
+        <div class="admin-grid">
+          <button class="admin-btn btn-green" onclick="adminAction('start')">▶ Start Tournament</button>
+          <button class="admin-btn btn-blue"  onclick="adminAction('allocate')">⚡ Allocate Round</button>
+          <button class="admin-btn btn-amber" onclick="adminAction('force-end')">⏭ Force End Round</button>
+          <button class="admin-btn btn-amber" onclick="adminAction('shuffle-rounds')">🔀 Shuffle Remaining Rounds</button>
+          <button class="admin-btn btn-red"   onclick="confirmReset()">🗑 Reset Tournament</button>
         </div>
+        <div class="admin-section">
+          <div class="admin-section-label">Adjust Score</div>
+          <div class="admin-form-row">
+            <input class="admin-input" id="adj-player" placeholder="Player ID" style="flex:1;min-width:140px">
+            <input class="admin-input" id="adj-delta"  placeholder="+/− points" style="width:110px">
+            <button class="admin-btn btn-blue" onclick="adminAdjustScore()" style="padding:0.35rem 0.75rem">Apply</button>
+          </div>
+        </div>
+        <div class="admin-feedback" id="admin-feedback"></div>
       </div>
-      <div class="admin-feedback" id="admin-feedback"></div>
     </div>
 
     <div class="rounds-list" id="rounds-list"></div>
@@ -848,11 +928,13 @@
 </button>
 
 <script>
-  // ── Modal ──────────────────────────────────────────────────────────────────
+  // ── Modal (How it Works) ───────────────────────────────────────────────────
   function closeModal() {
     document.getElementById('how-modal').classList.remove('open');
   }
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeModal(); closeResultEdit(); }
+  });
 
   // ── State ──────────────────────────────────────────────────────────────────
   let D = null; // tournament data
@@ -896,7 +978,8 @@
   }
 
   // ── Result chip HTML ───────────────────────────────────────────────────────
-  function resultChip(result, active, gameIndex, isPast) {
+  // adminMeta: { roundNumber, matchNumber, game } — when set, chip is admin-editable
+  function resultChip(result, active, gameIndex, isPast, adminMeta) {
     if (result) {
       const cls = result.winner === 'blue' ? 'chip-blue-win' : 'chip-red-win';
       const icon = result.winner === 'blue' ? '🔵' : '🔴';
@@ -905,7 +988,20 @@
         ? 'assassin'
         : result.remainingCards != null ? `${result.remainingCards} left` : '';
       const pts = `+${result.winPoints} / ${result.losePoints > 0 ? '+' : ''}${result.losePoints}`;
-      return `<span class="result-chip ${cls}">${icon} ${label} <span class="result-detail">${how ? how + ' · ' : ''}${pts}</span></span>`;
+      const detail = `<span class="result-detail">${how ? how + ' · ' : ''}${pts}</span>`;
+      if (adminMeta) {
+        return `<span class="result-chip ${cls} admin-clickable"
+          data-round="${adminMeta.roundNumber}"
+          data-match="${adminMeta.matchNumber}"
+          data-game="${adminMeta.game}"
+          data-winner="${esc(result.winner)}"
+          data-assassin="${result.assassin ? '1' : '0'}"
+          data-remaining="${result.remainingCards ?? 0}"
+          onclick="openResultEdit(this)"
+          title="Admin: click to override this result"
+          >${icon} ${label} ${detail}</span>`;
+      }
+      return `<span class="result-chip ${cls}">${icon} ${label} ${detail}</span>`;
     }
     const phase = active ? (active.gamePhase ?? 1) : null;
     if (active && phase === gameIndex) {
@@ -1071,10 +1167,21 @@
         const active      = isCurrent ? activeMatch(matchNumber) : null;
         const isMatchActive = !!active;
 
+        // For a completed match, results come from history
         const r1 = (isCurrent || isPast) ? historyEntry(roundNumber, matchNumber, 1) : null;
         const r2 = (isCurrent || isPast) ? historyEntry(roundNumber, matchNumber, 2) : null;
 
+        // For an active match in Game 2, Game 1 result is stored in activeMatches
+        const g1ResultFromActive = (active && active.gamePhase === 2 && active.game1Result)
+          ? active.game1Result : null;
+        const displayR1 = r1 || (g1ResultFromActive ? { ...g1ResultFromActive, winner: g1ResultFromActive.winner } : null);
+
         const activePhase = active ? (active.gamePhase ?? 1) : null;
+
+        // Admin meta for editable chips (only if result exists)
+        const isAdmin = currentUser && currentUser.isAdmin;
+        const adminMeta1 = (isAdmin && (r1 || g1ResultFromActive)) ? { roundNumber, matchNumber, game: 1 } : null;
+        const adminMeta2 = (isAdmin && r2) ? { roundNumber, matchNumber, game: 2 } : null;
 
         return `
           <div class="match-card ${isMatchActive ? 'match-active' : ''}" style="animation-delay:${(matchIdx * 0.07).toFixed(2)}s">
@@ -1086,12 +1193,12 @@
               <div class="game-cell">
                 <div class="game-num">Game 1</div>
                 <div class="teams">${teamRows(g1grouping)}</div>
-                ${resultChip(r1, active, 1, isPast)}
+                ${resultChip(displayR1, active, 1, isPast, adminMeta1)}
               </div>
               <div class="game-cell">
                 <div class="game-num">Game 2 <span class="swap-note">roles swapped</span></div>
                 <div class="teams">${teamRows(g2grouping)}</div>
-                ${resultChip(r2, active, 2, isPast)}
+                ${resultChip(r2, active, 2, isPast, adminMeta2)}
               </div>
             </div>
           </div>`;
@@ -1169,6 +1276,15 @@
     } finally {
       btn.classList.remove('fetching');
     }
+  }
+
+  // ── Admin panel toggle ────────────────────────────────────────────────────
+  function toggleAdminPanel() {
+    const body = document.getElementById('admin-panel-body');
+    const chevron = document.getElementById('admin-panel-chevron');
+    const isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : 'block';
+    chevron.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(180deg)';
   }
 
   // ── Auth & Admin ───────────────────────────────────────────────────────────
@@ -1284,6 +1400,94 @@
     await adminAction('adjust-score', { userId, delta });
     document.getElementById('adj-player').value = '';
     document.getElementById('adj-delta').value = '';
+  }
+
+  // ── Result Edit Modal (admin) ─────────────────────────────────────────────
+  let resultEditState = null; // { roundNumber, matchNumber, game, winner }
+
+  function openResultEdit(el) {
+    resultEditState = {
+      roundNumber: parseInt(el.dataset.round),
+      matchNumber: parseInt(el.dataset.match),
+      game: parseInt(el.dataset.game),
+      winner: el.dataset.winner,
+    };
+    const assassin = el.dataset.assassin === '1';
+    const remaining = parseInt(el.dataset.remaining) || 0;
+
+    document.getElementById('result-edit-desc').textContent =
+      `Round ${resultEditState.roundNumber} · Match ${resultEditState.matchNumber} · Game ${resultEditState.game}`;
+    document.getElementById('re-assassin').checked = assassin;
+    document.getElementById('re-remaining').value = assassin ? '' : remaining;
+    document.getElementById('re-remaining').disabled = assassin;
+    document.getElementById('result-edit-feedback').textContent = '';
+
+    setResultEditWinner(resultEditState.winner);
+
+    document.getElementById('result-edit-modal').classList.add('open');
+  }
+
+  function closeResultEdit() {
+    document.getElementById('result-edit-modal').classList.remove('open');
+    resultEditState = null;
+  }
+
+  function setResultEditWinner(w) {
+    resultEditState = resultEditState ? { ...resultEditState, winner: w } : { winner: w };
+    document.getElementById('re-blue-btn').classList.toggle('selected', w === 'blue');
+    document.getElementById('re-red-btn').classList.toggle('selected', w === 'red');
+  }
+
+  function toggleAssassinEdit(checked) {
+    const remInput = document.getElementById('re-remaining');
+    remInput.disabled = checked;
+    if (checked) remInput.value = '';
+  }
+
+  async function submitResultEdit() {
+    if (!resultEditState || !resultEditState.winner) {
+      document.getElementById('result-edit-feedback').style.color = 'var(--red)';
+      document.getElementById('result-edit-feedback').textContent = '✗ Select a winner first.';
+      return;
+    }
+    const assassin = document.getElementById('re-assassin').checked;
+    const remaining = assassin ? 0 : parseInt(document.getElementById('re-remaining').value);
+    if (!assassin && (isNaN(remaining) || remaining < 0 || remaining > 8)) {
+      document.getElementById('result-edit-feedback').style.color = 'var(--red)';
+      document.getElementById('result-edit-feedback').textContent = '✗ Cards remaining must be 0–8.';
+      return;
+    }
+
+    const fb = document.getElementById('result-edit-feedback');
+    fb.style.color = 'var(--text-faint)';
+    fb.textContent = 'Saving…';
+
+    try {
+      const res = await fetch('/api/admin/override-result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roundNumber: resultEditState.roundNumber,
+          matchNumber: resultEditState.matchNumber,
+          game: resultEditState.game,
+          winner: resultEditState.winner,
+          assassin,
+          remainingCards: remaining,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        closeResultEdit();
+        setAdminFeedback('✓ ' + (data.message || 'Result updated'), false);
+        fetchData();
+      } else {
+        fb.style.color = 'var(--red)';
+        fb.textContent = '✗ ' + (data.error || 'Error saving result');
+      }
+    } catch {
+      fb.style.color = 'var(--red)';
+      fb.textContent = '✗ Network error — try again';
+    }
   }
 
   // Check auth state on page load
