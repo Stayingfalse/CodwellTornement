@@ -2113,10 +2113,12 @@ async function handleHttpRequest(req, res) {
       if (action === 'delete-result') {
         let data;
         try { data = JSON.parse(await readBody(req)); } catch { sendJson(res, 400, { error: 'Invalid JSON body.' }); return; }
-        const { roundNumber, matchNumber, game } = data || {};
+        const { roundNumber, matchNumber, game, adjustScore } = data || {};
         const rNum = parseInt(roundNumber);
         const mNum = parseInt(matchNumber);
         const gNum = parseInt(game);
+        // Default to true so older clients still reverse scores; explicit false opts out
+        const shouldAdjustScore = adjustScore !== false;
 
         if (!rNum || !mNum || !gNum) {
           sendJson(res, 400, { error: 'Required: roundNumber (int), matchNumber (int), game (1|2).' });
@@ -2138,6 +2140,18 @@ async function handleHttpRequest(req, res) {
           return;
         }
 
+        // Guard: cannot delete Game 1 from history while Game 2 is also in history —
+        // the admin must delete Game 2 first to keep state consistent.
+        if (gNum === 1 && histIdx !== -1) {
+          const game2Exists = tournament.history.some(h =>
+            h.roundNumber === rNum && h.matchNumber === mNum && h.game === 2
+          );
+          if (game2Exists) {
+            sendJson(res, 400, { error: 'Game 2 result must be deleted before Game 1 can be deleted.' });
+            return;
+          }
+        }
+
         // Capture values before modifying state
         let oldWinner, oldWinPoints, oldLosePoints, grouping, threadId;
         if (histIdx !== -1) {
@@ -2153,13 +2167,15 @@ async function handleHttpRequest(req, res) {
         const bluePlayers = [grouping.blue.spymaster, grouping.blue.guesser];
         const redPlayers  = [grouping.red.spymaster,  grouping.red.guesser];
 
-        // Reverse score impact
-        if (oldWinner === 'blue') {
-          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldWinPoints));
-          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldLosePoints));
-        } else {
-          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldWinPoints));
-          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldLosePoints));
+        // Optionally reverse score impact
+        if (shouldAdjustScore) {
+          if (oldWinner === 'blue') {
+            bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldWinPoints));
+            redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldLosePoints));
+          } else {
+            redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldWinPoints));
+            bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldLosePoints));
+          }
         }
 
         // Remove from history or reset active match game1Result
@@ -2187,9 +2203,10 @@ async function handleHttpRequest(req, res) {
             const thread = await guildOverride.channels.fetch(threadId).catch(() => null);
             if (thread) {
               const adminName = session.globalName || session.username;
+              const scoreNote = shouldAdjustScore ? 'scores reversed' : 'scores unchanged';
               await thread.send(
                 `⚠️ **Admin result deleted** (by ${adminName})\n` +
-                `Round ${rNum} · Match ${mNum} · Game ${gNum}: result removed and marked as not played.`
+                `Round ${rNum} · Match ${mNum} · Game ${gNum}: result removed and marked as not played (${scoreNote}).`
               );
             }
           } catch (e) {
@@ -2197,7 +2214,8 @@ async function handleHttpRequest(req, res) {
           }
         }
 
-        sendJson(res, 200, { ok: true, message: `Round ${rNum} Match ${mNum} Game ${gNum} result deleted.` });
+        const scoreMsg = shouldAdjustScore ? ' Scores have been reversed.' : ' Scores were not changed.';
+        sendJson(res, 200, { ok: true, message: `Round ${rNum} Match ${mNum} Game ${gNum} result deleted.${scoreMsg}` });
         return;
       }
 

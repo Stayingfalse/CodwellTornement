@@ -874,8 +874,14 @@
       </div>
       <div id="result-edit-feedback" style="font-size:0.77rem;min-height:1.4rem"></div>
       <div style="display:flex;justify-content:space-between;gap:0.5rem;flex-wrap:wrap">
-        <button class="admin-btn btn-red" onclick="submitResultDelete()">🗑 Delete Score</button>
-        <div style="display:flex;gap:0.5rem">
+        <div style="display:flex;flex-direction:column;gap:0.35rem">
+          <button class="admin-btn btn-red" onclick="submitResultDelete()">🗑 Delete Result</button>
+          <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.78rem;color:var(--text-dim);cursor:pointer">
+            <input type="checkbox" id="re-adjust-score" checked style="accent-color:var(--red)">
+            Reverse score changes
+          </label>
+        </div>
+        <div style="display:flex;gap:0.5rem;align-items:flex-start">
           <button class="admin-btn" onclick="closeResultEdit()">Cancel</button>
           <button class="admin-btn btn-amber" onclick="submitResultEdit()">✓ Save Override</button>
         </div>
@@ -1438,6 +1444,7 @@
     document.getElementById('re-remaining').value = assassin ? '' : remaining;
     document.getElementById('re-remaining').disabled = assassin;
     document.getElementById('result-edit-feedback').textContent = '';
+    document.getElementById('re-adjust-score').checked = true;
 
     setResultEditWinner(resultEditState.winner);
 
@@ -1509,9 +1516,11 @@
 
   async function submitResultDelete() {
     if (!resultEditState) return;
+    const adjustScore = document.getElementById('re-adjust-score').checked;
+    const scoreNote = adjustScore ? ' Scores will be reversed.' : ' Scores will NOT be changed.';
     if (!confirm(
       `Delete the result for Round ${resultEditState.roundNumber} · Match ${resultEditState.matchNumber} · Game ${resultEditState.game}?\n\n` +
-      `This will remove the score and mark the game as not played.`
+      `This will remove the game from the history.${scoreNote}`
     )) return;
 
     const fb = document.getElementById('result-edit-feedback');
@@ -1526,6 +1535,7 @@
           roundNumber: resultEditState.roundNumber,
           matchNumber: resultEditState.matchNumber,
           game: resultEditState.game,
+          adjustScore,
         }),
       });
       const data = await res.json();
