@@ -873,9 +873,12 @@
         </div>
       </div>
       <div id="result-edit-feedback" style="font-size:0.77rem;min-height:1.4rem"></div>
-      <div style="display:flex;justify-content:flex-end;gap:0.5rem">
-        <button class="admin-btn" onclick="closeResultEdit()">Cancel</button>
-        <button class="admin-btn btn-amber" onclick="submitResultEdit()">✓ Save Override</button>
+      <div style="display:flex;justify-content:space-between;gap:0.5rem;flex-wrap:wrap">
+        <button class="admin-btn btn-red" onclick="submitResultDelete()">🗑 Delete Score</button>
+        <div style="display:flex;gap:0.5rem">
+          <button class="admin-btn" onclick="closeResultEdit()">Cancel</button>
+          <button class="admin-btn btn-amber" onclick="submitResultEdit()">✓ Save Override</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1497,6 +1500,42 @@
       } else {
         fb.style.color = 'var(--red)';
         fb.textContent = '✗ ' + (data.error || 'Error saving result');
+      }
+    } catch {
+      fb.style.color = 'var(--red)';
+      fb.textContent = '✗ Network error — try again';
+    }
+  }
+
+  async function submitResultDelete() {
+    if (!resultEditState) return;
+    if (!confirm(
+      `Delete the result for Round ${resultEditState.roundNumber} · Match ${resultEditState.matchNumber} · Game ${resultEditState.game}?\n\n` +
+      `This will remove the score and mark the game as not played.`
+    )) return;
+
+    const fb = document.getElementById('result-edit-feedback');
+    fb.style.color = 'var(--text-faint)';
+    fb.textContent = 'Deleting…';
+
+    try {
+      const res = await fetch('/api/admin/delete-result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roundNumber: resultEditState.roundNumber,
+          matchNumber: resultEditState.matchNumber,
+          game: resultEditState.game,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        closeResultEdit();
+        setAdminFeedback('✓ ' + (data.message || 'Result deleted'), false);
+        fetchData();
+      } else {
+        fb.style.color = 'var(--red)';
+        fb.textContent = '✗ ' + (data.error || 'Error deleting result');
       }
     } catch {
       fb.style.color = 'var(--red)';

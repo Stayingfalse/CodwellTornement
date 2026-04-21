@@ -2109,6 +2109,98 @@ async function handleHttpRequest(req, res) {
         return;
       }
 
+      // ── delete-result ──────────────────────────────────────────────────────
+      if (action === 'delete-result') {
+        let data;
+        try { data = JSON.parse(await readBody(req)); } catch { sendJson(res, 400, { error: 'Invalid JSON body.' }); return; }
+        const { roundNumber, matchNumber, game } = data || {};
+        const rNum = parseInt(roundNumber);
+        const mNum = parseInt(matchNumber);
+        const gNum = parseInt(game);
+
+        if (!rNum || !mNum || !gNum) {
+          sendJson(res, 400, { error: 'Required: roundNumber (int), matchNumber (int), game (1|2).' });
+          return;
+        }
+
+        // Try history first (fully completed games)
+        const histIdx = tournament.history.findIndex(h =>
+          h.roundNumber === rNum && h.matchNumber === mNum && h.game === gNum
+        );
+
+        // Also try in-progress game1Result of an active match
+        const activeMatchForG1 = (gNum === 1)
+          ? tournament.activeMatches.find(m => m.matchNumber === mNum && m.game1Result && tournament.currentRound === rNum)
+          : null;
+
+        if (histIdx === -1 && !activeMatchForG1) {
+          sendJson(res, 404, { error: 'Game result not found. It may not have been submitted yet.' });
+          return;
+        }
+
+        // Capture values before modifying state
+        let oldWinner, oldWinPoints, oldLosePoints, grouping, threadId;
+        if (histIdx !== -1) {
+          const old = tournament.history[histIdx];
+          oldWinner = old.winner; oldWinPoints = old.winPoints; oldLosePoints = old.losePoints;
+          grouping = old.grouping; threadId = old.threadId;
+        } else {
+          const g1r = activeMatchForG1.game1Result;
+          oldWinner = g1r.winner; oldWinPoints = g1r.winPoints; oldLosePoints = g1r.losePoints;
+          grouping = activeMatchForG1.grouping; threadId = activeMatchForG1.threadId;
+        }
+
+        const bluePlayers = [grouping.blue.spymaster, grouping.blue.guesser];
+        const redPlayers  = [grouping.red.spymaster,  grouping.red.guesser];
+
+        // Reverse score impact
+        if (oldWinner === 'blue') {
+          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldWinPoints));
+          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldLosePoints));
+        } else {
+          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldWinPoints));
+          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldLosePoints));
+        }
+
+        // Remove from history or reset active match game1Result
+        if (histIdx !== -1) {
+          tournament.history.splice(histIdx, 1);
+        }
+        if (activeMatchForG1) {
+          activeMatchForG1.game1Result = null;
+          activeMatchForG1.gamePhase = 1;
+        }
+
+        // Remove from roundResults if present
+        const rrIdx = tournament.roundResults.findIndex(r =>
+          r.matchNumber === mNum && (r.gameIndex ?? 1) === gNum
+        );
+        if (rrIdx !== -1) tournament.roundResults.splice(rrIdx, 1);
+
+        await saveTournamentData();
+        const guildOverride = client.guilds.cache.get(process.env.GUILD_ID);
+        if (guildOverride) updateScoreboard(guildOverride).catch(() => null);
+
+        // Notify thread
+        if (threadId && guildOverride) {
+          try {
+            const thread = await guildOverride.channels.fetch(threadId).catch(() => null);
+            if (thread) {
+              const adminName = session.globalName || session.username;
+              await thread.send(
+                `⚠️ **Admin result deleted** (by ${adminName})\n` +
+                `Round ${rNum} · Match ${mNum} · Game ${gNum}: result removed and marked as not played.`
+              );
+            }
+          } catch (e) {
+            console.error('[delete-result] Failed to post thread notification:', e.message);
+          }
+        }
+
+        sendJson(res, 200, { ok: true, message: `Round ${rNum} Match ${mNum} Game ${gNum} result deleted.` });
+        return;
+      }
+
       sendJson(res, 404, { error: `Unknown admin action "${action}".` });
       return;
     }
