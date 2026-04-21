@@ -760,6 +760,68 @@
       min-height: 1.8rem;
       transition: color 0.2s;
     }
+
+    /* ── Inline score edit ── */
+    .score-pts-edit-trigger {
+      cursor: pointer;
+      border-radius: 4px;
+      transition: background 0.12s, outline 0.12s;
+    }
+    .score-pts-edit-trigger:hover {
+      background: var(--surface3);
+      outline: 1px dashed rgba(59,130,246,0.45);
+      outline-offset: 2px;
+    }
+    .score-pts-edit-trigger::after {
+      content: ' ✏';
+      font-size: 0.55em;
+      opacity: 0;
+      transition: opacity 0.12s;
+    }
+    .score-row:hover .score-pts-edit-trigger::after { opacity: 0.55; }
+    .score-pts-inline-input {
+      font-size: 0.8rem;
+      font-weight: 800;
+      color: var(--blue);
+      font-variant-numeric: tabular-nums;
+      width: 3.4rem;
+      text-align: right;
+      background: var(--surface2);
+      border: 1px solid var(--blue);
+      border-radius: 4px;
+      padding: 0.05rem 0.25rem;
+      outline: none;
+    }
+
+    /* ── Round-header admin buttons ── */
+    .round-admin-btn {
+      padding: 0.15rem 0.55rem;
+      border-radius: 5px;
+      font-size: 0.68rem;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      line-height: 1.4;
+      transition: border-color 0.12s, background 0.12s, color 0.12s;
+    }
+    .round-admin-btn.btn-amber {
+      border: 1px solid rgba(245,158,11,0.4);
+      background: rgba(245,158,11,0.05);
+      color: #fcd34d;
+    }
+    .round-admin-btn.btn-amber:hover {
+      border-color: rgba(245,158,11,0.7);
+      background: rgba(245,158,11,0.12);
+    }
+    .round-admin-btn.btn-blue {
+      border: 1px solid rgba(59,130,246,0.4);
+      background: rgba(59,130,246,0.05);
+      color: #93c5fd;
+    }
+    .round-admin-btn.btn-blue:hover {
+      border-color: rgba(59,130,246,0.7);
+      background: rgba(59,130,246,0.12);
+    }
   </style>
 </head>
 <body>
@@ -917,22 +979,6 @@
         <span id="admin-panel-chevron" style="font-size:0.85rem;transition:transform 0.3s cubic-bezier(0.4,0,0.2,1);transform:rotate(0deg)" aria-hidden="true">▾</span>
       </div>
       <div id="admin-panel-body" style="display:none">
-        <div class="admin-grid">
-          <button class="admin-btn btn-green" onclick="adminAction('start')">▶ Start Tournament</button>
-          <button class="admin-btn btn-blue"  onclick="adminAction('allocate')">⚡ Allocate Round</button>
-          <button class="admin-btn btn-amber" onclick="adminAction('force-end')">⏭ Force End Round</button>
-          <button class="admin-btn btn-amber" onclick="adminAction('shuffle-rounds')">🔀 Shuffle Remaining Rounds</button>
-          <button class="admin-btn btn-red"   onclick="confirmReset()">🗑 Reset Tournament</button>
-        </div>
-        <div class="admin-section">
-          <div class="admin-section-label">Adjust Score</div>
-          <div class="admin-form-row">
-            <input class="admin-input" id="adj-player" placeholder="Player ID" style="flex:1;min-width:140px">
-            <input class="admin-input" id="adj-delta"  placeholder="+/− points" style="width:110px">
-            <button class="admin-btn btn-blue" onclick="adminAdjustScore()" style="padding:0.35rem 0.75rem">Apply</button>
-          </div>
-        </div>
-        <div class="admin-feedback" id="admin-feedback"></div>
       </div>
     </div>
 
@@ -1124,6 +1170,7 @@
   // ── Render: scoreboard ────────────────────────────────────────────────────
   function renderScoreboard() {
     const el = document.getElementById('scoreboard');
+    const isAdmin = currentUser && currentUser.isAdmin;
     if (!D || !D.started || D.scores.length === 0) {
       el.innerHTML = '<div style="padding:0.8rem 1.1rem;color:var(--text-faint);font-size:0.78rem">No scores yet</div>';
       return;
@@ -1137,6 +1184,9 @@
     el.innerHTML = D.scores.map(([id, pts], i) => {
       if (pts !== lastPts) { rank = i + 1; lastPts = pts; }
       const rankDisplay = medals[rank] || rank;
+      const ptsCell = isAdmin
+        ? `<div class="score-pts score-pts-edit-trigger" data-userid="${esc(id)}" data-pts="${pts}" title="Click to edit score">${pts}</div>`
+        : `<div class="score-pts">${pts}</div>`;
       return `
       <div class="score-row" style="animation-delay:${(i * 0.04).toFixed(2)}s">
         <div class="score-rank">${rankDisplay}</div>
@@ -1144,10 +1194,56 @@
         <div class="score-bar-wrap">
           <div class="score-bar" style="width:${Math.max(4, (pts / maxPts) * 100).toFixed(1)}%"></div>
         </div>
-        <div class="score-pts">${pts}</div>
+        ${ptsCell}
       </div>
     `;
     }).join('');
+
+    if (isAdmin) {
+      el.querySelectorAll('.score-pts-edit-trigger').forEach(trigger => {
+        trigger.addEventListener('click', () => startScoreEdit(trigger));
+      });
+    }
+  }
+
+  function startScoreEdit(trigger) {
+    if (trigger.querySelector('input')) return; // already editing
+    const userId = trigger.dataset.userid;
+    const currentPts = parseInt(trigger.dataset.pts, 10);
+    let committed = false;
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'score-pts-inline-input';
+    input.value = currentPts;
+
+    function commit() {
+      if (committed) return;
+      committed = true;
+      const newPts = parseInt(input.value, 10);
+      if (isNaN(newPts) || newPts === currentPts) {
+        trigger.textContent = currentPts;
+        return;
+      }
+      trigger.innerHTML = '<span style="opacity:0.5">…</span>';
+      adminAction('adjust-score', { userId, delta: newPts - currentPts });
+    }
+
+    function cancel() {
+      if (committed) return;
+      committed = true;
+      trigger.textContent = currentPts;
+    }
+
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    });
+    input.addEventListener('blur', commit);
+
+    trigger.textContent = '';
+    trigger.appendChild(input);
+    input.select();
   }
 
   // ── Render: rounds ────────────────────────────────────────────────────────
@@ -1185,8 +1281,17 @@
           : '<span class="badge badge-dim" style="font-size:0.68rem">Upcoming</span>';
 
       // Whether this round is expanded
-      const defaultOpen = isCurrent || isPast;
+      const defaultOpen = isCurrent; // past rounds collapsed by default
       const isOpen = roundIdx in manualToggles ? manualToggles[roundIdx] : defaultOpen;
+
+      // Admin buttons for round header
+      const isAdmin = currentUser && currentUser.isAdmin;
+      const forceEndBtn = (isAdmin && isCurrent && D.activeMatches && D.activeMatches.length > 0)
+        ? `<button class="round-admin-btn btn-amber" onclick="event.stopPropagation();adminAction('force-end')" title="Force end current round">⏭ Force End</button>`
+        : '';
+      const shuffleBtn = (isAdmin && D.started && roundNumber === D.currentRound + 1)
+        ? `<button class="round-admin-btn btn-blue" onclick="event.stopPropagation();adminAction('shuffle-rounds')" title="Shuffle remaining rounds">🔀 Shuffle</button>`
+        : '';
 
       const matchesHtml = roundMatches.map((g1grouping, matchIdx) => {
         const matchNumber = matchIdx + 1;
@@ -1240,6 +1345,8 @@
               <div class="round-progress-bar ${barClass}" style="width:${pct.toFixed(1)}%"></div>
             </div>
             <span class="round-count">${playedCount}/${totalGames}</span>
+            ${forceEndBtn}
+            ${shuffleBtn}
             <span class="round-chevron ${isOpen ? 'open' : ''}">▾</span>
           </div>
           <div class="round-matches ${isOpen ? 'expanded' : 'collapsed'}"
@@ -1297,6 +1404,7 @@
       renderMeta();
       renderScoreboard();
       renderRounds();
+      renderAdminPanel();
       lbl.textContent = 'Refresh';
     } catch {
       lbl.textContent = 'Error — try again';
@@ -1325,8 +1433,11 @@
       if (!res.ok) return;
       currentUser = await res.json();
       renderAuth();
-      document.getElementById('admin-panel').style.display =
-        (currentUser && currentUser.isAdmin) ? 'block' : 'none';
+      renderAdminPanel();
+      if (D) {
+        renderScoreboard();
+        renderRounds();
+      }
     } catch { /* network error — stay logged-out */ }
   }
 
@@ -1381,16 +1492,44 @@
     try { await fetch('/auth/logout', { method: 'POST' }); } catch { /* ignore */ }
     currentUser = null;
     renderAuth();
-    document.getElementById('admin-panel').style.display = 'none';
+    renderAdminPanel();
+    if (D) { renderScoreboard(); renderRounds(); }
   }
 
   let adminFeedbackTimer = null;
   function setAdminFeedback(msg, isError) {
     const el = document.getElementById('admin-feedback');
+    if (!el) return;
     el.style.color = isError ? 'var(--red)' : 'var(--green)';
     el.textContent = msg;
     if (adminFeedbackTimer) clearTimeout(adminFeedbackTimer);
-    adminFeedbackTimer = setTimeout(() => { if (el) el.textContent = ''; }, 6000);
+    adminFeedbackTimer = setTimeout(() => { const e2 = document.getElementById('admin-feedback'); if (e2) e2.textContent = ''; }, 6000);
+  }
+
+  function renderAdminPanel() {
+    const panel = document.getElementById('admin-panel');
+    const body  = document.getElementById('admin-panel-body');
+    if (!currentUser || !currentUser.isAdmin) {
+      panel.style.display = 'none';
+      return;
+    }
+    panel.style.display = 'block';
+
+    const started     = D && D.started;
+    const hasActive   = D && D.activeMatches && D.activeMatches.length > 0;
+    const allDone     = D && D.currentRound > D.totalRounds;
+
+    let html = '<div class="admin-grid">';
+    if (!started) {
+      html += `<button class="admin-btn btn-green" onclick="adminAction('start')">▶ Start Tournament</button>`;
+    }
+    if (started && !hasActive && !allDone) {
+      html += `<button class="admin-btn btn-blue" onclick="adminAction('allocate')">⚡ Allocate Round</button>`;
+    }
+    html += `<button class="admin-btn btn-red" onclick="confirmReset()">🗑 Reset Tournament</button>`;
+    html += '</div>';
+    html += '<div class="admin-feedback" id="admin-feedback"></div>';
+    body.innerHTML = html;
   }
 
   async function adminAction(action, body) {
@@ -1414,21 +1553,10 @@
   }
 
   function confirmReset() {
-    if (confirm('⚠️ Reset the tournament?\n\nThis will clear ALL players, rounds, and scores. This cannot be undone.')) {
-      adminAction('reset');
-    }
-  }
-
-  async function adminAdjustScore() {
-    // Strip Discord mention syntax so "<@!123456>" and "<@123456>" become "123456"
-    const userId = document.getElementById('adj-player').value.trim().replace(/[<@!>]/g, '');
-    const deltaStr = document.getElementById('adj-delta').value.trim();
-    const delta = parseInt(deltaStr);
-    if (!userId) { setAdminFeedback('✗ Enter a player ID', true); return; }
-    if (isNaN(delta)) { setAdminFeedback('✗ Enter a valid number', true); return; }
-    await adminAction('adjust-score', { userId, delta });
-    document.getElementById('adj-player').value = '';
-    document.getElementById('adj-delta').value = '';
+    if (!confirm('⚠️ Reset the tournament?\n\nThis will clear ALL players, rounds, scores, and history.\nThis CANNOT be undone.')) return;
+    if (!confirm('⚠️ Second warning — are you absolutely sure?\n\nEvery player, match result, and score will be permanently deleted.')) return;
+    if (!confirm('⚠️ FINAL WARNING — last chance!\n\nOnce reset, there is no way to recover any data. Proceed?')) return;
+    adminAction('reset');
   }
 
   // ── Result Edit Modal (admin) ─────────────────────────────────────────────
