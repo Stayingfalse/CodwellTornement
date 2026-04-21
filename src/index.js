@@ -1822,7 +1822,7 @@ async function handleHttpRequest(req, res) {
       });
 
       const isHttps = (process.env.WEB_URL || '').toLowerCase().startsWith('https://');
-      const cookieFlags = `HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL / 1000}${isHttps ? '; Secure' : ''}`;
+      const cookieFlags = `HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_TTL / 1000)}${isHttps ? '; Secure' : ''}`;
       res.writeHead(302, { Location: '/', 'Set-Cookie': `sid=${sid}; ${cookieFlags}` });
       res.end();
       return;
@@ -2025,8 +2025,8 @@ async function handleHttpRequest(req, res) {
       // ── shuffle-rounds ─────────────────────────────────────────────────────
       if (action === 'shuffle-rounds') {
         if (!tournament.started) { sendJson(res, 400, { error: 'Tournament has not started yet.' }); return; }
-        // Rounds that have not started: index currentRound onwards (currentRound is 1-indexed)
-        const startIdx = tournament.currentRound; // = first future round in 0-indexed array
+        // tournament.currentRound is 1-indexed; future rounds start at that same value as a 0-indexed array offset
+        const startIdx = tournament.currentRound; // e.g. currentRound=2 → skip indices 0 (done) and 1 (active)
         if (startIdx >= tournament.rounds.length) {
           sendJson(res, 400, { error: 'No remaining rounds to shuffle.' });
           return;

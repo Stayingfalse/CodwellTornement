@@ -1196,22 +1196,40 @@
       return;
     }
 
-    const avatarUrl = currentUser.avatar
-      ? `https://cdn.discordapp.com/avatars/${esc(currentUser.userId)}/${esc(currentUser.avatar)}.png?size=32`
-      : '';
-    const avatarEl = avatarUrl ? `<img class="user-avatar" src="${avatarUrl}" alt="">` : '';
-    const adminBadge = currentUser.isAdmin
-      ? `<span class="badge badge-purple" style="font-size:0.68rem">Admin</span>`
-      : '';
-
+    // Build user info using DOM APIs to safely handle user-supplied values in attributes
     area.style.display = '';
-    area.innerHTML = `
-      <div class="user-info">
-        ${avatarEl}
-        <span>${esc(currentUser.globalName || currentUser.username)}</span>
-        ${adminBadge}
-        <button class="auth-btn" onclick="logout()">Logout</button>
-      </div>`;
+    area.innerHTML = '';
+
+    const container = document.createElement('div');
+    container.className = 'user-info';
+
+    if (currentUser.avatar) {
+      const img = document.createElement('img');
+      img.className = 'user-avatar';
+      img.src = `https://cdn.discordapp.com/avatars/${currentUser.userId}/${currentUser.avatar}.png?size=32`;
+      img.alt = '';
+      container.appendChild(img);
+    }
+
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = currentUser.globalName || currentUser.username;
+    container.appendChild(nameSpan);
+
+    if (currentUser.isAdmin) {
+      const badge = document.createElement('span');
+      badge.className = 'badge badge-purple';
+      badge.style.fontSize = '0.68rem';
+      badge.textContent = 'Admin';
+      container.appendChild(badge);
+    }
+
+    const logoutBtn = document.createElement('button');
+    logoutBtn.className = 'auth-btn';
+    logoutBtn.textContent = 'Logout';
+    logoutBtn.addEventListener('click', logout);
+    container.appendChild(logoutBtn);
+
+    area.appendChild(container);
   }
 
   async function logout() {
@@ -1257,6 +1275,7 @@
   }
 
   async function adminAdjustScore() {
+    // Strip Discord mention syntax so "<@!123456>" and "<@123456>" become "123456"
     const userId = document.getElementById('adj-player').value.trim().replace(/[<@!>]/g, '');
     const deltaStr = document.getElementById('adj-delta').value.trim();
     const delta = parseInt(deltaStr);
