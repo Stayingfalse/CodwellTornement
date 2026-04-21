@@ -1130,18 +1130,23 @@
     }
 
     const maxPts = Math.max(1, D.scores[0][1]);
-    const medals = ['🥇', '🥈', '🥉'];
+    const medals = { 1: '🥇', 2: '🥈', 3: '🥉' };
 
-    el.innerHTML = D.scores.map(([id, pts], i) => `
+    let rank = 0, lastPts = null;
+    el.innerHTML = D.scores.map(([id, pts], i) => {
+      if (pts !== lastPts) { rank = i + 1; lastPts = pts; }
+      const rankDisplay = medals[rank] || rank;
+      return `
       <div class="score-row" style="animation-delay:${(i * 0.04).toFixed(2)}s">
-        <div class="score-rank">${medals[i] || i + 1}</div>
+        <div class="score-rank">${rankDisplay}</div>
         <div class="score-name">${esc(displayName(id))}</div>
         <div class="score-bar-wrap">
           <div class="score-bar" style="width:${Math.max(4, (pts / maxPts) * 100).toFixed(1)}%"></div>
         </div>
         <div class="score-pts">${pts}</div>
       </div>
-    `).join('');
+    `;
+    }).join('');
   }
 
   // ── Render: rounds ────────────────────────────────────────────────────────
