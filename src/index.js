@@ -695,13 +695,14 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      // Deduplication guard — prevent two simultaneous submissions for the same game
-      const submissionKey = `${interaction.channelId}:${expectedPhase}`;
+      // Deduplication guard — prevent two simultaneous button clicks for the same game.
+      // JavaScript is single-threaded so has() + add() with no await between is atomic.
+      const submissionKey = `${interaction.channelId}:${expectedPhase}:button`;
       if (processingThreads.has(submissionKey)) {
         await interaction.reply({ content: 'A result is already being submitted for this game. Please wait.', flags: MessageFlags.Ephemeral });
         return;
       }
-      processingThreads.add(submissionKey); // synchronous — set before any await
+      processingThreads.add(submissionKey);
 
       const winner = (customId === 'log_blue_win' || customId === 'log_blue_win_g2') ? 'blue' : 'red';
 
@@ -723,7 +724,7 @@ client.on('interactionCreate', async (interaction) => {
       } finally {
         processingThreads.delete(submissionKey);
       }
-    } else if (customId.startsWith('assassin_')) {
+    } else if (customId.startsWith('assassin_')) {    } else if (customId.startsWith('assassin_')) {
       const parts = customId.split('_');
       const wasAssassin = parts[1] === 'yes';
       const winner = parts[2];
@@ -2048,7 +2049,7 @@ async function handleHttpRequest(req, res) {
             ...tournament.history[histIdx],
             winner,
             assassin: isAssassin,
-            remainingCards: isAssassin ? tournament.history[histIdx].remainingCards : rCards,
+            remainingCards: isAssassin ? 0 : rCards,
             winPoints: newWinPoints,
             losePoints: newLosePoints,
           };
@@ -2060,7 +2061,7 @@ async function handleHttpRequest(req, res) {
             ...activeMatchForG1.game1Result,
             winner,
             assassin: isAssassin,
-            remainingCards: isAssassin ? activeMatchForG1.game1Result.remainingCards : rCards,
+            remainingCards: isAssassin ? 0 : rCards,
             winPoints: newWinPoints,
             losePoints: newLosePoints,
           };
@@ -2075,7 +2076,7 @@ async function handleHttpRequest(req, res) {
             ...tournament.roundResults[rrIdx],
             winner,
             assassin: isAssassin,
-            remainingCards: isAssassin ? tournament.roundResults[rrIdx].remainingCards : rCards,
+            remainingCards: isAssassin ? 0 : rCards,
             winPoints: newWinPoints,
             losePoints: newLosePoints,
           };

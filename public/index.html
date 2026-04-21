@@ -557,8 +557,11 @@
     .admin-clickable {
       cursor: pointer;
       transition: opacity 0.15s, outline 0.15s;
+      font-family: inherit;
+      background: none;
     }
-    .admin-clickable:hover {
+    .admin-clickable:hover,
+    .admin-clickable:focus-visible {
       opacity: 0.82;
       outline: 1px dashed rgba(239,68,68,0.5);
       outline-offset: 2px;
@@ -893,9 +896,16 @@
   <main>
     <!-- Admin Panel — shown only to logged-in admins via JS -->
     <div id="admin-panel" style="display:none" class="admin-panel">
-      <div class="admin-panel-title" onclick="toggleAdminPanel()" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
+      <div class="admin-panel-title"
+           onclick="toggleAdminPanel()"
+           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAdminPanel();}"
+           tabindex="0"
+           role="button"
+           aria-expanded="false"
+           aria-controls="admin-panel-body"
+           style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">
         <span>🔴 Admin Controls</span>
-        <span id="admin-panel-chevron" style="font-size:0.85rem;transition:transform 0.3s cubic-bezier(0.4,0,0.2,1);transform:rotate(0deg)">▾</span>
+        <span id="admin-panel-chevron" style="font-size:0.85rem;transition:transform 0.3s cubic-bezier(0.4,0,0.2,1);transform:rotate(0deg)" aria-hidden="true">▾</span>
       </div>
       <div id="admin-panel-body" style="display:none">
         <div class="admin-grid">
@@ -991,7 +1001,7 @@
       const pts = `+${result.winPoints} / ${result.losePoints > 0 ? '+' : ''}${result.losePoints}`;
       const detail = `<span class="result-detail">${how ? how + ' · ' : ''}${pts}</span>`;
       if (adminMeta) {
-        return `<span class="result-chip ${cls} admin-clickable"
+        return `<button class="result-chip ${cls} admin-clickable"
           data-round="${adminMeta.roundNumber}"
           data-match="${adminMeta.matchNumber}"
           data-game="${adminMeta.game}"
@@ -1000,7 +1010,8 @@
           data-remaining="${result.remainingCards ?? 0}"
           onclick="openResultEdit(this)"
           title="Admin: click to override this result"
-          >${icon} ${label} ${detail}</span>`;
+          aria-label="Admin override: ${label} — click to change"
+          >${icon} ${label} ${detail}</button>`;
       }
       return `<span class="result-chip ${cls}">${icon} ${label} ${detail}</span>`;
     }
@@ -1283,9 +1294,11 @@
   function toggleAdminPanel() {
     const body = document.getElementById('admin-panel-body');
     const chevron = document.getElementById('admin-panel-chevron');
+    const titleEl = document.querySelector('.admin-panel-title');
     const isOpen = body.style.display !== 'none';
     body.style.display = isOpen ? 'none' : 'block';
     chevron.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(180deg)';
+    if (titleEl) titleEl.setAttribute('aria-expanded', String(!isOpen));
   }
 
   // ── Auth & Admin ───────────────────────────────────────────────────────────
