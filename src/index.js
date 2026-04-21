@@ -925,7 +925,7 @@ async function updateScoreboard(guild) {
       description = `**Tournament Live - Round ${tournament.currentRound}/${tournament.rounds.length}**\n`;
       description += `${completedInRound}/${roundMatches.length} matches completed\n\n`;
       if (tournament.activeMatches.length > 0) {
-        description += `**⚔️ Active Matches**\n`;
+        description += `**⚔️ Active Matches:**\n`;
         tournament.activeMatches.forEach(m => {
           const activePhase = m.gamePhase ?? 1;
           const activeGrouping = activePhase === 2 ? getSwappedGrouping(m.grouping) : m.grouping;
