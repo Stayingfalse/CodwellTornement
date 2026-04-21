@@ -315,7 +315,8 @@ client.on('interactionCreate', async (interaction) => {
         description += `**Scoreboard:**\n`;
         const sortedScores = Array.from(tournament.scores.entries())
           .sort((a, b) => b[1] - a[1]);
-        let rank = 0, lastPts = null;
+        let rank = 0;
+        let lastPts = null;
         sortedScores.forEach((entry, idx) => {
           if (entry[1] !== lastPts) { rank = idx + 1; lastPts = entry[1]; }
           description += `${rank}. <@${entry[0]}> - ${entry[1]} pts\n`;
@@ -488,7 +489,8 @@ client.on('interactionCreate', async (interaction) => {
             description += `**Scoreboard:**\n`;
             const sortedScores = Array.from(tournament.scores.entries())
               .sort((a, b) => b[1] - a[1]);
-            let rank = 0, lastPts = null;
+            let rank = 0;
+            let lastPts = null;
             sortedScores.forEach((entry, idx) => {
               if (entry[1] !== lastPts) { rank = idx + 1; lastPts = entry[1]; }
               description += `${rank}. <@${entry[0]}> - ${entry[1]} pts\n`;
@@ -920,13 +922,14 @@ async function updateScoreboard(guild) {
     const fields = [];
     if (tournament.currentRound > tournament.rounds.length) {
       description = `**Tournament Complete!**\n\n**Final Scoreboard:**\n`;
-      { let rank = 0, lastPts = null;
-        Array.from(tournament.scores.entries())
-          .sort((a, b) => b[1] - a[1])
-          .forEach((entry, idx) => {
-            if (entry[1] !== lastPts) { rank = idx + 1; lastPts = entry[1]; }
-            description += `${rank}. <@${entry[0]}> - ${entry[1]} pts\n`;
-          }); }
+      let rankF = 0;
+      let lastPtsF = null;
+      Array.from(tournament.scores.entries())
+        .sort((a, b) => b[1] - a[1])
+        .forEach((entry, idx) => {
+          if (entry[1] !== lastPtsF) { rankF = idx + 1; lastPtsF = entry[1]; }
+          description += `${rankF}. <@${entry[0]}> - ${entry[1]} pts\n`;
+        });
     } else {
       const roundMatches = tournament.rounds[tournament.currentRound - 1] || [];
       const completedInRound = roundMatches.length - tournament.activeMatches.length;
@@ -945,13 +948,14 @@ async function updateScoreboard(guild) {
         });
       }
       description += `**Scoreboard:**\n`;
-      { let rank = 0, lastPts = null;
-        Array.from(tournament.scores.entries())
-          .sort((a, b) => b[1] - a[1])
-          .forEach((entry, idx) => {
-            if (entry[1] !== lastPts) { rank = idx + 1; lastPts = entry[1]; }
-            description += `${rank}. <@${entry[0]}> - ${entry[1]} pts\n`;
-          }); }
+      let rankL = 0;
+      let lastPtsL = null;
+      Array.from(tournament.scores.entries())
+        .sort((a, b) => b[1] - a[1])
+        .forEach((entry, idx) => {
+          if (entry[1] !== lastPtsL) { rankL = idx + 1; lastPtsL = entry[1]; }
+          description += `${rankL}. <@${entry[0]}> - ${entry[1]} pts\n`;
+        });
     }
 
     const websiteRow = new ActionRowBuilder().addComponents(

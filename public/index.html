@@ -1132,7 +1132,8 @@
     const maxPts = Math.max(1, D.scores[0][1]);
     const medals = { 1: '🥇', 2: '🥈', 3: '🥉' };
 
-    let rank = 0, lastPts = null;
+    let rank = 0;
+    let lastPts = null;
     el.innerHTML = D.scores.map(([id, pts], i) => {
       if (pts !== lastPts) { rank = i + 1; lastPts = pts; }
       const rankDisplay = medals[rank] || rank;
