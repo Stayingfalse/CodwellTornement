@@ -734,7 +734,7 @@ client.on('interactionCreate', async (interaction) => {
       } finally {
         processingThreads.delete(submissionKey);
       }
-    } else if (customId.startsWith('assassin_')) {    } else if (customId.startsWith('assassin_')) {
+    } else if (customId.startsWith('assassin_')) {
       const parts = customId.split('_');
       const wasAssassin = parts[1] === 'yes';
       const winner = parts[2];
