@@ -822,8 +822,214 @@
       border-color: rgba(59,130,246,0.7);
       background: rgba(59,130,246,0.12);
     }
+
+    /* ── Tab navigation ── */
+    .tab-nav {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 0.75rem 2rem 0;
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .tab-btn {
+      padding: 0.45rem 1.1rem;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-dim);
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+
+    .tab-btn:hover { background: var(--surface2); border-color: var(--border-hi); color: var(--text); }
+    .tab-btn.active { background: var(--blue-dim); border-color: var(--blue); color: #93c5fd; }
+
+    /* ── Stats layout ── */
+    .stats-layout {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 1.75rem 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    @media (max-width: 920px) {
+      .stats-layout { padding: 1rem; }
+    }
+
+    /* ── Stats filters ── */
+    .stats-filters {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem 1.25rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      align-items: flex-start;
+    }
+
+    .filter-group { display: flex; flex-direction: column; gap: 0.4rem; }
+    .filter-label { font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-faint); }
+    .filter-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+
+    .filter-chip {
+      padding: 0.2rem 0.6rem;
+      border-radius: 9999px;
+      border: 1px solid var(--border);
+      background: var(--surface2);
+      color: var(--text-dim);
+      font-size: 0.72rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+
+    .filter-chip:hover { border-color: var(--border-hi); background: var(--surface3); color: var(--text); }
+    .filter-chip.active { background: var(--blue-dim); border-color: var(--blue); color: #93c5fd; }
+
+    /* ── Trophies ── */
+    .trophies-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+    }
+
+    .trophy-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.4rem 1.5rem;
+      text-align: center;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      box-shadow: var(--shadow);
+    }
+
+    .trophy-card.best-guesser  { border-color: rgba(34,197,94,0.35); }
+    .trophy-card.best-spymaster{ border-color: rgba(167,139,250,0.35); }
+
+    .trophy-icon  { font-size: 2.2rem; line-height: 1; margin-bottom: 0.4rem; }
+    .trophy-label { font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-faint); margin-bottom: 0.3rem; }
+    .trophy-name  { font-size: 1.05rem; font-weight: 700; color: var(--text); margin-bottom: 0.2rem; word-break: break-word; }
+    .trophy-rate  { font-size: 0.78rem; color: var(--text-dim); }
+    .trophy-empty { font-size: 0.8rem; color: var(--text-faint); margin-top: 0.3rem; }
+
+    /* ── Overview stat cards ── */
+    .stat-cards-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+      gap: 1rem;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.1rem 1.25rem;
+      box-shadow: var(--shadow);
+    }
+
+    .stat-card-label { font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-faint); margin-bottom: 0.3rem; }
+    .stat-card-value { font-size: 1.7rem; font-weight: 800; color: var(--text); line-height: 1.1; font-variant-numeric: tabular-nums; }
+    .stat-card-sub   { font-size: 0.7rem; color: var(--text-dim); margin-top: 0.2rem; }
+
+    /* ── Charts grid ── */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+      gap: 1.25rem;
+    }
+
+    @media (max-width: 800px) {
+      .charts-grid { grid-template-columns: 1fr; }
+    }
+
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.1rem 1.25rem 1.25rem;
+      box-shadow: var(--shadow);
+    }
+
+    .chart-title {
+      font-size: 0.72rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-faint);
+      margin-bottom: 0.85rem;
+    }
+
+    .chart-canvas-wrap { position: relative; }
+
+    /* ── Stats table ── */
+    .stats-table-wrap { overflow-x: auto; }
+
+    .stats-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+    }
+
+    .stats-table th {
+      padding: 0.55rem 0.8rem;
+      text-align: left;
+      font-size: 0.67rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--text-faint);
+      border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .stats-table th:hover { color: var(--text-dim); }
+
+    .stats-table td {
+      padding: 0.5rem 0.8rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+
+    .stats-table tr:last-child td { border-bottom: none; }
+    .stats-table tr:hover td { background: var(--surface2); }
+    .stats-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .stats-table .hl  { color: var(--text); font-weight: 600; }
+    .sort-arrow { margin-left: 0.2rem; opacity: 0.4; font-size: 0.6rem; }
+    .sort-arrow.on { opacity: 1; color: var(--blue); }
+
+    .stats-no-data {
+      padding: 3rem 2rem;
+      text-align: center;
+      color: var(--text-faint);
+    }
+
+    .stats-no-data .empty-icon { font-size: 2.5rem; display: block; margin-bottom: 0.75rem; }
+
+    .stats-min-games-row {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-size: 0.78rem;
+      color: var(--text-dim);
+    }
+
+    input[type=range].stats-slider {
+      accent-color: var(--blue);
+      cursor: pointer;
+    }
   </style>
 </head>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <body>
 
 <header>
@@ -839,6 +1045,11 @@
     </div>
   </div>
 </header>
+
+<div class="tab-nav">
+  <button class="tab-btn active" id="tab-btn-tournament" onclick="switchTab('tournament')">🎮 Tournament</button>
+  <button class="tab-btn" id="tab-btn-stats" onclick="switchTab('stats')">📊 Stats</button>
+</div>
 
 <!-- How it Works modal -->
 <div id="how-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="if(event.target===this)closeModal()">
@@ -952,6 +1163,7 @@
   </div>
 </div>
 
+<div id="view-tournament">
 <div class="layout">
   <aside class="sidebar">
     <div class="card" id="meta-card">
@@ -984,6 +1196,91 @@
 
     <div class="rounds-list" id="rounds-list"></div>
   </main>
+</div>
+</div><!-- end #view-tournament -->
+
+<!-- ── Stats panel ──────────────────────────────────────────────────────────── -->
+<div id="view-stats" style="display:none">
+  <div class="stats-layout">
+
+    <!-- Filters / Slicers -->
+    <div class="stats-filters">
+      <div class="filter-group">
+        <div class="filter-label">Rounds</div>
+        <div class="filter-chips" id="filter-rounds"></div>
+      </div>
+      <div class="filter-group">
+        <div class="filter-label">Table: min. games</div>
+        <div class="stats-min-games-row">
+          <input type="range" id="filter-min-games" min="1" max="20" value="1" class="stats-slider"
+                 oninput="document.getElementById('min-games-val').textContent=this.value;if(lastStats)renderStatsTable(lastStats)">
+          <span id="min-games-val">1</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Trophies -->
+    <div class="trophies-row">
+      <div class="trophy-card best-guesser" id="trophy-guesser">
+        <div class="trophy-icon">🎯</div>
+        <div class="trophy-label">Best Guesser</div>
+        <div class="trophy-empty">No data yet</div>
+      </div>
+      <div class="trophy-card best-spymaster" id="trophy-spymaster">
+        <div class="trophy-icon">🕵️</div>
+        <div class="trophy-label">Best Spymaster</div>
+        <div class="trophy-empty">No data yet</div>
+      </div>
+    </div>
+
+    <!-- Overview stat cards -->
+    <div class="stat-cards-row" id="stat-cards"></div>
+
+    <!-- Charts grid -->
+    <div class="charts-grid">
+      <div class="chart-card">
+        <div class="chart-title">Overall Win Rate by Player</div>
+        <div class="chart-canvas-wrap" id="wrap-winrate"><canvas id="chart-winrate"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Spy vs Guesser Win Rate</div>
+        <div class="chart-canvas-wrap" id="wrap-spy-vs-guesser"><canvas id="chart-spy-vs-guesser"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Cards Remaining Distribution</div>
+        <div class="chart-canvas-wrap" style="height:240px"><canvas id="chart-cards"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Assassin Hits by Player</div>
+        <div class="chart-canvas-wrap" id="wrap-assassin"><canvas id="chart-assassin"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Player stats table -->
+    <div class="card">
+      <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem">
+        <span>Player Statistics</span>
+        <span style="font-weight:400;color:var(--text-faint);font-size:0.65rem;text-transform:none;letter-spacing:0">click column headers to sort</span>
+      </div>
+      <div class="stats-table-wrap">
+        <table class="stats-table" id="stats-table">
+          <thead>
+            <tr>
+              <th onclick="sortStats('name')">Player <span class="sort-arrow" data-col="name">▾</span></th>
+              <th class="num" onclick="sortStats('totalWinRate')">Win% <span class="sort-arrow" data-col="totalWinRate">▾</span></th>
+              <th class="num" onclick="sortStats('spyWinRate')">Spy Win% <span class="sort-arrow" data-col="spyWinRate">▾</span></th>
+              <th class="num" onclick="sortStats('guessWinRate')">Guesser Win% <span class="sort-arrow" data-col="guessWinRate">▾</span></th>
+              <th class="num" onclick="sortStats('totalGames')">Games <span class="sort-arrow" data-col="totalGames">▾</span></th>
+              <th class="num" onclick="sortStats('assassinAsGuesser')">Assassin Hits <span class="sort-arrow" data-col="assassinAsGuesser">▾</span></th>
+              <th class="num" onclick="sortStats('teammateAssassinAsSpy')">Teammate Assassin <span class="sort-arrow" data-col="teammateAssassinAsSpy">▾</span></th>
+            </tr>
+          </thead>
+          <tbody id="stats-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
 </div>
 
 <button id="refresh-btn" onclick="fetchData()" aria-label="Refresh data">
@@ -1405,6 +1702,7 @@
       renderScoreboard();
       renderRounds();
       renderAdminPanel();
+      if (currentTab === 'stats') renderStats();
       lbl.textContent = 'Refresh';
     } catch {
       lbl.textContent = 'Error — try again';
@@ -1685,6 +1983,468 @@
       fb.style.color = 'var(--red)';
       fb.textContent = '✗ Network error — try again';
     }
+  }
+
+  // ── Stats: tab switching ──────────────────────────────────────────────────
+  let currentTab = 'tournament';
+
+  function switchTab(tab) {
+    currentTab = tab;
+    document.getElementById('view-tournament').style.display = tab === 'tournament' ? '' : 'none';
+    document.getElementById('view-stats').style.display = tab === 'stats' ? '' : 'none';
+    document.getElementById('tab-btn-tournament').classList.toggle('active', tab === 'tournament');
+    document.getElementById('tab-btn-stats').classList.toggle('active', tab === 'stats');
+    if (tab === 'stats' && D) renderStats();
+  }
+
+  // ── Stats: filter state ───────────────────────────────────────────────────
+  let statsFilterRounds = new Set(['all']);
+  let statsTableSort = { col: 'totalWinRate', asc: false };
+  let lastStats = null;
+
+  function filterRound(round) {
+    if (round === 'all') {
+      statsFilterRounds = new Set(['all']);
+    } else {
+      statsFilterRounds.delete('all');
+      if (statsFilterRounds.has(round)) {
+        statsFilterRounds.delete(round);
+        if (statsFilterRounds.size === 0) statsFilterRounds.add('all');
+      } else {
+        statsFilterRounds.add(round);
+      }
+    }
+    renderStats();
+  }
+
+  function getFilteredHistory() {
+    if (!D || !D.history) return [];
+    if (statsFilterRounds.has('all')) return D.history;
+    return D.history.filter(h => statsFilterRounds.has(h.roundNumber));
+  }
+
+  // ── Stats: build round filter chips ───────────────────────────────────────
+  function buildRoundFilterChips() {
+    const container = document.getElementById('filter-rounds');
+    const rounds = D && D.history
+      ? [...new Set(D.history.map(h => h.roundNumber))].sort((a, b) => a - b)
+      : [];
+
+    const allActive = statsFilterRounds.has('all');
+    let html = `<button class="filter-chip ${allActive ? 'active' : ''}" onclick="filterRound('all')">All</button>`;
+    for (const r of rounds) {
+      const active = statsFilterRounds.has(r);
+      html += `<button class="filter-chip ${active ? 'active' : ''}" onclick="filterRound(${r})">R${r}</button>`;
+    }
+    container.innerHTML = html;
+  }
+
+  // ── Stats: computation ────────────────────────────────────────────────────
+  function computeStats(history) {
+    const pd = {};  // playerId -> per-player stats object
+    const cardsDist = {};  // remainingCards count -> frequency
+    let totalGames = 0, totalAssassinHits = 0;
+
+    function ep(id) {
+      if (!pd[id]) pd[id] = { spyGames: 0, spyWins: 0, guessGames: 0, guessWins: 0, assassinAsGuesser: 0, teammateAssassinAsSpy: 0 };
+      return pd[id];
+    }
+
+    for (const game of history) {
+      const { grouping, winner, assassin, remainingCards } = game;
+      totalGames++;
+      if (assassin) totalAssassinHits++;
+
+      // Cards distribution (non-assassin only)
+      if (!assassin && remainingCards != null) {
+        cardsDist[remainingCards] = (cardsDist[remainingCards] || 0) + 1;
+      }
+
+      // Blue spymaster
+      const bSpy = ep(grouping.blue.spymaster);
+      bSpy.spyGames++;
+      if (winner === 'blue') bSpy.spyWins++;
+      if (assassin && winner === 'red') bSpy.teammateAssassinAsSpy++;
+
+      // Blue guesser
+      const bGue = ep(grouping.blue.guesser);
+      bGue.guessGames++;
+      if (winner === 'blue') bGue.guessWins++;
+      if (assassin && winner === 'red') bGue.assassinAsGuesser++;
+
+      // Red spymaster
+      const rSpy = ep(grouping.red.spymaster);
+      rSpy.spyGames++;
+      if (winner === 'red') rSpy.spyWins++;
+      if (assassin && winner === 'blue') rSpy.teammateAssassinAsSpy++;
+
+      // Red guesser
+      const rGue = ep(grouping.red.guesser);
+      rGue.guessGames++;
+      if (winner === 'red') rGue.guessWins++;
+      if (assassin && winner === 'blue') rGue.assassinAsGuesser++;
+    }
+
+    // Average cards remaining (non-assassin games)
+    let totalCards = 0, cardCount = 0;
+    for (const [n, freq] of Object.entries(cardsDist)) {
+      totalCards += parseInt(n) * freq;
+      cardCount += freq;
+    }
+    const avgCards = cardCount > 0 ? totalCards / cardCount : null;
+
+    // Best guesser / spymaster (min 3 games in their role)
+    const TROPHY_MIN = 3;
+    let bestGuesser = null, bestSpymaster = null;
+    for (const [id, p] of Object.entries(pd)) {
+      if (p.guessGames >= TROPHY_MIN) {
+        const r = p.guessWins / p.guessGames;
+        if (!bestGuesser || r > bestGuesser.rate || (r === bestGuesser.rate && p.guessGames > bestGuesser.games)) {
+          bestGuesser = { id, rate: r, games: p.guessGames };
+        }
+      }
+      if (p.spyGames >= TROPHY_MIN) {
+        const r = p.spyWins / p.spyGames;
+        if (!bestSpymaster || r > bestSpymaster.rate || (r === bestSpymaster.rate && p.spyGames > bestSpymaster.games)) {
+          bestSpymaster = { id, rate: r, games: p.spyGames };
+        }
+      }
+    }
+
+    return { pd, cardsDist, avgCards, totalGames, totalAssassinHits, bestGuesser, bestSpymaster };
+  }
+
+  // ── Stats: chart management ───────────────────────────────────────────────
+  const _ch = {};
+
+  function mkChart(id, cfg) {
+    if (_ch[id]) { _ch[id].destroy(); delete _ch[id]; }
+    const canvas = document.getElementById(id);
+    if (!canvas || typeof Chart === 'undefined') return;
+    _ch[id] = new Chart(canvas, cfg);
+  }
+
+  const CHART_COLORS = {
+    blue:   { bg: 'rgba(59,130,246,0.55)',   bd: 'rgba(59,130,246,0.8)' },
+    purple: { bg: 'rgba(167,139,250,0.55)',  bd: 'rgba(167,139,250,0.8)' },
+    green:  { bg: 'rgba(34,197,94,0.5)',     bd: 'rgba(34,197,94,0.75)' },
+    red:    { bg: 'rgba(239,68,68,0.55)',    bd: 'rgba(239,68,68,0.8)' },
+    amber:  { bg: 'rgba(245,158,11,0.5)',    bd: 'rgba(245,158,11,0.75)' },
+  };
+
+  const AXIS_STYLE = { grid: { color: 'rgba(40,40,74,0.55)' }, ticks: { color: '#7a7a9a', font: { size: 11 } } };
+  const TOOLTIP_STYLE = { backgroundColor: 'rgba(10,10,28,0.97)', borderColor: '#28284a', borderWidth: 1, titleColor: '#e2e8f0', bodyColor: '#94a3b8', padding: 10 };
+
+  // ── Stats: render all ─────────────────────────────────────────────────────
+  function renderStats() {
+    if (!D || !D.started) {
+      showStatsEmpty('Tournament has not started yet.');
+      return;
+    }
+
+    buildRoundFilterChips();
+    const history = getFilteredHistory();
+
+    if (history.length === 0) {
+      showStatsEmpty('No games in the selected rounds.');
+      return;
+    }
+
+    const stats = computeStats(history);
+    lastStats = stats;
+
+    renderTrophies(stats);
+    renderStatCards(stats);
+    renderStatCharts(stats);
+    renderStatsTable(stats);
+  }
+
+  function showStatsEmpty(msg) {
+    lastStats = null;
+    buildRoundFilterChips();
+    ['chart-winrate','chart-spy-vs-guesser','chart-cards','chart-assassin'].forEach(id => {
+      if (_ch[id]) { _ch[id].destroy(); delete _ch[id]; }
+    });
+    document.getElementById('stat-cards').innerHTML = '';
+    document.getElementById('trophy-guesser').innerHTML   = '<div class="trophy-icon">🎯</div><div class="trophy-label">Best Guesser</div><div class="trophy-empty">No data</div>';
+    document.getElementById('trophy-spymaster').innerHTML = '<div class="trophy-icon">🕵️</div><div class="trophy-label">Best Spymaster</div><div class="trophy-empty">No data</div>';
+    document.getElementById('stats-table-body').innerHTML = `<tr><td colspan="7" style="text-align:center;padding:1.5rem;color:var(--text-faint)">${esc(msg)}</td></tr>`;
+  }
+
+  // ── Stats: trophies ───────────────────────────────────────────────────────
+  function renderTrophies({ bestGuesser, bestSpymaster }) {
+    const tg = document.getElementById('trophy-guesser');
+    if (bestGuesser) {
+      tg.innerHTML =
+        '<div class="trophy-icon">🎯</div>' +
+        '<div class="trophy-label">Best Guesser</div>' +
+        `<div class="trophy-name">${esc(displayName(bestGuesser.id))}</div>` +
+        `<div class="trophy-rate">${(bestGuesser.rate * 100).toFixed(1)}% win rate &middot; ${bestGuesser.games} games</div>`;
+    } else {
+      tg.innerHTML = '<div class="trophy-icon">🎯</div><div class="trophy-label">Best Guesser</div><div class="trophy-empty">Need 3+ guesser games</div>';
+    }
+
+    const ts = document.getElementById('trophy-spymaster');
+    if (bestSpymaster) {
+      ts.innerHTML =
+        '<div class="trophy-icon">🕵️</div>' +
+        '<div class="trophy-label">Best Spymaster</div>' +
+        `<div class="trophy-name">${esc(displayName(bestSpymaster.id))}</div>` +
+        `<div class="trophy-rate">${(bestSpymaster.rate * 100).toFixed(1)}% win rate &middot; ${bestSpymaster.games} games</div>`;
+    } else {
+      ts.innerHTML = '<div class="trophy-icon">🕵️</div><div class="trophy-label">Best Spymaster</div><div class="trophy-empty">Need 3+ spymaster games</div>';
+    }
+  }
+
+  // ── Stats: overview cards ─────────────────────────────────────────────────
+  function renderStatCards({ totalGames, totalAssassinHits, avgCards, pd }) {
+    const activePlayers = Object.keys(pd).length;
+    const assassinRate = totalGames > 0 ? ((totalAssassinHits / totalGames) * 100).toFixed(1) : '0';
+    const avgCardsStr = avgCards != null ? avgCards.toFixed(2) : '—';
+
+    let totalSpyWins = 0, totalSpyGames = 0, totalGuessWins = 0, totalGuessGames = 0;
+    for (const p of Object.values(pd)) {
+      totalSpyWins   += p.spyWins;   totalSpyGames   += p.spyGames;
+      totalGuessWins += p.guessWins; totalGuessGames += p.guessGames;
+    }
+    const spyWinPct   = totalSpyGames   > 0 ? ((totalSpyWins   / totalSpyGames)   * 100).toFixed(1) : '—';
+    const guessWinPct = totalGuessGames > 0 ? ((totalGuessWins / totalGuessGames) * 100).toFixed(1) : '—';
+
+    document.getElementById('stat-cards').innerHTML = `
+      <div class="stat-card">
+        <div class="stat-card-label">Games Played</div>
+        <div class="stat-card-value">${totalGames}</div>
+        <div class="stat-card-sub">${activePlayers} active player${activePlayers !== 1 ? 's' : ''}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Avg Cards Remaining</div>
+        <div class="stat-card-value">${avgCardsStr}</div>
+        <div class="stat-card-sub">at game end (non-assassin)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Assassin Hit Rate</div>
+        <div class="stat-card-value">${assassinRate}%</div>
+        <div class="stat-card-sub">${totalAssassinHits} of ${totalGames} game${totalGames !== 1 ? 's' : ''}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Spy Win Rate</div>
+        <div class="stat-card-value">${spyWinPct}%</div>
+        <div class="stat-card-sub">Guesser Win Rate: ${guessWinPct}%</div>
+      </div>
+    `;
+  }
+
+  // ── Stats: charts ─────────────────────────────────────────────────────────
+  function playerRows(pd) {
+    return Object.entries(pd).map(([id, p]) => {
+      const totalG = p.spyGames + p.guessGames;
+      const totalW = p.spyWins  + p.guessWins;
+      return {
+        id, name: displayName(id),
+        totalGames: totalG, totalWins: totalW,
+        totalWinRate:  totalG > 0 ? totalW / totalG : 0,
+        spyGames:  p.spyGames,   spyWins:  p.spyWins,
+        spyWinRate:   p.spyGames   > 0 ? p.spyWins   / p.spyGames   : 0,
+        guessGames: p.guessGames, guessWins: p.guessWins,
+        guessWinRate: p.guessGames > 0 ? p.guessWins / p.guessGames : 0,
+        assassinAsGuesser: p.assassinAsGuesser,
+        teammateAssassinAsSpy: p.teammateAssassinAsSpy,
+      };
+    }).sort((a, b) => b.totalWinRate - a.totalWinRate);
+  }
+
+  function setWrapHeight(wrapId, playerCount) {
+    const wrap = document.getElementById(wrapId);
+    if (wrap) wrap.style.height = Math.max(220, playerCount * 32) + 'px';
+  }
+
+  function renderStatCharts({ pd, cardsDist }) {
+    if (typeof Chart === 'undefined') {
+      ['chart-winrate','chart-spy-vs-guesser','chart-cards','chart-assassin'].forEach(id => {
+        const c = document.getElementById(id);
+        if (c) c.parentElement.innerHTML = '<div style="padding:1rem;color:var(--text-faint);font-size:0.8rem">Chart.js failed to load. Check network.</div>';
+      });
+      return;
+    }
+
+    const rows = playerRows(pd);
+    const names = rows.map(r => r.name);
+
+    setWrapHeight('wrap-winrate', rows.length);
+    setWrapHeight('wrap-spy-vs-guesser', rows.length);
+    setWrapHeight('wrap-assassin', rows.length);
+
+    // 1. Overall win rate — horizontal bar, sorted desc
+    mkChart('chart-winrate', {
+      type: 'bar',
+      data: {
+        labels: names,
+        datasets: [{
+          label: 'Win Rate %',
+          data: rows.map(r => +(r.totalWinRate * 100).toFixed(1)),
+          backgroundColor: rows.map(r => `rgba(59,130,246,${(0.3 + r.totalWinRate * 0.6).toFixed(2)})`),
+          borderColor: 'rgba(59,130,246,0.75)',
+          borderWidth: 1, borderRadius: 4,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+        plugins: {
+          legend: { display: false },
+          tooltip: { ...TOOLTIP_STYLE, callbacks: { label: ctx => ' ' + ctx.parsed.x + '%' } },
+        },
+        scales: {
+          x: { ...AXIS_STYLE, min: 0, max: 100, ticks: { ...AXIS_STYLE.ticks, callback: v => v + '%' } },
+          y: { ...AXIS_STYLE },
+        },
+      },
+    });
+
+    // 2. Spy vs Guesser win rate — grouped horizontal bar
+    mkChart('chart-spy-vs-guesser', {
+      type: 'bar',
+      data: {
+        labels: names,
+        datasets: [
+          {
+            label: 'Spy Win %',
+            data: rows.map(r => +(r.spyWinRate * 100).toFixed(1)),
+            backgroundColor: CHART_COLORS.purple.bg, borderColor: CHART_COLORS.purple.bd,
+            borderWidth: 1, borderRadius: 3,
+          },
+          {
+            label: 'Guesser Win %',
+            data: rows.map(r => +(r.guessWinRate * 100).toFixed(1)),
+            backgroundColor: CHART_COLORS.green.bg, borderColor: CHART_COLORS.green.bd,
+            borderWidth: 1, borderRadius: 3,
+          },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+        plugins: {
+          legend: { display: true, labels: { color: '#94a3b8', font: { size: 11 }, boxWidth: 12, padding: 14 } },
+          tooltip: { ...TOOLTIP_STYLE, callbacks: { label: ctx => ' ' + ctx.dataset.label + ': ' + ctx.parsed.x + '%' } },
+        },
+        scales: {
+          x: { ...AXIS_STYLE, min: 0, max: 100, ticks: { ...AXIS_STYLE.ticks, callback: v => v + '%' } },
+          y: { ...AXIS_STYLE },
+        },
+      },
+    });
+
+    // 3. Cards remaining distribution — vertical bar
+    const maxCard = 8;
+    const cardLabels = Array.from({ length: maxCard + 1 }, (_, i) => String(i));
+    const cardData   = cardLabels.map((_, i) => cardsDist[i] || 0);
+    mkChart('chart-cards', {
+      type: 'bar',
+      data: {
+        labels: cardLabels.map((l, i) => i === 1 ? '1 card' : l + ' cards'),
+        datasets: [{
+          label: 'Games',
+          data: cardData,
+          backgroundColor: cardData.map((_, i) => `hsla(${195 + i * 13},65%,${46 + i * 2}%,0.6)`),
+          borderColor:      cardData.map((_, i) => `hsla(${195 + i * 13},65%,${58 + i * 2}%,0.85)`),
+          borderWidth: 1, borderRadius: 4,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { ...TOOLTIP_STYLE, callbacks: { label: ctx => ' ' + ctx.parsed.y + ' game' + (ctx.parsed.y !== 1 ? 's' : '') } },
+        },
+        scales: {
+          x: { ...AXIS_STYLE },
+          y: { ...AXIS_STYLE, ticks: { ...AXIS_STYLE.ticks, stepSize: 1 } },
+        },
+      },
+    });
+
+    // 4. Assassin hits — grouped horizontal bar
+    mkChart('chart-assassin', {
+      type: 'bar',
+      data: {
+        labels: names,
+        datasets: [
+          {
+            label: 'Assassin hits (as Guesser)',
+            data: rows.map(r => r.assassinAsGuesser),
+            backgroundColor: CHART_COLORS.red.bg, borderColor: CHART_COLORS.red.bd,
+            borderWidth: 1, borderRadius: 3,
+          },
+          {
+            label: 'Teammate assassin (as Spy)',
+            data: rows.map(r => r.teammateAssassinAsSpy),
+            backgroundColor: CHART_COLORS.amber.bg, borderColor: CHART_COLORS.amber.bd,
+            borderWidth: 1, borderRadius: 3,
+          },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+        plugins: {
+          legend: { display: true, labels: { color: '#94a3b8', font: { size: 11 }, boxWidth: 12, padding: 14 } },
+          tooltip: { ...TOOLTIP_STYLE },
+        },
+        scales: {
+          x: { ...AXIS_STYLE, ticks: { ...AXIS_STYLE.ticks, stepSize: 1 } },
+          y: { ...AXIS_STYLE },
+        },
+      },
+    });
+  }
+
+  // ── Stats: table ──────────────────────────────────────────────────────────
+  function renderStatsTable({ pd }) {
+    const minGames = parseInt(document.getElementById('filter-min-games')?.value || '1', 10);
+    const { col, asc } = statsTableSort;
+
+    let rows = playerRows(pd).filter(r => r.totalGames >= minGames);
+
+    rows.sort((a, b) => {
+      const av = col === 'name' ? a.name.toLowerCase() : (a[col] ?? 0);
+      const bv = col === 'name' ? b.name.toLowerCase() : (b[col] ?? 0);
+      if (av < bv) return asc ? -1 :  1;
+      if (av > bv) return asc ?  1 : -1;
+      return 0;
+    });
+
+    const tbody = document.getElementById('stats-table-body');
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:1.5rem;color:var(--text-faint)">No players with ${minGames}+ games in selected rounds.</td></tr>`;
+    } else {
+      tbody.innerHTML = rows.map(r => `
+        <tr>
+          <td class="hl">${esc(r.name)}</td>
+          <td class="num">${(r.totalWinRate * 100).toFixed(1)}%</td>
+          <td class="num">${r.spyGames   > 0 ? (r.spyWinRate   * 100).toFixed(1) + '%' : '—'}
+            <span style="font-size:0.67rem;color:var(--text-faint)">(${r.spyWins}/${r.spyGames})</span></td>
+          <td class="num">${r.guessGames > 0 ? (r.guessWinRate * 100).toFixed(1) + '%' : '—'}
+            <span style="font-size:0.67rem;color:var(--text-faint)">(${r.guessWins}/${r.guessGames})</span></td>
+          <td class="num">${r.totalGames}</td>
+          <td class="num">${r.assassinAsGuesser}</td>
+          <td class="num">${r.teammateAssassinAsSpy}</td>
+        </tr>
+      `).join('');
+    }
+
+    document.querySelectorAll('#stats-table .sort-arrow').forEach(el => {
+      const c = el.dataset.col;
+      el.classList.toggle('on', c === col);
+      el.textContent = (c === col) ? (asc ? '▲' : '▾') : '▾';
+    });
+  }
+
+  function sortStats(col) {
+    if (statsTableSort.col === col) {
+      statsTableSort.asc = !statsTableSort.asc;
+    } else {
+      statsTableSort.col = col;
+      statsTableSort.asc = col === 'name';
+    }
+    if (lastStats) renderStatsTable(lastStats);
   }
 
   // Check auth state on page load
