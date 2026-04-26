@@ -1875,6 +1875,9 @@
     if (started && signupsReopened) {
       html += `<button class="admin-btn btn-amber" onclick="confirmCloseSignups()">🔒 Close Signups</button>`;
     }
+    if (started) {
+      html += `<button class="admin-btn btn-amber" onclick="confirmRecalculateRounds()">🔄 Recalculate Rounds</button>`;
+    }
     html += `<button class="admin-btn btn-red" onclick="confirmReset()">🗑 Reset Tournament</button>`;
     html += '</div>';
     html += '<div class="admin-feedback" id="admin-feedback"></div>';
@@ -1884,6 +1887,11 @@
   function confirmCloseSignups() {
     if (!confirm('Close signups now?\n\nAll players currently signed up will be included, and future rounds will be recalculated.')) return;
     adminAction('close-signups');
+  }
+
+  function confirmRecalculateRounds() {
+    if (!confirm('Recalculate future rounds?\n\nThis will regenerate all rounds that have not yet started, based on the current active player list and already-played match configurations.\n\nRounds already completed and any in-progress matches are not affected.')) return;
+    adminAction('recalculate-rounds');
   }
 
   async function adminAction(action, body) {

@@ -2646,6 +2646,18 @@ async function handleHttpRequest(req, res) {
         return;
       }
 
+      // ── recalculate-rounds ─────────────────────────────────────────────────
+      if (action === 'recalculate-rounds') {
+        if (!tournament.started) { sendJson(res, 400, { error: 'Tournament has not started yet.' }); return; }
+        const activePlayers = Array.from(tournament.players);
+        recalculateFutureRounds(activePlayers);
+        await saveTournamentData();
+        const guildRR = client.guilds.cache.get(process.env.GUILD_ID);
+        if (guildRR) updateScoreboard(guildRR).catch(() => null);
+        sendJson(res, 200, { ok: true, message: `Future rounds recalculated. ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned with ${activePlayers.length} active player${activePlayers.length !== 1 ? 's' : ''}.` });
+        return;
+      }
+
       sendJson(res, 404, { error: `Unknown admin action "${action}".` });
       return;
     }
