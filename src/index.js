@@ -37,12 +37,20 @@ let tournament = {
   playerNames: {}, // {userId: displayName} snapshot taken at tournament start
   tournamentStartedAt: null, // ISO timestamp when tournament was started
   roundStartedAt: null, // ISO timestamp when current round was allocated
+  leftPlayers: {}, // {userId: {displayName, leftAt, score}} — players who left mid-tournament
+  pendingRemoval: null, // {userId, confirmMessageId, requestedAt} — in-flight leave request
+  signupsReopened: false, // true while a mid-tournament signup window is open
+  signupReopenMessageId: null, // Discord message ID of the active reopen-signups message
 };
 
 // Round timer handles (in-memory only)
 let roundWarningTimer = null;
 let roundExpiryTimer = null;
 let threadKeepAliveTimer = null;
+let removalTimeoutTimer = null;
+
+// Duration of the pending-removal confirmation window (15 minutes)
+const REMOVAL_TIMEOUT_MS = 15 * 60 * 1000;
 
 // Tracks threads currently mid-submission to prevent double-posting
 // Key: `${threadId}:${gamePhase}` — set synchronously before any await, cleared after
@@ -152,6 +160,21 @@ client.once('clientReady', async () => {
             if (tournament.activeMatches.length > 0) startThreadKeepAlive(guild);
           }
 
+          // Recovery: handle pending removal timeout
+          if (tournament.pendingRemoval) {
+            const elapsed = Date.now() - new Date(tournament.pendingRemoval.requestedAt).getTime();
+            if (elapsed >= REMOVAL_TIMEOUT_MS) {
+              console.log('[startup] Pending removal expired, auto-cancelling');
+              cancelPendingRemoval(guild, 'timeout').catch(e => console.error('[startup]', e.message));
+            } else {
+              const remaining = REMOVAL_TIMEOUT_MS - elapsed;
+              console.log(`[startup] Re-scheduling removal timeout in ${Math.round(remaining / 1000)}s`);
+              removalTimeoutTimer = setTimeout(() => {
+                cancelPendingRemoval(guild, 'timeout').catch(e => console.error('[removal-timeout]', e.message));
+              }, remaining);
+            }
+          }
+
           // Recovery: if the current round has no active matches and isn't complete,
           // the threads were never created (e.g. permission error or crash during allocateRound).
           // Re-run allocateRound automatically so no manual intervention is needed.
@@ -203,6 +226,10 @@ async function loadTournamentData() {
     tournament.playerNames = parsed.playerNames || {};
     tournament.tournamentStartedAt = parsed.tournamentStartedAt || null;
     tournament.roundStartedAt = parsed.roundStartedAt || null;
+    tournament.leftPlayers = parsed.leftPlayers || {};
+    tournament.pendingRemoval = parsed.pendingRemoval || null;
+    tournament.signupsReopened = parsed.signupsReopened || false;
+    tournament.signupReopenMessageId = parsed.signupReopenMessageId || null;
     console.log('Tournament data loaded from storage');
   } catch (error) {
     console.log('No previous tournament data found, starting fresh');
@@ -229,6 +256,10 @@ async function saveTournamentData() {
       playerNames: tournament.playerNames,
       tournamentStartedAt: tournament.tournamentStartedAt,
       roundStartedAt: tournament.roundStartedAt,
+      leftPlayers: tournament.leftPlayers,
+      pendingRemoval: tournament.pendingRemoval,
+      signupsReopened: tournament.signupsReopened,
+      signupReopenMessageId: tournament.signupReopenMessageId,
     };
     await fs.writeFile(TOURNAMENT_FILE, JSON.stringify(data, null, 2));
   } catch (error) {
@@ -333,6 +364,10 @@ client.on('interactionCreate', async (interaction) => {
               .setLabel('🌐 Website')
               .setStyle(ButtonStyle.Link)
               .setURL(getWebBaseUrl()),
+            new ButtonBuilder()
+              .setCustomId('leave_tournament')
+              .setLabel('🚪 Leave Tournament')
+              .setStyle(ButtonStyle.Danger),
           );
       } else {
         // Tournament not started - show sign-up
@@ -440,10 +475,22 @@ client.on('interactionCreate', async (interaction) => {
         );
       }
 
+      if (tournament.started) {
+        adminComponents.push(
+          new ButtonBuilder()
+            .setCustomId('admin_reopen_signups')
+            .setLabel(tournament.signupsReopened ? '🔒 Close Signups' : '📋 Reopen Signups')
+            .setStyle(tournament.signupsReopened ? ButtonStyle.Danger : ButtonStyle.Primary),
+        );
+      }
+
       const adminRow = new ActionRowBuilder().addComponents(adminComponents.slice(0, 5));
       const adminRows = [adminRow];
       if (adminComponents.length > 5) {
         adminRows.push(new ActionRowBuilder().addComponents(adminComponents.slice(5)));
+      }
+      if (adminComponents.length > 10) {
+        adminRows.push(new ActionRowBuilder().addComponents(adminComponents.slice(10)));
       }
 
       await interaction.reply({ embeds: [adminEmbed], components: adminRows, flags: MessageFlags.Ephemeral });
@@ -503,6 +550,7 @@ client.on('interactionCreate', async (interaction) => {
               .setColor(0x00ff00);
             const websiteRow = new ActionRowBuilder().addComponents(
               new ButtonBuilder().setLabel('🌐 Website').setStyle(ButtonStyle.Link).setURL(getWebBaseUrl()),
+              new ButtonBuilder().setCustomId('leave_tournament').setLabel('🚪 Leave Tournament').setStyle(ButtonStyle.Danger),
             );
             await message.edit({ embeds: [updatedEmbed], components: [websiteRow] });
           }
@@ -610,6 +658,7 @@ client.on('interactionCreate', async (interaction) => {
       const prevSetupChannelId = tournament.setupChannelId;
 
       clearRoundTimers();
+      clearRemovalTimer();
       tournament = {
         players: new Set(),
         currentRound: 0,
@@ -628,6 +677,10 @@ client.on('interactionCreate', async (interaction) => {
         playerNames: {},
         tournamentStartedAt: null,
         roundStartedAt: null,
+        leftPlayers: {},
+        pendingRemoval: null,
+        signupsReopened: false,
+        signupReopenMessageId: null,
       };
       await saveTournamentData();
 
@@ -844,6 +897,192 @@ client.on('interactionCreate', async (interaction) => {
       } else {
         await interaction.reply({ content: 'This button is not for you.', flags: MessageFlags.Ephemeral });
       }
+
+    // ── Leave tournament (player-initiated, mid-tournament) ──────────────────
+    } else if (customId === 'leave_tournament') {
+      if (!tournament.started) {
+        await interaction.reply({ content: 'The tournament has not started yet.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!tournament.players.has(interaction.user.id)) {
+        await interaction.reply({ content: 'You are not currently in the tournament.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (tournament.pendingRemoval) {
+        await interaction.reply({ content: `Another player's removal is already pending confirmation. Please wait until it resolves.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const channel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+      if (!channel) {
+        await interaction.reply({ content: 'Could not find the tournament channel.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const hasActiveMatch = tournament.activeMatches.some(m =>
+        [m.grouping.blue.spymaster, m.grouping.blue.guesser, m.grouping.red.spymaster, m.grouping.red.guesser].includes(interaction.user.id)
+      );
+      const activeMatchNote = hasActiveMatch
+        ? '\n\n⚠️ You have an active match in progress — if you leave, that match will continue and count toward scores. Future rounds will not include you.'
+        : '';
+      const confirmRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`confirm_leave_${interaction.user.id}`)
+          .setLabel('✅ Yes, Leave Tournament')
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId(`cancel_leave_${interaction.user.id}`)
+          .setLabel('Cancel')
+          .setStyle(ButtonStyle.Secondary),
+      );
+      const confirmMsg = await channel.send({
+        content: `⚠️ <@${interaction.user.id}> has requested to leave the tournament. <@${interaction.user.id}>, please confirm within 15 minutes by clicking the button below.${activeMatchNote}`,
+        components: [confirmRow],
+      });
+      tournament.pendingRemoval = {
+        userId: interaction.user.id,
+        confirmMessageId: confirmMsg.id,
+        requestedAt: new Date().toISOString(),
+      };
+      await saveTournamentData();
+      scheduleRemovalTimeout(interaction.guild);
+      await interaction.editReply({ content: 'Your leave request has been posted in the tournament channel. Please confirm within 15 minutes.' });
+
+    // ── Confirm leave (player confirms their own removal) ────────────────────
+    } else if (customId.startsWith('confirm_leave_')) {
+      const userId = customId.slice('confirm_leave_'.length);
+      if (interaction.user.id !== userId) {
+        await interaction.reply({ content: 'This confirmation is not for you.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!tournament.pendingRemoval || tournament.pendingRemoval.userId !== userId) {
+        await interaction.reply({ content: 'No pending leave request found. It may have already been processed or expired.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const { confirmMessageId } = tournament.pendingRemoval;
+      const leaveDisplayName = tournament.playerNames[userId] || userId;
+      const leaveScore = tournament.scores.get(userId) || 0;
+      tournament.leftPlayers[userId] = { displayName: leaveDisplayName, leftAt: new Date().toISOString(), score: leaveScore };
+      tournament.players.delete(userId);
+      tournament.scores.delete(userId);
+      clearRemovalTimer();
+      tournament.pendingRemoval = null;
+      const activePlayers = Array.from(tournament.players);
+      recalculateFutureRounds(activePlayers);
+      await saveTournamentData();
+      const leaveChannel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+      if (leaveChannel) {
+        try {
+          const prevMsg = await leaveChannel.messages.fetch(confirmMessageId).catch(() => null);
+          if (prevMsg) await prevMsg.delete().catch(() => null);
+        } catch {}
+        const remaining = activePlayers.length;
+        await leaveChannel.send(`✅ <@${userId}> has left the tournament. Future rounds have been recalculated with ${remaining} remaining player${remaining !== 1 ? 's' : ''}. ${tournament.rounds.length} total rounds now planned.`);
+      }
+      updateScoreboard(interaction.guild).catch(() => null);
+      if (tournament.activeMatches.length === 0 && tournament.currentRound <= tournament.rounds.length) {
+        allocateRound(interaction.guild).catch(e => console.error('[leave] Auto-allocate failed:', e.message));
+      }
+      await interaction.editReply({ content: '✅ You have left the tournament. Goodbye!' });
+
+    // ── Cancel leave ─────────────────────────────────────────────────────────
+    } else if (customId.startsWith('cancel_leave_')) {
+      const userId = customId.slice('cancel_leave_'.length);
+      if (interaction.user.id !== userId) {
+        await interaction.reply({ content: 'This button is not for you.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!tournament.pendingRemoval || tournament.pendingRemoval.userId !== userId) {
+        await interaction.reply({ content: 'No pending leave request found.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const { confirmMessageId: cancelMsgId } = tournament.pendingRemoval;
+      clearRemovalTimer();
+      tournament.pendingRemoval = null;
+      await saveTournamentData();
+      const cancelChannel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+      if (cancelChannel) {
+        try {
+          const prevMsg = await cancelChannel.messages.fetch(cancelMsgId).catch(() => null);
+          if (prevMsg) await prevMsg.delete().catch(() => null);
+        } catch {}
+        await cancelChannel.send(`❌ <@${userId}> has chosen to stay in the tournament.`);
+      }
+      await interaction.reply({ content: '❌ Your leave request has been cancelled. You remain in the tournament.', flags: MessageFlags.Ephemeral });
+
+    // ── Reopen signup (player joins during mid-tournament signup window) ──────
+    } else if (customId === 'reopen_signup') {
+      if (!tournament.signupsReopened) {
+        await interaction.reply({ content: 'Signups are not currently open.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const userId = interaction.user.id;
+      if (tournament.players.has(userId)) {
+        await interaction.reply({ content: 'You are already in the tournament!', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      tournament.players.add(userId);
+      tournament.scores.set(userId, 0);
+      try {
+        const member = await interaction.guild.members.fetch(userId).catch(() => null);
+        tournament.playerNames[userId] = member ? member.displayName : userId;
+      } catch { tournament.playerNames[userId] = userId; }
+      if (tournament.leftPlayers[userId]) {
+        const { [userId]: _removed, ...rest } = tournament.leftPlayers;
+        tournament.leftPlayers = rest;
+      }
+      await saveTournamentData();
+      await interaction.reply({ content: `✅ You have joined the tournament! You'll be included in future rounds once signups close.`, flags: MessageFlags.Ephemeral });
+
+    // ── Close signups (admin, from the channel message button) ───────────────
+    } else if (customId === 'close_signups') {
+      const adminRoleId = process.env.ADMIN_ROLE_ID;
+      if (!interaction.member.roles.cache.has(adminRoleId)) {
+        await interaction.reply({ content: 'Only admins can close signups.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!tournament.signupsReopened) {
+        await interaction.reply({ content: 'Signups are not currently open.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await closeSignups(interaction.guild);
+      await interaction.editReply({ content: `✅ Signups closed. Future rounds recalculated.` });
+
+    // ── Admin reopen signups (from the Discord admin panel) ──────────────────
+    } else if (customId === 'admin_reopen_signups') {
+      const adminRoleId = process.env.ADMIN_ROLE_ID;
+      if (!interaction.member.roles.cache.has(adminRoleId)) {
+        await interaction.reply({ content: 'You do not have permission.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!tournament.started) {
+        await interaction.reply({ content: 'The tournament has not started yet.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (tournament.signupsReopened) {
+        // Toggle: close signups
+        await closeSignups(interaction.guild);
+        await interaction.editReply({ content: `✅ Signups closed. Future rounds recalculated.` });
+      } else {
+        // Open signups
+        const channel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+        if (!channel) { await interaction.editReply({ content: 'Could not find the tournament channel.' }); return; }
+        const reopenRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('reopen_signup').setLabel('✅ Join Tournament').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId('close_signups').setLabel('🔒 Close Signups (Admin)').setStyle(ButtonStyle.Danger),
+        );
+        const msg = await channel.send({
+          content: '📋 **Signups are reopened!** Click below to join the tournament. New rounds won\'t start until signups are closed by an admin.',
+          components: [reopenRow],
+        });
+        tournament.signupsReopened = true;
+        tournament.signupReopenMessageId = msg.id;
+        await saveTournamentData();
+        updateScoreboard(interaction.guild).catch(() => null);
+        await interaction.editReply({ content: '✅ Signups have been reopened. A message has been posted in the tournament channel.' });
+      }
     }
   } else if (interaction.isModalSubmit()) {
     const { customId } = interaction;
@@ -960,6 +1199,7 @@ async function updateScoreboard(guild) {
 
     const websiteRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setLabel('🌐 Website').setStyle(ButtonStyle.Link).setURL(getWebBaseUrl()),
+      new ButtonBuilder().setCustomId('leave_tournament').setLabel('🚪 Leave Tournament').setStyle(ButtonStyle.Danger),
     );
     const updatedEmbed = EmbedBuilder.from(message.embeds[0]).setDescription(description).setFields(fields);
     await message.edit({ embeds: [updatedEmbed], components: [websiteRow] });
@@ -977,6 +1217,12 @@ async function allocateRound(guild) {
   }
   if (tournament.activeMatches.length > 0) {
     return { success: false, message: `Round ${tournament.currentRound} is already in progress. ${tournament.activeMatches.length} match(es) still active.` };
+  }
+  if (tournament.pendingRemoval) {
+    return { success: false, message: 'A player removal is pending confirmation. Waiting before starting the next round.' };
+  }
+  if (tournament.signupsReopened) {
+    return { success: false, message: 'Signups are currently open. Close signups before advancing to the next round.' };
   }
 
   const currentRoundMatches = tournament.rounds[tournament.currentRound - 1];
@@ -1110,6 +1356,114 @@ function clearRoundTimers() {
   if (roundWarningTimer)   { clearTimeout(roundWarningTimer);   roundWarningTimer   = null; }
   if (roundExpiryTimer)    { clearTimeout(roundExpiryTimer);    roundExpiryTimer    = null; }
   if (threadKeepAliveTimer){ clearTimeout(threadKeepAliveTimer); threadKeepAliveTimer = null; }
+}
+
+function clearRemovalTimer() {
+  if (removalTimeoutTimer) { clearTimeout(removalTimeoutTimer); removalTimeoutTimer = null; }
+}
+
+function scheduleRemovalTimeout(guild) {
+  clearRemovalTimer();
+  removalTimeoutTimer = setTimeout(() => {
+    cancelPendingRemoval(guild, 'timeout').catch(e => console.error('[removal-timeout]', e.message));
+  }, REMOVAL_TIMEOUT_MS);
+}
+
+async function cancelPendingRemoval(guild, reason) {
+  if (!tournament.pendingRemoval) return;
+  const { userId, confirmMessageId } = tournament.pendingRemoval;
+  clearRemovalTimer();
+  tournament.pendingRemoval = null;
+  await saveTournamentData();
+  if (guild && tournament.setupChannelId) {
+    try {
+      const channel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+      if (channel) {
+        if (confirmMessageId) {
+          try {
+            const msg = await channel.messages.fetch(confirmMessageId).catch(() => null);
+            if (msg) await msg.delete().catch(() => null);
+          } catch {}
+        }
+        if (reason === 'timeout') {
+          await channel.send(`⏰ No response — <@${userId}>'s leave request has expired. They remain in the tournament.`);
+        }
+      }
+    } catch (e) { console.error('[cancelPendingRemoval]', e.message); }
+  }
+}
+
+// Mark all 8 role-config strings for a match (game 1 + swapped game 2) as played.
+function markConfigsAsPlayed(grouping, playedConfigs) {
+  const swapped = getSwappedGrouping(grouping);
+  playedConfigs.add(`${grouping.blue.spymaster}-${grouping.blue.guesser}-blue-spymaster`);
+  playedConfigs.add(`${grouping.blue.guesser}-${grouping.blue.spymaster}-blue-guesser`);
+  playedConfigs.add(`${grouping.red.spymaster}-${grouping.red.guesser}-red-spymaster`);
+  playedConfigs.add(`${grouping.red.guesser}-${grouping.red.spymaster}-red-guesser`);
+  playedConfigs.add(`${swapped.blue.spymaster}-${swapped.blue.guesser}-blue-spymaster`);
+  playedConfigs.add(`${swapped.blue.guesser}-${swapped.blue.spymaster}-blue-guesser`);
+  playedConfigs.add(`${swapped.red.spymaster}-${swapped.red.guesser}-red-spymaster`);
+  playedConfigs.add(`${swapped.red.guesser}-${swapped.red.spymaster}-red-guesser`);
+}
+
+// Recalculate all future (not-yet-started) rounds given the current set of active players.
+// Preserves completed rounds and any currently in-progress round.
+function recalculateFutureRounds(activePlayers) {
+  if (activePlayers.length < 4) {
+    // Not enough players for any new matches — trim future rounds so tournament ends naturally
+    const keepUntilIndex = tournament.activeMatches.length > 0
+      ? tournament.currentRound
+      : tournament.currentRound - 1;
+    tournament.rounds = tournament.rounds.slice(0, keepUntilIndex);
+    return;
+  }
+
+  // Build the set of already-played (or in-progress) role configs from history and active matches
+  const playedConfigs = new Set();
+  for (const entry of tournament.history) {
+    markConfigsAsPlayed(entry.grouping, playedConfigs);
+  }
+  for (const match of tournament.activeMatches) {
+    markConfigsAsPlayed(match.grouping, playedConfigs);
+  }
+
+  // Generate remaining rounds skipping already-played configs
+  const futureRounds = generateRounds(activePlayers, playedConfigs);
+
+  // Keep fully-completed rounds + any in-progress round, then append new future rounds
+  const keepUntilIndex = tournament.activeMatches.length > 0
+    ? tournament.currentRound   // rounds[0..currentRound-1] inclusive
+    : tournament.currentRound - 1;
+  tournament.rounds = [
+    ...tournament.rounds.slice(0, keepUntilIndex),
+    ...futureRounds,
+  ];
+}
+
+// Shared logic for closing a mid-tournament signup window.
+async function closeSignups(guild) {
+  if (!tournament.signupsReopened) return;
+  const channel = guild ? await guild.channels.fetch(tournament.setupChannelId).catch(() => null) : null;
+  if (channel && tournament.signupReopenMessageId) {
+    try {
+      const msg = await channel.messages.fetch(tournament.signupReopenMessageId).catch(() => null);
+      if (msg) await msg.delete().catch(() => null);
+    } catch {}
+  }
+  const activePlayers = Array.from(tournament.players);
+  tournament.signupsReopened = false;
+  tournament.signupReopenMessageId = null;
+  recalculateFutureRounds(activePlayers);
+  await saveTournamentData();
+  if (channel) {
+    await channel.send(`✅ Signups closed with ${activePlayers.length} player${activePlayers.length !== 1 ? 's' : ''}. Future rounds have been recalculated — ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned.`);
+  }
+  if (guild) {
+    updateScoreboard(guild).catch(() => null);
+    if (tournament.activeMatches.length === 0 && tournament.currentRound <= tournament.rounds.length) {
+      allocateRound(guild).catch(e => console.error('[closeSignups] Auto-allocate failed:', e.message));
+    }
+  }
 }
 
 async function sendThreadKeepAlive(guild) {
@@ -1255,28 +1609,35 @@ function getSwappedGrouping(grouping) {
   };
 }
 
-function generateRounds(players) {
+function generateRounds(players, initialPlayedConfigs = null) {
   const rounds = [];
-  const pairs = new Map(); // Track all player pairings and their configurations
-  
-  // Initialize all pairs - each pair needs 4 configurations
-  // Config: (team, role) where team is blue/red and role is spymaster/guesser
-  for (let i = 0; i < players.length; i++) {
-    for (let j = 0; j < players.length; j++) {
-      if (i === j) continue;
-      const key = `${players[i]}-${players[j]}`;
-      pairs.set(key, [
-        { team: 'blue', role: 'spymaster' },  // i is spymaster on blue, j is guesser
-        { team: 'blue', role: 'guesser' },     // i is guesser on blue, j is spymaster
-        { team: 'red', role: 'spymaster' },    // i is spymaster on red, j is guesser
-        { team: 'red', role: 'guesser' },      // i is guesser on red, j is spymaster
-      ]);
+
+  // playedConfigs tracks which role-configuration strings have been used.
+  // When called with initialPlayedConfigs (recalculation after roster change),
+  // those already-played configs are seeded in so we skip them automatically.
+  const playedConfigs = initialPlayedConfigs ? new Set(initialPlayedConfigs) : new Set();
+
+  // Total distinct role-configs needed for these players:
+  // N*(N-1) ordered pairs × 4 configs each = N*(N-1)*4
+  const totalNeeded = players.length * (players.length - 1) * 4;
+
+  // Count how many configs for the current active players are already covered.
+  function countActiveConfigsPlayed() {
+    let count = 0;
+    for (let i = 0; i < players.length; i++) {
+      for (let j = 0; j < players.length; j++) {
+        if (i === j) continue;
+        const pi = players[i], pj = players[j];
+        if (playedConfigs.has(`${pi}-${pj}-blue-spymaster`)) count++;
+        if (playedConfigs.has(`${pi}-${pj}-blue-guesser`))   count++;
+        if (playedConfigs.has(`${pi}-${pj}-red-spymaster`))  count++;
+        if (playedConfigs.has(`${pi}-${pj}-red-guesser`))    count++;
+      }
     }
+    return count;
   }
-  
-  const playedConfigs = new Set();
-  
-  while (playedConfigs.size < pairs.size * 4) {
+
+  while (countActiveConfigsPlayed() < totalNeeded) {
     const round = [];
     const playersUsedThisRound = new Set();
 
@@ -1349,7 +1710,7 @@ function generateRounds(players) {
     
     if (round.length > 0) {
       rounds.push(round);
-    } else if (playedConfigs.size < pairs.size * 4) {
+    } else if (countActiveConfigsPlayed() < totalNeeded) {
       // No more perfect pairings possible, break to avoid infinite loop
       console.warn('Could not complete full round-robin schedule');
       break;
@@ -1677,6 +2038,9 @@ function buildWebData() {
     rounds: tournament.rounds,
     history: tournament.history,
     activeMatches: tournament.activeMatches,
+    leftPlayers: tournament.leftPlayers,
+    pendingRemoval: tournament.pendingRemoval !== null,
+    signupsReopened: tournament.signupsReopened,
   };
 }
 
@@ -1914,6 +2278,7 @@ async function handleHttpRequest(req, res) {
         const guild = client.guilds.cache.get(process.env.GUILD_ID);
 
         clearRoundTimers();
+        clearRemovalTimer();
         tournament = {
           players: new Set(),
           currentRound: 0,
@@ -1932,6 +2297,10 @@ async function handleHttpRequest(req, res) {
           playerNames: {},
           tournamentStartedAt: null,
           roundStartedAt: null,
+          leftPlayers: {},
+          pendingRemoval: null,
+          signupsReopened: false,
+          signupReopenMessageId: null,
         };
         await saveTournamentData();
 
@@ -2242,6 +2611,50 @@ async function handleHttpRequest(req, res) {
 
         const scoreMsg = shouldAdjustScore ? ' Scores have been reversed.' : ' Scores were not changed.';
         sendJson(res, 200, { ok: true, message: `Round ${rNum} Match ${mNum} Game ${gNum} result deleted.${scoreMsg}` });
+        return;
+      }
+
+      // ── reopen-signups ─────────────────────────────────────────────────────
+      if (action === 'reopen-signups') {
+        if (!tournament.started) { sendJson(res, 400, { error: 'Tournament has not started yet.' }); return; }
+        if (tournament.signupsReopened) { sendJson(res, 400, { error: 'Signups are already open.' }); return; }
+        const guildRO = client.guilds.cache.get(process.env.GUILD_ID);
+        const channelRO = guildRO ? await guildRO.channels.fetch(tournament.setupChannelId).catch(() => null) : null;
+        if (!channelRO) { sendJson(res, 500, { error: 'Could not find the tournament channel.' }); return; }
+        const reopenRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('reopen_signup').setLabel('✅ Join Tournament').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId('close_signups').setLabel('🔒 Close Signups (Admin)').setStyle(ButtonStyle.Danger),
+        );
+        const reopenMsg = await channelRO.send({
+          content: '📋 **Signups are reopened!** Click below to join the tournament. New rounds won\'t start until signups are closed by an admin.',
+          components: [reopenRow],
+        });
+        tournament.signupsReopened = true;
+        tournament.signupReopenMessageId = reopenMsg.id;
+        await saveTournamentData();
+        if (guildRO) updateScoreboard(guildRO).catch(() => null);
+        sendJson(res, 200, { ok: true, message: 'Signups reopened. A message has been posted in the tournament channel.' });
+        return;
+      }
+
+      // ── close-signups ──────────────────────────────────────────────────────
+      if (action === 'close-signups') {
+        if (!tournament.signupsReopened) { sendJson(res, 400, { error: 'Signups are not currently open.' }); return; }
+        const guildCS = client.guilds.cache.get(process.env.GUILD_ID);
+        await closeSignups(guildCS);
+        sendJson(res, 200, { ok: true, message: `Signups closed. Future rounds recalculated. Total rounds: ${tournament.rounds.length}.` });
+        return;
+      }
+
+      // ── recalculate-rounds ─────────────────────────────────────────────────
+      if (action === 'recalculate-rounds') {
+        if (!tournament.started) { sendJson(res, 400, { error: 'Tournament has not started yet.' }); return; }
+        const activePlayers = Array.from(tournament.players);
+        recalculateFutureRounds(activePlayers);
+        await saveTournamentData();
+        const guildRR = client.guilds.cache.get(process.env.GUILD_ID);
+        if (guildRR) updateScoreboard(guildRR).catch(() => null);
+        sendJson(res, 200, { ok: true, message: `Future rounds recalculated. ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned with ${activePlayers.length} active player${activePlayers.length !== 1 ? 's' : ''}.` });
         return;
       }
 
