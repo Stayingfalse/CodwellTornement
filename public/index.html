@@ -1430,7 +1430,14 @@
     const totalGames = D.history.length;
     const gamesBadge = `<span class="badge badge-purple">🎮 ${totalGames} Game${totalGames !== 1 ? 's' : ''} Played</span>`;
 
-    badges.innerHTML = roundBadge + activeBadge + gamesBadge;
+    const pendingBadge = D.pendingRemoval
+      ? `<span class="badge badge-amber">⚠️ Removal Pending</span>`
+      : '';
+    const signupsBadge = D.signupsReopened
+      ? `<span class="badge badge-blue">📋 Signups Open</span>`
+      : '';
+
+    badges.innerHTML = roundBadge + activeBadge + gamesBadge + pendingBadge + signupsBadge;
   }
 
   // ── Render: meta card ──────────────────────────────────────────────────────
@@ -1443,6 +1450,12 @@
     const totalGames = totalMatchSlots * 2;
     const playedGames = D.history.length;
 
+    const activePlayerCount = D.scores.length;
+    const leftCount = D.leftPlayers ? Object.keys(D.leftPlayers).length : 0;
+    const playerDisplay = leftCount > 0
+      ? `${activePlayerCount} active, ${leftCount} left`
+      : String(activePlayerCount);
+
     el.innerHTML = `
       <div class="meta-row">
         <span class="meta-label">Round</span>
@@ -1454,8 +1467,10 @@
       </div>
       <div class="meta-row">
         <span class="meta-label">Players</span>
-        <span class="meta-value">${Object.keys(D.playerNames).length}</span>
+        <span class="meta-value">${playerDisplay}</span>
       </div>
+      ${D.signupsReopened ? `<div class="meta-row"><span class="meta-label" style="color:#93c5fd">📋 Status</span><span class="meta-value" style="color:#93c5fd;font-size:0.75rem">Signups open</span></div>` : ''}
+      ${D.pendingRemoval ? `<div class="meta-row"><span class="meta-label" style="color:var(--amber)">⚠️ Status</span><span class="meta-value" style="color:var(--amber);font-size:0.75rem">Removal pending</span></div>` : ''}
       ${D.roundStartedAt ? `
       <div class="meta-row">
         <span class="meta-label">Round started</span>
@@ -1478,7 +1493,7 @@
 
     let rank = 0;
     let lastPts = null;
-    el.innerHTML = D.scores.map(([id, pts], i) => {
+    let html = D.scores.map(([id, pts], i) => {
       if (pts !== lastPts) { rank = i + 1; lastPts = pts; }
       const rankDisplay = medals[rank] || rank;
       const ptsCell = isAdmin
@@ -1495,6 +1510,24 @@
       </div>
     `;
     }).join('');
+
+    // Show players who left the tournament
+    const leftEntries = D.leftPlayers ? Object.entries(D.leftPlayers) : [];
+    if (leftEntries.length > 0) {
+      html += `<div style="padding:0.45rem 1.1rem 0.2rem;font-size:0.68rem;color:var(--text-faint);letter-spacing:0.04em;text-transform:uppercase;border-top:1px solid var(--border);margin-top:0.5rem">Left the Tournament</div>`;
+      for (const [id, info] of leftEntries) {
+        const name = info.displayName || (D.playerNames && D.playerNames[id]) || id;
+        html += `
+        <div class="score-row" style="opacity:0.45">
+          <div class="score-rank" style="color:var(--text-faint)">—</div>
+          <div class="score-name" style="color:var(--text-dim)">${esc(name)} <span style="font-size:0.68rem;color:var(--text-faint)">(left)</span></div>
+          <div class="score-bar-wrap"><div class="score-bar" style="width:0%"></div></div>
+          <div class="score-pts" style="color:var(--text-faint)">${info.score || 0}</div>
+        </div>`;
+      }
+    }
+
+    el.innerHTML = html;
 
     if (isAdmin) {
       el.querySelectorAll('.score-pts-edit-trigger').forEach(trigger => {
@@ -1813,21 +1846,44 @@
     }
     panel.style.display = 'block';
 
-    const started     = D && D.started;
-    const hasActive   = D && D.activeMatches && D.activeMatches.length > 0;
-    const allDone     = D && D.currentRound > D.totalRounds;
+    const started           = D && D.started;
+    const hasActive         = D && D.activeMatches && D.activeMatches.length > 0;
+    const allDone           = D && D.currentRound > D.totalRounds;
+    const pendingRemoval    = D && D.pendingRemoval;
+    const signupsReopened   = D && D.signupsReopened;
 
-    let html = '<div class="admin-grid">';
+    let html = '';
+
+    // Status banners
+    if (pendingRemoval) {
+      html += `<div style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);border-radius:var(--radius-sm);padding:0.5rem 0.75rem;margin-bottom:0.6rem;font-size:0.78rem;color:var(--amber)">⚠️ A player removal is pending confirmation. New rounds are paused until it resolves.</div>`;
+    }
+    if (signupsReopened) {
+      html += `<div style="background:rgba(59,130,246,0.10);border:1px solid rgba(59,130,246,0.3);border-radius:var(--radius-sm);padding:0.5rem 0.75rem;margin-bottom:0.6rem;font-size:0.78rem;color:#93c5fd">📋 Signups are currently open. New rounds are paused until signups are closed.</div>`;
+    }
+
+    html += '<div class="admin-grid">';
     if (!started) {
       html += `<button class="admin-btn btn-green" onclick="adminAction('start')">▶ Start Tournament</button>`;
     }
-    if (started && !hasActive && !allDone) {
+    if (started && !hasActive && !allDone && !pendingRemoval && !signupsReopened) {
       html += `<button class="admin-btn btn-blue" onclick="adminAction('allocate')">⚡ Allocate Round</button>`;
+    }
+    if (started && !signupsReopened) {
+      html += `<button class="admin-btn btn-blue" onclick="adminAction('reopen-signups')">📋 Reopen Signups</button>`;
+    }
+    if (started && signupsReopened) {
+      html += `<button class="admin-btn btn-amber" onclick="confirmCloseSignups()">🔒 Close Signups</button>`;
     }
     html += `<button class="admin-btn btn-red" onclick="confirmReset()">🗑 Reset Tournament</button>`;
     html += '</div>';
     html += '<div class="admin-feedback" id="admin-feedback"></div>';
     body.innerHTML = html;
+  }
+
+  function confirmCloseSignups() {
+    if (!confirm('Close signups now?\n\nAll players currently signed up will be included, and future rounds will be recalculated.')) return;
+    adminAction('close-signups');
   }
 
   async function adminAction(action, body) {
