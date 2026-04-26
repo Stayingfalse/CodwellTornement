@@ -49,6 +49,9 @@ let roundExpiryTimer = null;
 let threadKeepAliveTimer = null;
 let removalTimeoutTimer = null;
 
+// Duration of the pending-removal confirmation window (15 minutes)
+const REMOVAL_TIMEOUT_MS = 15 * 60 * 1000;
+
 // Tracks threads currently mid-submission to prevent double-posting
 // Key: `${threadId}:${gamePhase}` — set synchronously before any await, cleared after
 const processingThreads = new Set();
@@ -160,11 +163,11 @@ client.once('clientReady', async () => {
           // Recovery: handle pending removal timeout
           if (tournament.pendingRemoval) {
             const elapsed = Date.now() - new Date(tournament.pendingRemoval.requestedAt).getTime();
-            if (elapsed >= 15 * 60 * 1000) {
+            if (elapsed >= REMOVAL_TIMEOUT_MS) {
               console.log('[startup] Pending removal expired, auto-cancelling');
               cancelPendingRemoval(guild, 'timeout').catch(e => console.error('[startup]', e.message));
             } else {
-              const remaining = 15 * 60 * 1000 - elapsed;
+              const remaining = REMOVAL_TIMEOUT_MS - elapsed;
               console.log(`[startup] Re-scheduling removal timeout in ${Math.round(remaining / 1000)}s`);
               removalTimeoutTimer = setTimeout(() => {
                 cancelPendingRemoval(guild, 'timeout').catch(e => console.error('[removal-timeout]', e.message));
@@ -1024,7 +1027,10 @@ client.on('interactionCreate', async (interaction) => {
         const member = await interaction.guild.members.fetch(userId).catch(() => null);
         tournament.playerNames[userId] = member ? member.displayName : userId;
       } catch { tournament.playerNames[userId] = userId; }
-      if (tournament.leftPlayers[userId]) delete tournament.leftPlayers[userId];
+      if (tournament.leftPlayers[userId]) {
+        const { [userId]: _removed, ...rest } = tournament.leftPlayers;
+        tournament.leftPlayers = rest;
+      }
       await saveTournamentData();
       await interaction.reply({ content: `✅ You have joined the tournament! You'll be included in future rounds once signups close.`, flags: MessageFlags.Ephemeral });
 
@@ -1360,7 +1366,7 @@ function scheduleRemovalTimeout(guild) {
   clearRemovalTimer();
   removalTimeoutTimer = setTimeout(() => {
     cancelPendingRemoval(guild, 'timeout').catch(e => console.error('[removal-timeout]', e.message));
-  }, 15 * 60 * 1000);
+  }, REMOVAL_TIMEOUT_MS);
 }
 
 async function cancelPendingRemoval(guild, reason) {
