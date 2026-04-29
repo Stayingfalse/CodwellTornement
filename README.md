@@ -31,6 +31,7 @@ A Discord bot and web dashboard for running fully-automated round-robin Codename
   - [Admin View (web)](#admin-view-web)
 - [Data Persistence](#data-persistence)
 - [Hosting Suggestions](#hosting-suggestions)
+- [Roadmap](#roadmap)
 - [Debug Mode](#debug-mode)
 
 ---
@@ -435,6 +436,49 @@ The bot needs to run continuously (round deadline timers fire in the background)
 When deploying to PaaS platforms:
 - Mount a persistent volume at `/app/data` so `tournament.json` survives redeploys.
 - Set `WEB_URL` to your public domain so OAuth2 redirects and the Discord link button work correctly.
+
+---
+
+## Roadmap
+
+The following features are planned or under consideration. Contributions are welcome — feel free to open an issue or PR.
+
+### 🔧 Quality of Life
+
+- **Multiple admin roles** — accept a comma-separated `ADMIN_ROLE_IDS` list so co-organisers can each hold a different role
+- **Configurable scoring** — expose win/loss/assassin point values as env vars (`WIN_POINTS`, `CLOSE_LOSS_POINTS`, etc.) so communities can adopt house rules without touching code
+- **Configurable round warning threshold** — make the "2 days before deadline" warning fire time configurable via `ROUND_WARNING_DAYS`
+
+### 📊 Statistics & Exports
+
+- **Per-player statistics page** — clicking a player's name on the web dashboard scoreboard shows their individual record: games played, win rate, spymaster vs. guesser performance split, and head-to-head results against each opponent (the full history is already stored in `tournament.history`)
+- **Tournament export** — an admin-only `GET /api/export/csv` (and `/api/export/json`) endpoint that downloads the complete match history as a spreadsheet-friendly file, useful for post-tournament analysis
+- **Tiebreaker rules** — configurable secondary sort for equal-points rankings: head-to-head result, fewest cards remaining against opponents, or total assassin wins
+
+### 🗄️ Persistence & History
+
+- **Tournament archive** — instead of wiping all state on Reset, save the completed tournament to `data/archive/<date>.json` so you can browse past tournaments on the web dashboard
+- **Database backend (SQLite)** — replace the single JSON file with an embedded SQLite database for more robust concurrent writes and easier querying; the JSON format would remain as an export option
+
+### 🔴 Live Dashboard
+
+- **Server-Sent Events (SSE) push** — replace the manual ↻ Refresh button with a `/api/events` SSE stream so the web dashboard updates instantly whenever the bot saves new state, without polling
+
+### 📣 Notifications
+
+- **DM nudges for match participants** — optionally DM each player when their thread is created (round allocated) and again when the round warning fires, so players don't have to watch the Discord channel
+- **Outgoing webhook on round completion** — post a summary embed to a separate `#results` channel (or any Discord webhook URL) when a round finishes, keeping the tournament channel clean
+
+### 🏆 Tournament Formats
+
+- **Swiss-system mode** — an opt-in alternative to full round-robin where players are paired by current standing each round; better for large player pools where N*(N-1) games would take too long
+- **Single-elimination bracket** — post-signup bracket generation with a visual bracket embed, suitable for shorter knockout-style events
+- **Bye handling** — automatic bye assignment when player count is odd (currently requires a minimum of 4 players at all times)
+
+### 🌐 Web Dashboard Enhancements
+
+- **Real-time match thread links** — hyperlink each active match directly to its Discord thread from the dashboard overview
+- **Admin audit log** — a web panel entry that records which admin performed which action and when (score adjustments, force-ends, resets)
 
 ---
 
