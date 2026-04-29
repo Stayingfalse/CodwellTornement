@@ -6,6 +6,7 @@ A Discord bot and web dashboard for running fully-automated round-robin Codename
 
 ## Table of Contents
 
+- [Quick-Start Checklist](#quick-start-checklist)
 - [Features](#features)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
@@ -15,7 +16,9 @@ A Discord bot and web dashboard for running fully-automated round-robin Codename
   - [Environment Variables](#environment-variables)
   - [Required Bot Permissions](#required-bot-permissions)
   - [Discord Application Setup](#discord-application-setup)
+  - [HTTPS & Reverse Proxy](#https--reverse-proxy)
 - [Running the Bot](#running-the-bot)
+  - [Process Management (Node.js)](#process-management-nodejs)
 - [Discord Usage](#discord-usage)
   - [Slash Commands](#slash-commands)
   - [Player Buttons](#player-buttons)
@@ -27,7 +30,42 @@ A Discord bot and web dashboard for running fully-automated round-robin Codename
   - [Public View](#public-view)
   - [Admin View (web)](#admin-view-web)
 - [Data Persistence](#data-persistence)
+- [Hosting Suggestions](#hosting-suggestions)
+- [Roadmap](#roadmap)
 - [Debug Mode](#debug-mode)
+
+---
+
+## Quick-Start Checklist
+
+Follow these steps in order for a smooth first deployment:
+
+1. **Create a Discord Application** at <https://discord.com/developers/applications>
+   - Under **Bot**, copy the **Token** → `BOT_TOKEN`
+   - Under **Bot → Privileged Gateway Intents**, toggle **Message Content Intent** ON and save
+   - Under **OAuth2 → General**, copy the **Client ID** → `DISCORD_CLIENT_ID`
+   - Generate a **Client Secret** → `DISCORD_CLIENT_SECRET`
+2. **Add a redirect URI** in **OAuth2 → General**: `https://yourdomain.com/auth/discord/callback`  
+   *(for local testing use `http://localhost:PORT/auth/discord/callback` — must match exactly, no trailing slash)*
+3. **Create an Admin role** in your Discord server, then copy its ID → `ADMIN_ROLE_ID`  
+   *(enable Developer Mode in Discord: User Settings → Advanced → Developer Mode, then right-click the role → Copy Role ID)*
+4. **Copy your Server ID** → `GUILD_ID`  
+   *(right-click your server icon → Copy Server ID)*
+5. **Clone the repo and configure** it:
+   ```bash
+   git clone https://github.com/Stayingfalse/CodwellTornement.git
+   cd CodwellTornement
+   cp .env.example .env
+   # Fill in all values — see Configuration below
+   ```
+6. **Run the bot** (Docker Compose recommended for production):
+   ```bash
+   docker-compose up -d
+   ```
+7. **Invite the bot** to your server using the invite URL printed to the console on first start
+8. In Discord, run `/tournament` in the channel where you want the signup embed
+
+> **Web dashboard login is optional.** The bot runs fully without `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`. Those are only needed if you want admin controls in the browser.
 
 ---
 
@@ -51,7 +89,7 @@ A Discord bot and web dashboard for running fully-automated round-robin Codename
 
 ## Prerequisites
 
-- **Node.js 18+** (or Docker)
+- **Node.js 18+** (or Docker) — verify with `node --version  # should be v18 or higher`
 - A **Discord application** with a bot user — create one at <https://discord.com/developers/applications>
 - The bot must be a member of your Discord server
 
@@ -84,6 +122,8 @@ cp .env.example .env
 docker-compose up -d
 ```
 
+The `docker-compose.yml` maps `WEB_PORT` (default `80`) from the container to the same port on the host, so the web dashboard is reachable immediately. If you run behind a reverse proxy, change `WEB_PORT` to a non-privileged port such as `3000` and proxy to that.
+
 Or build and run manually:
 
 ```bash
@@ -110,7 +150,7 @@ Copy `.env.example` to `.env` and fill in the values before starting the bot.
 | `DISCORD_CLIENT_SECRET` | ⬜ | — | OAuth2 application client secret — required for web dashboard login |
 | `WEB_URL` | ⬜ | auto-detected | Public base URL of the dashboard (e.g. `https://tournament.example.com`). Used for the OAuth2 redirect URI and the 🌐 Website button on the Discord embed. |
 | `WEB_PORT` | ⬜ | `80` | Port the web server listens on |
-| `ROUND_TIMEOUT_DAYS` | ⬜ | `14` | Days before a round deadline fires (supports decimals, e.g. `0.01` for testing) |
+| `ROUND_TIMEOUT_DAYS` | ⬜ | `14` | Days before a round deadline fires. Supports decimals — e.g. `0.01` ≈ 15 minutes is useful for a dry run. Minimum practical value for production is `1`. |
 | `DEBUG_MODE` | ⬜ | `false` | Set to `true` to enable the Seed Players debug button in the Discord admin panel |
 | `DEBUG_PLAYER_COUNT` | ⬜ | `8` | How many fake players to seed when Debug Mode is on |
 
@@ -134,9 +174,66 @@ When you invite the bot to your server it needs the following permissions (the b
 
 1. Go to <https://discord.com/developers/applications> and open (or create) your application.
 2. Under **Bot**, copy the token → `BOT_TOKEN`.
-3. Under **OAuth2 → General**, copy the **Client ID** → `DISCORD_CLIENT_ID` and generate a **Client Secret** → `DISCORD_CLIENT_SECRET`.
-4. Add a redirect URI: `https://yourdomain.com/auth/discord/callback` (replace with your actual `WEB_URL`).
-5. Invite the bot using the URL printed to the console on first start, or build one manually with `scope=bot+applications.commands` and the permissions listed above.
+3. Under **Bot → Privileged Gateway Intents**, toggle **Message Content Intent** ON and save.  
+   > ⚠️ Without this the bot will not receive message content and may fail silently.
+4. Under **OAuth2 → General**, copy the **Client ID** → `DISCORD_CLIENT_ID` and generate a **Client Secret** → `DISCORD_CLIENT_SECRET`.
+5. Add a redirect URI that matches your deployment **exactly** (no trailing slash):
+   - Production: `https://yourdomain.com/auth/discord/callback`
+   - Local dev: `http://localhost:3000/auth/discord/callback` (replace `3000` with your `WEB_PORT`)
+6. Invite the bot using the URL printed to the console on first start, or build one manually with `scope=bot+applications.commands` and the permissions listed above.
+
+#### Finding your Guild ID and Role ID
+
+1. In Discord, open **User Settings → Advanced** and enable **Developer Mode**.
+2. **Guild ID (GUILD_ID)**: right-click your server icon → **Copy Server ID**.
+3. **Admin Role ID (ADMIN_ROLE_ID)**: open **Server Settings → Roles**, right-click the role you want to use → **Copy Role ID**.
+
+---
+
+### HTTPS & Reverse Proxy
+
+Discord's OAuth2 requires HTTPS for production redirect URIs. The bot's built-in web server speaks plain HTTP, so you need a reverse proxy to terminate TLS.
+
+> Port `80` requires root privileges on Linux. It is strongly recommended to set `WEB_PORT=3000` (or any port > 1024) and proxy to it.
+
+**Caddy** (auto-HTTPS via Let's Encrypt — simplest option):
+
+```
+# Caddyfile
+tournament.example.com {
+    reverse_proxy localhost:3000
+}
+```
+
+Start with `caddy run --config Caddyfile`. Caddy handles certificate renewal automatically.
+
+**nginx** example (`/etc/nginx/sites-available/tournament`):
+
+```nginx
+server {
+    listen 80;
+    server_name tournament.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name tournament.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/tournament.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tournament.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Use [Certbot](https://certbot.eff.org/) to obtain the certificate: `certbot --nginx -d tournament.example.com`.
+
+After setting up a proxy, set `WEB_URL=https://tournament.example.com` and `WEB_PORT=3000` in your `.env`.
 
 ---
 
@@ -154,6 +251,50 @@ On startup the bot will:
 4. Rebuild the signup/scoreboard embed from saved state.
 5. Re-schedule any round deadline timers that were active before restart.
 6. Automatically re-allocate the current round if it had no active threads (crash recovery).
+
+### Process Management (Node.js)
+
+When running without Docker you need a process manager to keep the bot alive across reboots.
+
+**pm2** (recommended — installs as a global npm package):
+
+```bash
+npm install -g pm2
+pm2 start npm --name codenames-bot -- start
+pm2 save          # persist the process list
+pm2 startup       # print and run the command to enable auto-start on boot
+```
+
+Useful pm2 commands: `pm2 logs codenames-bot`, `pm2 restart codenames-bot`, `pm2 stop codenames-bot`.
+
+**systemd** (alternative for Linux servers):
+
+Create `/etc/systemd/system/codenames-bot.service`:
+
+```ini
+[Unit]
+Description=Codenames Tournament Bot
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/CodwellTornement
+ExecStart=/usr/bin/node src/index.js
+Restart=on-failure
+EnvironmentFile=/path/to/CodwellTornement/.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then enable and start it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now codenames-bot
+sudo journalctl -u codenames-bot -f   # view logs
+```
 
 ---
 
@@ -275,6 +416,69 @@ All admin actions are reflected immediately in both the web dashboard and the Di
 All tournament state is written to `data/tournament.json` after every change. On startup the bot loads this file and resumes where it left off — including active matches, scores, round schedules, and deadline timers.
 
 When running with Docker Compose the `data/` directory is mounted as a host volume (`./data:/app/data`) so data persists across container rebuilds.
+
+---
+
+## Hosting Suggestions
+
+The bot needs to run continuously (round deadline timers fire in the background). Free-tier platforms that spin down after inactivity are **not** suitable.
+
+**VPS / dedicated server** (most control, cheapest for always-on):
+- [Hetzner Cloud](https://www.hetzner.com/cloud) — CX22 (~€4/mo) is more than enough
+- [DigitalOcean Droplets](https://www.digitalocean.com/products/droplets) — Basic $6/mo
+- [Linode / Akamai](https://www.linode.com/)
+
+**PaaS** (easier setup, but verify persistent storage and always-on support):
+- [Railway](https://railway.app/) — supports Docker, persistent volumes, custom domains
+- [Fly.io](https://fly.io/) — supports Docker, persistent volumes; set `WEB_URL` to the assigned domain
+- [Render](https://render.com/) — Docker support; use a paid plan to avoid spin-down
+
+When deploying to PaaS platforms:
+- Mount a persistent volume at `/app/data` so `tournament.json` survives redeploys.
+- Set `WEB_URL` to your public domain so OAuth2 redirects and the Discord link button work correctly.
+
+---
+
+## Roadmap
+
+The following features are planned or under consideration. Contributions are welcome — feel free to open an issue or PR.
+
+### 🔧 Quality of Life
+
+- **Multiple admin roles** — accept a comma-separated `ADMIN_ROLE_IDS` list so co-organisers can each hold a different role
+- **Configurable scoring** — expose win/loss/assassin point values as env vars (`WIN_POINTS`, `CLOSE_LOSS_POINTS`, etc.) so communities can adopt house rules without touching code
+- **Configurable round warning threshold** — make the "2 days before deadline" warning fire time configurable via `ROUND_WARNING_DAYS`
+
+### 📊 Statistics & Exports
+
+- **Per-player statistics page** — clicking a player's name on the web dashboard scoreboard shows their individual record: games played, win rate, spymaster vs. guesser performance split, and head-to-head results against each opponent (the full history is already stored in `tournament.history`)
+- **Tournament export** — an admin-only `GET /api/export/csv` (and `/api/export/json`) endpoint that downloads the complete match history as a spreadsheet-friendly file, useful for post-tournament analysis
+- **Tiebreaker rules** — configurable secondary sort for equal-points rankings: head-to-head result, fewest cards remaining against opponents, or total assassin wins
+
+### 🗄️ Persistence & History
+
+- **Tournament archive** — instead of wiping all state on Reset, save the completed tournament to `data/archive/<date>.json` so you can browse past tournaments on the web dashboard
+- **Database backend (SQLite)** — replace the single JSON file with an embedded SQLite database for more robust concurrent writes and easier querying; the JSON format would remain as an export option
+
+### 🔴 Live Dashboard
+
+- **Server-Sent Events (SSE) push** — replace the manual ↻ Refresh button with a `/api/events` SSE stream so the web dashboard updates instantly whenever the bot saves new state, without polling
+
+### 📣 Notifications
+
+- **DM nudges for match participants** — optionally DM each player when their thread is created (round allocated) and again when the round warning fires, so players don't have to watch the Discord channel
+- **Outgoing webhook on round completion** — post a summary embed to a separate `#results` channel (or any Discord webhook URL) when a round finishes, keeping the tournament channel clean
+
+### 🏆 Tournament Formats
+
+- **Swiss-system mode** — an opt-in alternative to full round-robin where players are paired by current standing each round; better for large player pools where N*(N-1) games would take too long
+- **Single-elimination bracket** — post-signup bracket generation with a visual bracket embed, suitable for shorter knockout-style events
+- **Bye handling** — automatic bye assignment when player count is odd (currently requires a minimum of 4 players at all times)
+
+### 🌐 Web Dashboard Enhancements
+
+- **Real-time match thread links** — hyperlink each active match directly to its Discord thread from the dashboard overview
+- **Admin audit log** — a web panel entry that records which admin performed which action and when (score adjustments, force-ends, resets)
 
 ---
 

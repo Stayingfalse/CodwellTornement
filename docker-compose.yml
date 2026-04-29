@@ -6,5 +6,7 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-80}:${WEB_PORT:-80}"
     volumes:
       - ./data:/app/data
