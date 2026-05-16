@@ -219,6 +219,16 @@
       flex-shrink: 0;
     }
 
+    .score-games {
+      font-size: 0.68rem;
+      font-weight: 500;
+      color: var(--text-faint);
+      font-variant-numeric: tabular-nums;
+      width: 2rem;
+      text-align: right;
+      flex-shrink: 0;
+    }
+
     /* ── Rounds ── */
     .rounds-list { display: flex; flex-direction: column; gap: 1rem; }
 
@@ -1496,6 +1506,7 @@
     let html = D.scores.map(([id, pts], i) => {
       if (pts !== lastPts) { rank = i + 1; lastPts = pts; }
       const rankDisplay = medals[rank] || rank;
+      const games = (D.gamesPlayed && D.gamesPlayed[id]) || 0;
       const ptsCell = isAdmin
         ? `<div class="score-pts score-pts-edit-trigger" data-userid="${esc(id)}" data-pts="${pts}" title="Click to edit score">${pts}</div>`
         : `<div class="score-pts">${pts}</div>`;
@@ -1507,6 +1518,7 @@
           <div class="score-bar" style="width:${Math.max(4, (pts / maxPts) * 100).toFixed(1)}%"></div>
         </div>
         ${ptsCell}
+        <div class="score-games" title="${games} game${games !== 1 ? 's' : ''} played">${games}g</div>
       </div>
     `;
     }).join('');
@@ -1517,12 +1529,14 @@
       html += `<div style="padding:0.45rem 1.1rem 0.2rem;font-size:0.68rem;color:var(--text-faint);letter-spacing:0.04em;text-transform:uppercase;border-top:1px solid var(--border);margin-top:0.5rem">Left the Tournament</div>`;
       for (const [id, info] of leftEntries) {
         const name = info.displayName || (D.playerNames && D.playerNames[id]) || id;
+        const games = (D.gamesPlayed && D.gamesPlayed[id]) || 0;
         html += `
         <div class="score-row" style="opacity:0.45">
           <div class="score-rank" style="color:var(--text-faint)">—</div>
           <div class="score-name" style="color:var(--text-dim)">${esc(name)} <span style="font-size:0.68rem;color:var(--text-faint)">(left)</span></div>
           <div class="score-bar-wrap"><div class="score-bar" style="width:0%"></div></div>
           <div class="score-pts" style="color:var(--text-faint)">${info.score || 0}</div>
+          <div class="score-games" style="color:var(--text-faint)" title="${games} game${games !== 1 ? 's' : ''} played">${games}g</div>
         </div>`;
       }
     }
