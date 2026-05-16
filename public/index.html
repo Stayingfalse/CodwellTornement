@@ -123,6 +123,9 @@
 
     @media (max-width: 920px) {
       .layout { grid-template-columns: 1fr; padding: 1rem; }
+      /* Sidebar: not sticky on mobile, and rendered after main content */
+      .sidebar { position: static; order: 2; }
+      .layout > main { order: 1; }
     }
 
     /* ── Sidebar ── */
@@ -215,6 +218,16 @@
       color: var(--blue);
       font-variant-numeric: tabular-nums;
       width: 2.2rem;
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    .score-games {
+      font-size: 0.68rem;
+      font-weight: 500;
+      color: var(--text-faint);
+      font-variant-numeric: tabular-nums;
+      width: 2rem;
       text-align: right;
       flex-shrink: 0;
     }
@@ -1027,6 +1040,15 @@
       accent-color: var(--blue);
       cursor: pointer;
     }
+
+    /* ── Mobile-specific tweaks ── */
+    @media (max-width: 640px) {
+      header { padding: 0.75rem 1rem; }
+      .brand-title { font-size: 1.1rem; }
+      .tab-nav { padding: 0.6rem 1rem 0; }
+      .admin-grid { grid-template-columns: 1fr 1fr; }
+      .score-bar-wrap { width: 32px; }
+    }
   </style>
 </head>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
@@ -1496,6 +1518,7 @@
     let html = D.scores.map(([id, pts], i) => {
       if (pts !== lastPts) { rank = i + 1; lastPts = pts; }
       const rankDisplay = medals[rank] || rank;
+      const games = (D.gamesPlayed && D.gamesPlayed[id]) || 0;
       const ptsCell = isAdmin
         ? `<div class="score-pts score-pts-edit-trigger" data-userid="${esc(id)}" data-pts="${pts}" title="Click to edit score">${pts}</div>`
         : `<div class="score-pts">${pts}</div>`;
@@ -1507,6 +1530,7 @@
           <div class="score-bar" style="width:${Math.max(4, (pts / maxPts) * 100).toFixed(1)}%"></div>
         </div>
         ${ptsCell}
+        <div class="score-games" title="${games} game${games !== 1 ? 's' : ''} played">${games}g</div>
       </div>
     `;
     }).join('');
@@ -1517,12 +1541,14 @@
       html += `<div style="padding:0.45rem 1.1rem 0.2rem;font-size:0.68rem;color:var(--text-faint);letter-spacing:0.04em;text-transform:uppercase;border-top:1px solid var(--border);margin-top:0.5rem">Left the Tournament</div>`;
       for (const [id, info] of leftEntries) {
         const name = info.displayName || (D.playerNames && D.playerNames[id]) || id;
+        const games = (D.gamesPlayed && D.gamesPlayed[id]) || 0;
         html += `
         <div class="score-row" style="opacity:0.45">
           <div class="score-rank" style="color:var(--text-faint)">—</div>
           <div class="score-name" style="color:var(--text-dim)">${esc(name)} <span style="font-size:0.68rem;color:var(--text-faint)">(left)</span></div>
           <div class="score-bar-wrap"><div class="score-bar" style="width:0%"></div></div>
           <div class="score-pts" style="color:var(--text-faint)">${info.score || 0}</div>
+          <div class="score-games" style="color:var(--text-faint)" title="${games} game${games !== 1 ? 's' : ''} played">${games}g</div>
         </div>`;
       }
     }

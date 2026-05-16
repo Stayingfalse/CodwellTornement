@@ -346,11 +346,13 @@ client.on('interactionCreate', async (interaction) => {
         description += `**Scoreboard:**\n`;
         const sortedScores = Array.from(tournament.scores.entries())
           .sort((a, b) => b[1] - a[1]);
+        const gamesPlayedMap = getGamesPlayedMap();
         let rank = 0;
         let lastPts = null;
         sortedScores.forEach((entry, idx) => {
           if (entry[1] !== lastPts) { rank = idx + 1; lastPts = entry[1]; }
-          description += `${rank}. <@${entry[0]}> - ${entry[1]} pts\n`;
+          const gp = gamesPlayedMap[entry[0]] || 0;
+          description += `${rank}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
         });
 
         embed = new EmbedBuilder()
@@ -536,11 +538,13 @@ client.on('interactionCreate', async (interaction) => {
             description += `**Scoreboard:**\n`;
             const sortedScores = Array.from(tournament.scores.entries())
               .sort((a, b) => b[1] - a[1]);
+            const gamesPlayedMap = getGamesPlayedMap();
             let rank = 0;
             let lastPts = null;
             sortedScores.forEach((entry, idx) => {
               if (entry[1] !== lastPts) { rank = idx + 1; lastPts = entry[1]; }
-              description += `${rank}. <@${entry[0]}> - ${entry[1]} pts\n`;
+              const gp = gamesPlayedMap[entry[0]] || 0;
+              description += `${rank}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
             });
             
             const embed = message.embeds[0];
@@ -1159,6 +1163,7 @@ async function updateScoreboard(guild) {
 
     let description;
     const fields = [];
+    const gamesPlayedMap = getGamesPlayedMap();
     if (tournament.currentRound > tournament.rounds.length) {
       description = `**Tournament Complete!**\n\n**Final Scoreboard:**\n`;
       let rankF = 0;
@@ -1167,7 +1172,8 @@ async function updateScoreboard(guild) {
         .sort((a, b) => b[1] - a[1])
         .forEach((entry, idx) => {
           if (entry[1] !== lastPtsF) { rankF = idx + 1; lastPtsF = entry[1]; }
-          description += `${rankF}. <@${entry[0]}> - ${entry[1]} pts\n`;
+          const gp = gamesPlayedMap[entry[0]] || 0;
+          description += `${rankF}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
         });
     } else {
       const roundMatches = tournament.rounds[tournament.currentRound - 1] || [];
@@ -1193,7 +1199,8 @@ async function updateScoreboard(guild) {
         .sort((a, b) => b[1] - a[1])
         .forEach((entry, idx) => {
           if (entry[1] !== lastPtsL) { rankL = idx + 1; lastPtsL = entry[1]; }
-          description += `${rankL}. <@${entry[0]}> - ${entry[1]} pts\n`;
+          const gp = gamesPlayedMap[entry[0]] || 0;
+          description += `${rankL}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
         });
     }
 
@@ -2026,6 +2033,22 @@ function shuffleArray(arr) {
   return arr;
 }
 
+function getGamesPlayedMap() {
+  const map = {};
+  for (const entry of tournament.history) {
+    const players = [
+      entry.grouping.blue.spymaster,
+      entry.grouping.blue.guesser,
+      entry.grouping.red.spymaster,
+      entry.grouping.red.guesser,
+    ];
+    for (const id of players) {
+      if (id) map[id] = (map[id] || 0) + 1;
+    }
+  }
+  return map;
+}
+
 function buildWebData() {
   return {
     started: tournament.started,
@@ -2035,6 +2058,7 @@ function buildWebData() {
     roundStartedAt: tournament.roundStartedAt,
     playerNames: tournament.playerNames,
     scores: Array.from(tournament.scores.entries()).sort((a, b) => b[1] - a[1]),
+    gamesPlayed: getGamesPlayedMap(),
     rounds: tournament.rounds,
     history: tournament.history,
     activeMatches: tournament.activeMatches,
