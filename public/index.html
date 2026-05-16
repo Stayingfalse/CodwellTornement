@@ -123,6 +123,9 @@
 
     @media (max-width: 920px) {
       .layout { grid-template-columns: 1fr; padding: 1rem; }
+      /* Sidebar: not sticky on mobile, and rendered after main content */
+      .sidebar { position: static; order: 2; }
+      .layout > main { order: 1; }
     }
 
     /* ── Sidebar ── */
@@ -1036,6 +1039,15 @@
     input[type=range].stats-slider {
       accent-color: var(--blue);
       cursor: pointer;
+    }
+
+    /* ── Mobile-specific tweaks ── */
+    @media (max-width: 640px) {
+      header { padding: 0.75rem 1rem; }
+      .brand-title { font-size: 1.1rem; }
+      .tab-nav { padding: 0.6rem 1rem 0; }
+      .admin-grid { grid-template-columns: 1fr 1fr; }
+      .score-bar-wrap { width: 32px; }
     }
   </style>
 </head>
