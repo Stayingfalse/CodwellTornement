@@ -346,12 +346,12 @@ client.on('interactionCreate', async (interaction) => {
         description += `**Scoreboard:**\n`;
         const sortedScores = Array.from(tournament.scores.entries())
           .sort((a, b) => b[1] - a[1]);
-        const gpMap = getGamesPlayedMap();
+        const gamesPlayedMap = getGamesPlayedMap();
         let rank = 0;
         let lastPts = null;
         sortedScores.forEach((entry, idx) => {
           if (entry[1] !== lastPts) { rank = idx + 1; lastPts = entry[1]; }
-          const gp = gpMap[entry[0]] || 0;
+          const gp = gamesPlayedMap[entry[0]] || 0;
           description += `${rank}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
         });
 
@@ -538,12 +538,12 @@ client.on('interactionCreate', async (interaction) => {
             description += `**Scoreboard:**\n`;
             const sortedScores = Array.from(tournament.scores.entries())
               .sort((a, b) => b[1] - a[1]);
-            const gpMapStart = getGamesPlayedMap();
+            const gamesPlayedMap = getGamesPlayedMap();
             let rank = 0;
             let lastPts = null;
             sortedScores.forEach((entry, idx) => {
               if (entry[1] !== lastPts) { rank = idx + 1; lastPts = entry[1]; }
-              const gp = gpMapStart[entry[0]] || 0;
+              const gp = gamesPlayedMap[entry[0]] || 0;
               description += `${rank}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
             });
             
@@ -2043,7 +2043,7 @@ function getGamesPlayedMap() {
       entry.grouping.red.guesser,
     ];
     for (const id of players) {
-      map[id] = (map[id] || 0) + 1;
+      if (id) map[id] = (map[id] || 0) + 1;
     }
   }
   return map;
