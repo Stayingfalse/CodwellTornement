@@ -25,7 +25,7 @@ let tournament = {
   currentRoundIndex: 0, // Index of current match within the round
   playedGroupings: new Set(),
   scores: new Map(),
-  activeMatches: [], // [{grouping, threadId, matchNumber, gamePhase, game1Result, matchCreatedAt}]
+  activeMatches: [], // [{grouping, threadId, matchNumber, gamePhase, game1Result, phaseResults, matchCreatedAt}]
   roundResults: [], // [{matchNumber, gameIndex, grouping, winner, assassin, remainingCards, winPoints, losePoints}]
   setupMessage: null,
   setupChannelId: null, // Channel where setup message was posted
@@ -51,6 +51,14 @@ let removalTimeoutTimer = null;
 
 // Duration of the pending-removal confirmation window (15 minutes)
 const REMOVAL_TIMEOUT_MS = 15 * 60 * 1000;
+const MIN_GAMES_PER_MATCH = 2;
+const MAX_GAMES_PER_MATCH = 4;
+
+function clampGamesPerMatch(value) {
+  const n = parseInt(value, 10);
+  if (Number.isNaN(n)) return MIN_GAMES_PER_MATCH;
+  return Math.max(MIN_GAMES_PER_MATCH, Math.min(MAX_GAMES_PER_MATCH, n));
+}
 
 // Tracks threads currently mid-submission to prevent double-posting
 // Key: `${threadId}:${gamePhase}` — set synchronously before any await, cleared after
@@ -282,8 +290,9 @@ function buildSignupDescription() {
     const prediction = getTournamentPrediction(playerList.length);
     if (prediction) {
       description += `\n\n**Tournament Prediction:**\n`;
-      description += `${prediction.totalGames} Total Games • ~${prediction.rounds} Rounds`;
+      description += `Up to ${prediction.totalGames} Total Games • ~${prediction.rounds} Rounds`;
       description += `\n${prediction.concurrentGames} game${prediction.concurrentGames === 1 ? '' : 's'} per round`;
+      description += `\nTarget: up to 4 games per match (auto-fallback to 3 or 2 when needed)`;
     }
   }
 
@@ -483,6 +492,10 @@ client.on('interactionCreate', async (interaction) => {
             .setCustomId('admin_reopen_signups')
             .setLabel(tournament.signupsReopened ? '🔒 Close Signups' : '📋 Reopen Signups')
             .setStyle(tournament.signupsReopened ? ButtonStyle.Danger : ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId('admin_fix_matchups')
+            .setLabel('🔧 Fix Match-ups')
+            .setStyle(ButtonStyle.Warning),
         );
       }
 
@@ -754,8 +767,13 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      const isGame2 = customId.endsWith('_g2');
-      const expectedPhase = isGame2 ? 2 : 1;
+      const logMatch = customId.match(/^log_(blue|red)_win(?:_g(\d+))?$/);
+      if (!logMatch) {
+        await interaction.reply({ content: 'Invalid result button.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const winner = logMatch[1] === 'blue' ? 'blue' : 'red';
+      const expectedPhase = logMatch[2] ? parseInt(logMatch[2], 10) : 1;
       const currentPhase = matchData.gamePhase ?? 1;
       if (currentPhase !== expectedPhase) {
         await interaction.reply({ content: `These buttons are for Game ${expectedPhase}, but this match is currently on Game ${currentPhase}.`, flags: MessageFlags.Ephemeral });
@@ -770,8 +788,6 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       processingThreads.add(submissionKey);
-
-      const winner = (customId === 'log_blue_win' || customId === 'log_blue_win_g2') ? 'blue' : 'red';
 
       // Show buttons for assassin question instead of modal
       const assassinRow = new ActionRowBuilder()
@@ -1087,6 +1103,37 @@ client.on('interactionCreate', async (interaction) => {
         updateScoreboard(interaction.guild).catch(() => null);
         await interaction.editReply({ content: '✅ Signups have been reopened. A message has been posted in the tournament channel.' });
       }
+
+    // ── Admin fix match-ups ───────────────────────────────────────────────────
+    } else if (customId === 'admin_fix_matchups') {
+      const adminRoleId = process.env.ADMIN_ROLE_ID;
+      if (!interaction.member.roles.cache.has(adminRoleId)) {
+        await interaction.reply({ content: 'You do not have permission.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!tournament.started) {
+        await interaction.reply({ content: 'The tournament has not started yet.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      let refreshMsg = '';
+      if (tournament.activeMatches.length > 0) {
+        const refreshed = await refreshCurrentRoundThreadsAndSchedule(interaction.guild);
+        if (refreshed.message) {
+          await interaction.editReply({ content: `⚠️ ${refreshed.message}` });
+          return;
+        }
+        refreshMsg = ` Current round was refreshed and ${refreshed.refreshedCount} old thread${refreshed.refreshedCount !== 1 ? 's were' : ' was'} archived/reposted.`;
+      } else {
+        const activePlayers = Array.from(tournament.players);
+        recalculateFutureRounds(activePlayers);
+        await saveTournamentData();
+      }
+      updateScoreboard(interaction.guild).catch(() => null);
+      const newTotal = tournament.rounds.length;
+      await interaction.editReply({
+        content: `✅ Match-ups recalculated. Already-played games are preserved. Total rounds: ${newTotal}.${refreshMsg}`,
+      });
     }
   } else if (interaction.isModalSubmit()) {
     const { customId } = interaction;
@@ -1184,9 +1231,10 @@ async function updateScoreboard(guild) {
         description += `**⚔️ Active Matches:**\n`;
         tournament.activeMatches.forEach(m => {
           const activePhase = m.gamePhase ?? 1;
-          const activeGrouping = activePhase === 2 ? getSwappedGrouping(m.grouping) : m.grouping;
+          const gamesPerMatch = clampGamesPerMatch(m.gamesPlanned);
+          const activeGrouping = getGroupingForPhase(m.grouping, activePhase);
           fields.push({
-            name: `Match ${m.matchNumber} — Game ${activePhase}/2`,
+            name: `Match ${m.matchNumber} — Game ${activePhase}/${gamesPerMatch}`,
             value: `🔵 <@${activeGrouping.blue.spymaster}> & <@${activeGrouping.blue.guesser}>\nvs 🔴 <@${activeGrouping.red.spymaster}> & <@${activeGrouping.red.guesser}>`,
             inline: true,
           });
@@ -1303,8 +1351,10 @@ async function allocateRound(guild) {
   await channel.send({ embeds: [headerEmbed] });
 
   for (let i = 0; i < currentRoundMatches.length; i++) {
-    const grouping = currentRoundMatches[i];
+    const roundEntry = getRoundMatchEntry(currentRoundMatches[i]);
+    const grouping = roundEntry.grouping;
     const matchNumber = i + 1;
+    const gamesPerMatch = roundEntry.gamesPlanned;
 
     const embed = new EmbedBuilder()
       .setTitle(`Round ${tournament.currentRound} — Game ${matchNumber}`)
@@ -1324,10 +1374,10 @@ async function allocateRound(guild) {
       });
 
       const threadEmbed = new EmbedBuilder()
-        .setTitle(`Round ${tournament.currentRound} \u2014 Match ${matchNumber} (Game 1 of 2)`)
+        .setTitle(`Round ${tournament.currentRound} \u2014 Match ${matchNumber} (Game 1 of ${gamesPerMatch})`)
         .setDescription(
           `**Blue Team:**\nSpymaster: <@${grouping.blue.spymaster}>\nGuesser: <@${grouping.blue.guesser}>\n\n` +
-          `**Red Team:**\nSpymaster: <@${grouping.red.spymaster}>\nGuesser: <@${grouping.red.guesser}>\n\nPlay Game 1 then log the result below. Game 2 will start automatically with roles swapped.`
+          `**Red Team:**\nSpymaster: <@${grouping.red.spymaster}>\nGuesser: <@${grouping.red.guesser}>\n\nPlay Game 1 then log the result below.`
         )
         .setColor(0x00ff00);
 
@@ -1338,7 +1388,7 @@ async function allocateRound(guild) {
         );
 
       await thread.send({ embeds: [threadEmbed], components: [row] });
-      tournament.activeMatches.push({ grouping, threadId: thread.id, matchNumber, gamePhase: 1, game1Result: null, matchCreatedAt: new Date().toISOString() });
+      tournament.activeMatches.push({ grouping, gamesPlanned: gamesPerMatch, threadId: thread.id, matchNumber, gamePhase: 1, game1Result: null, phaseResults: {}, matchCreatedAt: new Date().toISOString() });
     } catch (e) {
       console.error(`Failed to create thread for match ${matchNumber}:`, e.message);
     }
@@ -1401,16 +1451,89 @@ async function cancelPendingRemoval(guild, reason) {
 }
 
 // Mark all 8 role-config strings for a match (game 1 + swapped game 2) as played.
+// Team colour is intentionally omitted so that {blue: A+B, red: C+D} and
+// {blue: C+D, red: A+B} are treated as the same match.
 function markConfigsAsPlayed(grouping, playedConfigs) {
   const swapped = getSwappedGrouping(grouping);
-  playedConfigs.add(`${grouping.blue.spymaster}-${grouping.blue.guesser}-blue-spymaster`);
-  playedConfigs.add(`${grouping.blue.guesser}-${grouping.blue.spymaster}-blue-guesser`);
-  playedConfigs.add(`${grouping.red.spymaster}-${grouping.red.guesser}-red-spymaster`);
-  playedConfigs.add(`${grouping.red.guesser}-${grouping.red.spymaster}-red-guesser`);
-  playedConfigs.add(`${swapped.blue.spymaster}-${swapped.blue.guesser}-blue-spymaster`);
-  playedConfigs.add(`${swapped.blue.guesser}-${swapped.blue.spymaster}-blue-guesser`);
-  playedConfigs.add(`${swapped.red.spymaster}-${swapped.red.guesser}-red-spymaster`);
-  playedConfigs.add(`${swapped.red.guesser}-${swapped.red.spymaster}-red-guesser`);
+  playedConfigs.add(`${grouping.blue.spymaster}-${grouping.blue.guesser}-spymaster`);
+  playedConfigs.add(`${grouping.blue.guesser}-${grouping.blue.spymaster}-guesser`);
+  playedConfigs.add(`${grouping.red.spymaster}-${grouping.red.guesser}-spymaster`);
+  playedConfigs.add(`${grouping.red.guesser}-${grouping.red.spymaster}-guesser`);
+  playedConfigs.add(`${swapped.blue.spymaster}-${swapped.blue.guesser}-spymaster`);
+  playedConfigs.add(`${swapped.blue.guesser}-${swapped.blue.spymaster}-guesser`);
+  playedConfigs.add(`${swapped.red.spymaster}-${swapped.red.guesser}-spymaster`);
+  playedConfigs.add(`${swapped.red.guesser}-${swapped.red.spymaster}-guesser`);
+}
+
+function rollbackSingleGameScore(grouping, result) {
+  if (!grouping || !result || !['blue', 'red'].includes(result.winner)) return;
+  const winPoints = Number.isFinite(result.winPoints) ? result.winPoints : 3;
+  const losePoints = Number.isFinite(result.losePoints)
+    ? result.losePoints
+    : (result.assassin ? -1 : ((parseInt(result.remainingCards, 10) || 0) <= 3 ? 1 : 0));
+  const bluePlayers = [grouping.blue.spymaster, grouping.blue.guesser];
+  const redPlayers  = [grouping.red.spymaster,  grouping.red.guesser];
+  if (result.winner === 'blue') {
+    bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - winPoints));
+    redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - losePoints));
+  } else {
+    redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - winPoints));
+    bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - losePoints));
+  }
+}
+
+async function refreshCurrentRoundThreadsAndSchedule(guild) {
+  if (!guild || tournament.activeMatches.length === 0) {
+    return { refreshed: false, refreshedCount: 0, message: null };
+  }
+  const hasCompletedCurrentRoundGames =
+    tournament.roundResults.length > 0 ||
+    tournament.history.some(h => h.roundNumber === tournament.currentRound);
+  if (hasCompletedCurrentRoundGames) {
+    return {
+      refreshed: false,
+      refreshedCount: 0,
+      message: 'Cannot refresh the current round after results have been completed. Use force-end if you need to move on, or edit results manually.',
+    };
+  }
+
+  for (const match of tournament.activeMatches) {
+    const phaseResults = match.phaseResults || {};
+    if (match.game1Result && !phaseResults[1]) phaseResults[1] = match.game1Result;
+    const gamesPlanned = clampGamesPerMatch(match.gamesPlanned);
+    for (let phase = 1; phase <= gamesPlanned; phase++) {
+      const result = phaseResults[phase];
+      if (!result) continue;
+      rollbackSingleGameScore(getGroupingForPhase(match.grouping, phase), result);
+    }
+  }
+
+  for (const match of tournament.activeMatches) {
+    try {
+      const thread = await guild.channels.fetch(match.threadId).catch(() => null);
+      if (thread) await thread.setArchived(true).catch(() => null);
+    } catch {}
+  }
+
+  const refreshedCount = tournament.activeMatches.length;
+  tournament.activeMatches = [];
+  tournament.currentRoundIndex = 0;
+  tournament.roundDeadline = null;
+  clearRoundTimers();
+
+  const activePlayers = Array.from(tournament.players);
+  recalculateFutureRounds(activePlayers);
+  await saveTournamentData();
+
+  const allocateResult = await allocateRound(guild);
+  if (!allocateResult.success) {
+    return {
+      refreshed: false,
+      refreshedCount,
+      message: `Recalculated rounds, but failed to repost the current round: ${allocateResult.message}`,
+    };
+  }
+  return { refreshed: true, refreshedCount, message: null };
 }
 
 // Recalculate all future (not-yet-started) rounds given the current set of active players.
@@ -1427,15 +1550,21 @@ function recalculateFutureRounds(activePlayers) {
 
   // Build the set of already-played (or in-progress) role configs from history and active matches
   const playedConfigs = new Set();
+  const playedLayouts = new Set();
   for (const entry of tournament.history) {
     markConfigsAsPlayed(entry.grouping, playedConfigs);
+    playedLayouts.add(getLayoutKey(entry.grouping));
   }
   for (const match of tournament.activeMatches) {
     markConfigsAsPlayed(match.grouping, playedConfigs);
+    const gamesPlanned = clampGamesPerMatch(match.gamesPlanned);
+    for (let phase = 1; phase <= gamesPlanned; phase++) {
+      playedLayouts.add(getLayoutKey(getGroupingForPhase(match.grouping, phase)));
+    }
   }
 
   // Generate remaining rounds skipping already-played configs
-  const futureRounds = generateRounds(activePlayers, playedConfigs);
+  const futureRounds = generateRounds(activePlayers, playedConfigs, playedLayouts);
 
   // Keep fully-completed rounds + any in-progress round, then append new future rounds
   const keepUntilIndex = tournament.activeMatches.length > 0
@@ -1586,12 +1715,16 @@ async function sendRoundExpiry(guild) {
 function getTournamentPrediction(playerCount) {
   if (playerCount < 4) return null;
 
-  // Analytical formula: each player plays every other player in each of the
-  // 4 role configs (blue-spy, blue-guess, red-spy, red-guess), so total games
-  // = N*(N-1).  floor(N/4) games can run simultaneously per round.
-  const totalGames = playerCount * (playerCount - 1);
+  const gamesPerMatch = 4;
+  // Each player pairs with every other player in 2 role configs (spymaster, guesser),
+  // giving N*(N-1)*2 configs total.  Each match covers one 4-player teammate pairing, so there
+  // are N*(N-1)/4 scheduled matches in this scheduler model. Prediction uses target max (4) per match.
+  // floor(N/4) matches run in parallel.
+  // N*(N-1) is always even, so integer division is exact.
+  const totalMatches = playerCount * (playerCount - 1) / 4;
+  const totalGames = totalMatches * gamesPerMatch;
   const concurrentGames = Math.floor(playerCount / 4);
-  const totalRounds = Math.ceil((totalGames / 2) / concurrentGames);
+  const totalRounds = Math.ceil(totalMatches / concurrentGames);
 
   return {
     rounds: totalRounds,
@@ -1616,17 +1749,60 @@ function getSwappedGrouping(grouping) {
   };
 }
 
-function generateRounds(players, initialPlayedConfigs = null) {
+function getBlueSwappedGrouping(grouping) {
+  return {
+    blue: { spymaster: grouping.blue.guesser, guesser: grouping.blue.spymaster },
+    red:  { spymaster: grouping.red.spymaster,  guesser: grouping.red.guesser },
+  };
+}
+
+function getRedSwappedGrouping(grouping) {
+  return {
+    blue: { spymaster: grouping.blue.spymaster, guesser: grouping.blue.guesser },
+    red:  { spymaster: grouping.red.guesser,  guesser: grouping.red.spymaster },
+  };
+}
+
+function getGroupingForPhase(grouping, phase) {
+  if (phase === 2) return getSwappedGrouping(grouping);
+  if (phase === 3) return getBlueSwappedGrouping(grouping);
+  if (phase === 4) return getRedSwappedGrouping(grouping);
+  return grouping;
+}
+
+function getPhaseButtonSuffix(phase) {
+  return phase > 1 ? `_g${phase}` : '';
+}
+
+function getLayoutKey(grouping) {
+  return `${grouping.blue.spymaster}:${grouping.blue.guesser}|${grouping.red.spymaster}:${grouping.red.guesser}`;
+}
+
+function getRoundMatchEntry(match) {
+  if (match && match.grouping) {
+    return { grouping: match.grouping, gamesPlanned: clampGamesPerMatch(match.gamesPlanned) };
+  }
+  // Backward compatibility: older saved rounds store grouping directly instead of {grouping, gamesPlanned}.
+  return { grouping: match, gamesPlanned: MIN_GAMES_PER_MATCH };
+}
+
+function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayouts = null) {
   const rounds = [];
 
   // playedConfigs tracks which role-configuration strings have been used.
   // When called with initialPlayedConfigs (recalculation after roster change),
   // those already-played configs are seeded in so we skip them automatically.
-  const playedConfigs = initialPlayedConfigs ? new Set(initialPlayedConfigs) : new Set();
+  const initialPlayedConfigsSet = initialPlayedConfigs ? new Set(initialPlayedConfigs) : new Set();
+  let currentPlayedConfigs = initialPlayedConfigsSet;
+  const initialPlayedLayoutsSet = initialPlayedLayouts ? new Set(initialPlayedLayouts) : new Set();
+  let currentPlayedLayouts = initialPlayedLayoutsSet;
+  // Try at least this many candidate orderings each round to smooth sit-out fairness.
+  const BASE_ROUND_BUILD_ATTEMPTS = 8;
 
   // Total distinct role-configs needed for these players:
-  // N*(N-1) ordered pairs × 4 configs each = N*(N-1)*4
-  const totalNeeded = players.length * (players.length - 1) * 4;
+  // N*(N-1) ordered pairs × 2 configs each (spymaster, guesser) = N*(N-1)*2.
+  // Team colour (blue/red) is not tracked so mirrored matchups are not duplicated.
+  const totalNeeded = players.length * (players.length - 1) * 2;
 
   // Count how many configs for the current active players are already covered.
   function countActiveConfigsPlayed() {
@@ -1635,47 +1811,44 @@ function generateRounds(players, initialPlayedConfigs = null) {
       for (let j = 0; j < players.length; j++) {
         if (i === j) continue;
         const pi = players[i], pj = players[j];
-        if (playedConfigs.has(`${pi}-${pj}-blue-spymaster`)) count++;
-        if (playedConfigs.has(`${pi}-${pj}-blue-guesser`))   count++;
-        if (playedConfigs.has(`${pi}-${pj}-red-spymaster`))  count++;
-        if (playedConfigs.has(`${pi}-${pj}-red-guesser`))    count++;
+        if (currentPlayedConfigs.has(`${pi}-${pj}-spymaster`)) count++;
+        if (currentPlayedConfigs.has(`${pi}-${pj}-guesser`))   count++;
       }
     }
     return count;
   }
 
-  while (countActiveConfigsPlayed() < totalNeeded) {
+  const sitOutTotals = new Map(players.map(p => [p, 0]));
+  let lastRoundSitOut = new Set();
+
+  function buildRoundForOrder(orderedPlayers, basePlayedConfigs, basePlayedLayouts) {
     const round = [];
     const playersUsedThisRound = new Set();
+    const playedClone = new Set(basePlayedConfigs);
+    const playedLayoutsClone = new Set(basePlayedLayouts);
 
-    // Keep adding matches to this round until no more can be found for unused players
     let continueRound = true;
     while (continueRound) {
       let foundMatch = false;
-
       matchSearch:
-      for (let i = 0; i < players.length; i++) {
-        if (playersUsedThisRound.has(players[i])) continue;
-        
-        for (let j = i + 1; j < players.length; j++) {
-          if (playersUsedThisRound.has(players[j])) continue;
-          
-          for (let k = 0; k < players.length; k++) {
-            if (k === i || k === j || playersUsedThisRound.has(players[k])) continue;
-            
-            for (let l = k + 1; l < players.length; l++) {
-              if (l === i || l === j || playersUsedThisRound.has(players[l])) continue;
-              
-              // We have 4 players: i, j, k, l
+      for (let i = 0; i < orderedPlayers.length; i++) {
+        if (playersUsedThisRound.has(orderedPlayers[i])) continue;
+        for (let j = i + 1; j < orderedPlayers.length; j++) {
+          if (playersUsedThisRound.has(orderedPlayers[j])) continue;
+          for (let k = 0; k < orderedPlayers.length; k++) {
+            if (k === i || k === j || playersUsedThisRound.has(orderedPlayers[k])) continue;
+            for (let l = k + 1; l < orderedPlayers.length; l++) {
+              if (l === i || l === j || playersUsedThisRound.has(orderedPlayers[l])) continue;
+
               const pairings = [
-                { blue: [players[i], players[j]], red: [players[k], players[l]] },
-                { blue: [players[i], players[k]], red: [players[j], players[l]] },
-                { blue: [players[i], players[l]], red: [players[j], players[k]] },
+                { blue: [orderedPlayers[i], orderedPlayers[j]], red: [orderedPlayers[k], orderedPlayers[l]] },
+                { blue: [orderedPlayers[i], orderedPlayers[k]], red: [orderedPlayers[j], orderedPlayers[l]] },
+                { blue: [orderedPlayers[i], orderedPlayers[l]], red: [orderedPlayers[j], orderedPlayers[k]] },
               ];
-              
+
               for (const pairing of pairings) {
                 const roleAssignments = [
-                  { 
+                  {
                     blue: { spymaster: pairing.blue[0], guesser: pairing.blue[1] },
                     red: { spymaster: pairing.red[0], guesser: pairing.red[1] }
                   },
@@ -1692,18 +1865,17 @@ function generateRounds(players, initialPlayedConfigs = null) {
                     red: { spymaster: pairing.red[1], guesser: pairing.red[0] }
                   },
                 ];
-                
+
                 for (const assignment of roleAssignments) {
-                  const allUnplayed = checkAndMarkConfigs(assignment, playedConfigs);
-                  
-                  if (allUnplayed) {
-                    round.push(assignment);
+                  const plannedGames = checkAndMarkConfigs(assignment, playedClone, playedLayoutsClone);
+                  if (plannedGames > 0) {
+                    round.push({ grouping: assignment, gamesPlanned: plannedGames });
                     playersUsedThisRound.add(pairing.blue[0]);
                     playersUsedThisRound.add(pairing.blue[1]);
                     playersUsedThisRound.add(pairing.red[0]);
                     playersUsedThisRound.add(pairing.red[1]);
                     foundMatch = true;
-                    break matchSearch; // break all nested loops, restart round search
+                    break matchSearch;
                   }
                 }
               }
@@ -1711,14 +1883,67 @@ function generateRounds(players, initialPlayedConfigs = null) {
           }
         }
       }
-
       if (!foundMatch) continueRound = false;
     }
-    
-    if (round.length > 0) {
-      rounds.push(round);
+
+    const sitOutSet = new Set(orderedPlayers.filter(p => !playersUsedThisRound.has(p)));
+    const repeatSitOutCount = Array.from(sitOutSet).filter(p => lastRoundSitOut.has(p)).length;
+    const sitOutPenalty = Array.from(sitOutSet).reduce((sum, p) => sum + (sitOutTotals.get(p) || 0), 0);
+
+    return { round, playersUsedThisRound, playedClone, playedLayoutsClone, sitOutSet, repeatSitOutCount, sitOutPenalty };
+  }
+
+  while (countActiveConfigsPlayed() < totalNeeded) {
+    const attempts = Math.max(players.length, BASE_ROUND_BUILD_ATTEMPTS);
+    let best = null;
+
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      // Priority order: players who sat out last round, then players with higher total sit-outs.
+      // Random tie-break only applies when fairness metrics are identical.
+      let orderedPlayers = [...players].sort((a, b) => {
+        const aWasOut = lastRoundSitOut.has(a) ? 1 : 0;
+        const bWasOut = lastRoundSitOut.has(b) ? 1 : 0;
+        if (aWasOut !== bWasOut) return bWasOut - aWasOut;
+        const aSit = sitOutTotals.get(a) || 0;
+        const bSit = sitOutTotals.get(b) || 0;
+        if (aSit !== bSit) return bSit - aSit;
+        return Math.random() - 0.5;
+      });
+
+      if (orderedPlayers.length > 1) {
+        const rotateBy = attempt % orderedPlayers.length;
+        const rotated = orderedPlayers.slice(rotateBy).concat(orderedPlayers.slice(0, rotateBy));
+        orderedPlayers = rotated;
+      }
+
+      const candidate = buildRoundForOrder(orderedPlayers, currentPlayedConfigs, currentPlayedLayouts);
+      if (candidate.round.length === 0) continue;
+
+      if (!best) {
+        best = candidate;
+        continue;
+      }
+
+      if (
+        candidate.round.length > best.round.length ||
+        (candidate.round.length === best.round.length && candidate.repeatSitOutCount < best.repeatSitOutCount) ||
+        (candidate.round.length === best.round.length &&
+          candidate.repeatSitOutCount === best.repeatSitOutCount &&
+          candidate.sitOutPenalty < best.sitOutPenalty)
+      ) {
+        best = candidate;
+      }
+    }
+
+    if (best && best.round.length > 0) {
+      rounds.push(best.round);
+      currentPlayedConfigs = best.playedClone;
+      currentPlayedLayouts = best.playedLayoutsClone;
+      lastRoundSitOut = best.sitOutSet;
+      for (const playerId of best.sitOutSet) {
+        sitOutTotals.set(playerId, (sitOutTotals.get(playerId) || 0) + 1);
+      }
     } else if (countActiveConfigsPlayed() < totalNeeded) {
-      // No more perfect pairings possible, break to avoid infinite loop
       console.warn('Could not complete full round-robin schedule');
       break;
     }
@@ -1727,32 +1952,54 @@ function generateRounds(players, initialPlayedConfigs = null) {
   return rounds;
 }
 
-function checkAndMarkConfigs(assignment, playedConfigs) {
+function checkAndMarkConfigs(assignment, playedConfigs, playedLayouts) {
   const swapped = getSwappedGrouping(assignment);
+  // Team colour is intentionally omitted from keys so that swapping blue/red
+  // is treated as the same match configuration, preventing duplicate match-ups.
   const configs = [
-    `${assignment.blue.spymaster}-${assignment.blue.guesser}-blue-spymaster`,
-    `${assignment.blue.guesser}-${assignment.blue.spymaster}-blue-guesser`,
-    `${assignment.red.spymaster}-${assignment.red.guesser}-red-spymaster`,
-    `${assignment.red.guesser}-${assignment.red.spymaster}-red-guesser`,
-    `${swapped.blue.spymaster}-${swapped.blue.guesser}-blue-spymaster`,
-    `${swapped.blue.guesser}-${swapped.blue.spymaster}-blue-guesser`,
-    `${swapped.red.spymaster}-${swapped.red.guesser}-red-spymaster`,
-    `${swapped.red.guesser}-${swapped.red.spymaster}-red-guesser`,
+    `${assignment.blue.spymaster}-${assignment.blue.guesser}-spymaster`,
+    `${assignment.blue.guesser}-${assignment.blue.spymaster}-guesser`,
+    `${assignment.red.spymaster}-${assignment.red.guesser}-spymaster`,
+    `${assignment.red.guesser}-${assignment.red.spymaster}-guesser`,
+    `${swapped.blue.spymaster}-${swapped.blue.guesser}-spymaster`,
+    `${swapped.blue.guesser}-${swapped.blue.spymaster}-guesser`,
+    `${swapped.red.spymaster}-${swapped.red.guesser}-spymaster`,
+    `${swapped.red.guesser}-${swapped.red.spymaster}-guesser`,
   ];
   for (const config of configs) {
-    if (playedConfigs.has(config)) return false;
+    if (playedConfigs.has(config)) return 0;
+  }
+
+  const phaseLayouts = Array.from({ length: MAX_GAMES_PER_MATCH }, (_, i) =>
+    getLayoutKey(getGroupingForPhase(assignment, i + 1))
+  );
+  // Require first two phases to be available so each match has a minimum 2-game set.
+  if (playedLayouts.has(phaseLayouts[0]) || playedLayouts.has(phaseLayouts[1])) {
+    return 0;
   }
   for (const config of configs) {
     playedConfigs.add(config);
   }
-  return true;
+  playedLayouts.add(phaseLayouts[0]);
+  playedLayouts.add(phaseLayouts[1]);
+  let plannedGames = 2;
+  if (!playedLayouts.has(phaseLayouts[2])) {
+    playedLayouts.add(phaseLayouts[2]);
+    plannedGames++;
+  }
+  if (!playedLayouts.has(phaseLayouts[3])) {
+    playedLayouts.add(phaseLayouts[3]);
+    plannedGames++;
+  }
+  return plannedGames;
 }
 
 async function processGameResult(interaction, matchData, winner, assassin, remainingCards) {
   const submittedBy = interaction.user.id;
   const submittedAt = new Date().toISOString();
   const gamePhase = matchData.gamePhase ?? 1;
-  const currentGrouping = gamePhase === 2 ? getSwappedGrouping(matchData.grouping) : matchData.grouping;
+  const gamesPerMatch = clampGamesPerMatch(matchData.gamesPlanned);
+  const currentGrouping = getGroupingForPhase(matchData.grouping, gamePhase);
 
   const winPoints = 3;
   const losePoints = assassin ? -1 : (remainingCards <= 3 ? 1 : 0);
@@ -1770,89 +2017,76 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
 
   const winnerLabel = winner === 'blue' ? '🔵 Blue' : '🔴 Red';
   const howStr = assassin ? 'assassin hit' : `${remainingCards} card${remainingCards !== 1 ? 's' : ''} remaining`;
-
+  const phaseResults = matchData.phaseResults || {};
+  if (!matchData.phaseResults) {
+    matchData.phaseResults = phaseResults;
+  }
+  if (matchData.game1Result && !phaseResults[1]) {
+    phaseResults[1] = matchData.game1Result;
+  }
+  const currentResult = { winner, assassin, remainingCards, winPoints, losePoints, submittedAt, submittedBy };
+  phaseResults[gamePhase] = currentResult;
   if (gamePhase === 1) {
-    matchData.game1Result = { winner, assassin, remainingCards, winPoints, losePoints, submittedAt, submittedBy };
-    matchData.gamePhase = 2;
+    matchData.game1Result = currentResult; // Backward compatibility for active-match admin tooling
+  }
+
+  if (gamePhase < gamesPerMatch) {
+    const nextPhase = gamePhase + 1;
+    matchData.gamePhase = nextPhase;
     await saveTournamentData();
     updateScoreboard(interaction.guild).catch(() => null);
 
-    const replyText = `**Game 1** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**\n\n_Game 2 is starting — roles have been swapped!_`;
+    const replyText = `**Game ${gamePhase}** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**\n\n_Game ${nextPhase} is starting._`;
     await interaction.reply({ content: replyText });
 
-    const swapped = getSwappedGrouping(matchData.grouping);
-    const game2Embed = new EmbedBuilder()
-      .setTitle(`Match ${matchData.matchNumber} — Game 2 of 2`)
+    const nextGrouping = getGroupingForPhase(matchData.grouping, nextPhase);
+    const nextGameEmbed = new EmbedBuilder()
+      .setTitle(`Match ${matchData.matchNumber} — Game ${nextPhase} of ${gamesPerMatch}`)
       .setDescription(
-        `Roles have been swapped!\n\n` +
-        `**Blue Team:**\nSpymaster: <@${swapped.blue.spymaster}>\nGuesser: <@${swapped.blue.guesser}>\n\n` +
-        `**Red Team:**\nSpymaster: <@${swapped.red.spymaster}>\nGuesser: <@${swapped.red.guesser}>\n\nPlay Game 2 then log the result below.`
+        `**Blue Team:**\nSpymaster: <@${nextGrouping.blue.spymaster}>\nGuesser: <@${nextGrouping.blue.guesser}>\n\n` +
+        `**Red Team:**\nSpymaster: <@${nextGrouping.red.spymaster}>\nGuesser: <@${nextGrouping.red.guesser}>\n\nPlay Game ${nextPhase} then log the result below.`
       )
       .setColor(0xff9900);
 
-    const game2Row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('log_blue_win_g2').setLabel('Blue Wins').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('log_red_win_g2').setLabel('Red Wins').setStyle(ButtonStyle.Danger),
+    const nextPhaseSuffix = getPhaseButtonSuffix(nextPhase);
+    const nextGameRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`log_blue_win${nextPhaseSuffix}`).setLabel('Blue Wins').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`log_red_win${nextPhaseSuffix}`).setLabel('Red Wins').setStyle(ButtonStyle.Danger),
     );
 
-    await interaction.channel.send({ embeds: [game2Embed], components: [game2Row] });
+    await interaction.channel.send({ embeds: [nextGameEmbed], components: [nextGameRow] });
   } else {
-    // Game 2 complete — push both results and clean up
-    const g1 = matchData.game1Result;
-    tournament.roundResults.push({
-      matchNumber: matchData.matchNumber,
-      gameIndex: 1,
-      grouping: matchData.grouping,
-      winner: g1.winner,
-      assassin: g1.assassin,
-      remainingCards: g1.remainingCards,
-      winPoints: g1.winPoints,
-      losePoints: g1.losePoints,
-      threadId: matchData.threadId,
-    });
-    tournament.roundResults.push({
-      matchNumber: matchData.matchNumber,
-      gameIndex: 2,
-      grouping: currentGrouping,
-      winner,
-      assassin,
-      remainingCards,
-      winPoints,
-      losePoints,
-      threadId: matchData.threadId,
-    });
-
-    // Push both games to the permanent history
-    tournament.history.push({
-      roundNumber: tournament.currentRound,
-      matchNumber: matchData.matchNumber,
-      game: 1,
-      grouping: matchData.grouping,
-      winner: g1.winner,
-      assassin: g1.assassin,
-      remainingCards: g1.remainingCards,
-      winPoints: g1.winPoints,
-      losePoints: g1.losePoints,
-      threadId: matchData.threadId,
-      matchCreatedAt: matchData.matchCreatedAt || null,
-      submittedAt: g1.submittedAt || null,
-      submittedBy: g1.submittedBy || null,
-    });
-    tournament.history.push({
-      roundNumber: tournament.currentRound,
-      matchNumber: matchData.matchNumber,
-      game: 2,
-      grouping: currentGrouping,
-      winner,
-      assassin,
-      remainingCards,
-      winPoints,
-      losePoints,
-      threadId: matchData.threadId,
-      matchCreatedAt: matchData.matchCreatedAt || null,
-      submittedAt,
-      submittedBy,
-    });
+    for (let idx = 1; idx <= gamesPerMatch; idx++) {
+      const g = phaseResults[idx];
+      if (!g) continue;
+      const groupingForGame = getGroupingForPhase(matchData.grouping, idx);
+      tournament.roundResults.push({
+        matchNumber: matchData.matchNumber,
+        gameIndex: idx,
+        grouping: groupingForGame,
+        winner: g.winner,
+        assassin: g.assassin,
+        remainingCards: g.remainingCards,
+        winPoints: g.winPoints,
+        losePoints: g.losePoints,
+        threadId: matchData.threadId,
+      });
+      tournament.history.push({
+        roundNumber: tournament.currentRound,
+        matchNumber: matchData.matchNumber,
+        game: idx,
+        grouping: groupingForGame,
+        winner: g.winner,
+        assassin: g.assassin,
+        remainingCards: g.remainingCards,
+        winPoints: g.winPoints,
+        losePoints: g.losePoints,
+        threadId: matchData.threadId,
+        matchCreatedAt: matchData.matchCreatedAt || null,
+        submittedAt: g.submittedAt || null,
+        submittedBy: g.submittedBy || null,
+      });
+    }
 
     tournament.activeMatches = tournament.activeMatches.filter(m => m.threadId !== interaction.channelId);
     tournament.currentRoundIndex++;
@@ -1860,7 +2094,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
     const remainingActive = tournament.activeMatches.length;
     const roundComplete = remainingActive === 0;
 
-    let replyText = `**Game 2** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**`;
+    let replyText = `**Game ${gamePhase}** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**`;
     if (roundComplete) replyText += '\nAll matches complete — round advancing.';
     else replyText += `\n${remainingActive} match(es) still active this round.`;
     replyText += `\n\n_Need to correct a result? Visit the tournament website and log in as admin._`;
@@ -2400,7 +2634,7 @@ async function handleHttpRequest(req, res) {
         const isAssassin = !!assassin;
 
         if (!rNum || !mNum || !gNum || !['blue', 'red'].includes(winner)) {
-          sendJson(res, 400, { error: 'Required: roundNumber (int), matchNumber (int), game (1|2), winner ("blue"|"red"), assassin (bool), remainingCards (int 0-8).' });
+          sendJson(res, 400, { error: 'Required: roundNumber (int), matchNumber (int), game (int >= 1), winner ("blue"|"red"), assassin (bool), remainingCards (int 0-8).' });
           return;
         }
         if (!isAssassin && (rCards < 0 || rCards > 8)) {
@@ -2413,12 +2647,14 @@ async function handleHttpRequest(req, res) {
           h.roundNumber === rNum && h.matchNumber === mNum && h.game === gNum
         );
 
-        // Also try in-progress game1Result of an active match (game 1 done, game 2 pending)
-        const activeMatchForG1 = (gNum === 1)
-          ? tournament.activeMatches.find(m => m.matchNumber === mNum && m.game1Result && tournament.currentRound === rNum)
-          : null;
+        // Also try in-progress results from an active match
+        const activeMatchForGame = tournament.activeMatches.find(m => {
+          if (m.matchNumber !== mNum || tournament.currentRound !== rNum) return false;
+          if (m.phaseResults && m.phaseResults[gNum]) return true;
+          return gNum === 1 && !!m.game1Result;
+        });
 
-        if (histIdx === -1 && !activeMatchForG1) {
+        if (histIdx === -1 && !activeMatchForGame) {
           sendJson(res, 404, { error: 'Game result not found. It may not have been submitted yet or the round/match numbers are wrong.' });
           return;
         }
@@ -2431,10 +2667,11 @@ async function handleHttpRequest(req, res) {
           oldWinPoints = old.winPoints; oldLosePoints = old.losePoints;
           grouping = old.grouping;
         } else {
-          const g1r = activeMatchForG1.game1Result;
-          oldWinner = g1r.winner; oldAssassin = g1r.assassin;
-          oldWinPoints = g1r.winPoints; oldLosePoints = g1r.losePoints;
-          grouping = activeMatchForG1.grouping; // game 1 always uses original grouping
+          const activeResult = (activeMatchForGame.phaseResults && activeMatchForGame.phaseResults[gNum])
+            || (gNum === 1 ? activeMatchForGame.game1Result : null);
+          oldWinner = activeResult.winner; oldAssassin = activeResult.assassin;
+          oldWinPoints = activeResult.winPoints; oldLosePoints = activeResult.losePoints;
+          grouping = getGroupingForPhase(activeMatchForGame.grouping, gNum);
         }
 
         const bluePlayers = [grouping.blue.spymaster, grouping.blue.guesser];
@@ -2474,16 +2711,21 @@ async function handleHttpRequest(req, res) {
           };
         }
 
-        // Update active match game1Result if present
-        if (activeMatchForG1) {
-          activeMatchForG1.game1Result = {
-            ...activeMatchForG1.game1Result,
+        // Update active match stored result if present
+        if (activeMatchForGame) {
+          if (!activeMatchForGame.phaseResults) activeMatchForGame.phaseResults = {};
+          const prev = activeMatchForGame.phaseResults[gNum] || (gNum === 1 ? activeMatchForGame.game1Result : null) || {};
+          activeMatchForGame.phaseResults[gNum] = {
+            ...prev,
             winner,
             assassin: isAssassin,
             remainingCards: isAssassin ? 0 : rCards,
             winPoints: newWinPoints,
             losePoints: newLosePoints,
           };
+          if (gNum === 1) {
+            activeMatchForGame.game1Result = activeMatchForGame.phaseResults[gNum];
+          }
         }
 
         // Update roundResults entry for the current round if present
@@ -2507,7 +2749,7 @@ async function handleHttpRequest(req, res) {
 
         // Post a notification to the game thread if it still exists
         const threadId = (histIdx !== -1 ? tournament.history[histIdx].threadId : null)
-          || (activeMatchForG1 ? activeMatchForG1.threadId : null);
+          || (activeMatchForGame ? activeMatchForGame.threadId : null);
         if (threadId && guildOverride) {
           try {
             const thread = await guildOverride.channels.fetch(threadId).catch(() => null);
@@ -2540,7 +2782,7 @@ async function handleHttpRequest(req, res) {
         const shouldAdjustScore = adjustScore !== false;
 
         if (!rNum || !mNum || !gNum) {
-          sendJson(res, 400, { error: 'Required: roundNumber (int), matchNumber (int), game (1|2).' });
+          sendJson(res, 400, { error: 'Required: roundNumber (int), matchNumber (int), game (int >= 1).' });
           return;
         }
 
@@ -2549,26 +2791,30 @@ async function handleHttpRequest(req, res) {
           h.roundNumber === rNum && h.matchNumber === mNum && h.game === gNum
         );
 
-        // Also try in-progress game1Result of an active match
-        const activeMatchForG1 = (gNum === 1)
-          ? tournament.activeMatches.find(m => m.matchNumber === mNum && m.game1Result && tournament.currentRound === rNum)
-          : null;
+        // Also try in-progress results of an active match
+        const activeMatchForGame = tournament.activeMatches.find(m => {
+          if (m.matchNumber !== mNum || tournament.currentRound !== rNum) return false;
+          if (m.phaseResults && m.phaseResults[gNum]) return true;
+          return gNum === 1 && !!m.game1Result;
+        });
 
-        if (histIdx === -1 && !activeMatchForG1) {
+        if (histIdx === -1 && !activeMatchForGame) {
           sendJson(res, 404, { error: 'Game result not found. It may not have been submitted yet.' });
           return;
         }
 
-        // Guard: cannot delete Game 1 from history while Game 2 is also in history —
-        // the admin must delete Game 2 first to keep state consistent.
-        if (gNum === 1 && histIdx !== -1) {
-          const game2Exists = tournament.history.some(h =>
-            h.roundNumber === rNum && h.matchNumber === mNum && h.game === 2
-          );
-          if (game2Exists) {
-            sendJson(res, 400, { error: 'Game 2 result must be deleted before Game 1 can be deleted.' });
-            return;
-          }
+        // Guard: delete in reverse order only (cannot delete an earlier game while later games exist).
+        const higherHistoryExists = tournament.history.some(h =>
+          h.roundNumber === rNum && h.matchNumber === mNum && h.game > gNum
+        );
+        const higherActiveExists = tournament.activeMatches.some(m => {
+          if (m.matchNumber !== mNum || tournament.currentRound !== rNum) return false;
+          const phaseResults = m.phaseResults || {};
+          return Object.keys(phaseResults).some(k => parseInt(k, 10) > gNum && !!phaseResults[k]);
+        });
+        if (higherHistoryExists || higherActiveExists) {
+          sendJson(res, 400, { error: 'Higher game results must be deleted first (delete in reverse game order).' });
+          return;
         }
 
         // Capture values before modifying state
@@ -2578,9 +2824,10 @@ async function handleHttpRequest(req, res) {
           oldWinner = old.winner; oldWinPoints = old.winPoints; oldLosePoints = old.losePoints;
           grouping = old.grouping; threadId = old.threadId;
         } else {
-          const g1r = activeMatchForG1.game1Result;
-          oldWinner = g1r.winner; oldWinPoints = g1r.winPoints; oldLosePoints = g1r.losePoints;
-          grouping = activeMatchForG1.grouping; threadId = activeMatchForG1.threadId;
+          const activeResult = (activeMatchForGame.phaseResults && activeMatchForGame.phaseResults[gNum])
+            || (gNum === 1 ? activeMatchForGame.game1Result : null);
+          oldWinner = activeResult.winner; oldWinPoints = activeResult.winPoints; oldLosePoints = activeResult.losePoints;
+          grouping = getGroupingForPhase(activeMatchForGame.grouping, gNum); threadId = activeMatchForGame.threadId;
         }
 
         const bluePlayers = [grouping.blue.spymaster, grouping.blue.guesser];
@@ -2597,13 +2844,15 @@ async function handleHttpRequest(req, res) {
           }
         }
 
-        // Remove from history or reset active match game1Result
+        // Remove from history or reset active match in-progress result
         if (histIdx !== -1) {
           tournament.history.splice(histIdx, 1);
         }
-        if (activeMatchForG1) {
-          activeMatchForG1.game1Result = null;
-          activeMatchForG1.gamePhase = 1;
+        if (activeMatchForGame) {
+          if (!activeMatchForGame.phaseResults) activeMatchForGame.phaseResults = {};
+          delete activeMatchForGame.phaseResults[gNum];
+          if (gNum === 1) activeMatchForGame.game1Result = null;
+          activeMatchForGame.gamePhase = gNum;
         }
 
         // Remove from roundResults if present
@@ -2673,12 +2922,27 @@ async function handleHttpRequest(req, res) {
       // ── recalculate-rounds ─────────────────────────────────────────────────
       if (action === 'recalculate-rounds') {
         if (!tournament.started) { sendJson(res, 400, { error: 'Tournament has not started yet.' }); return; }
-        const activePlayers = Array.from(tournament.players);
-        recalculateFutureRounds(activePlayers);
-        await saveTournamentData();
         const guildRR = client.guilds.cache.get(process.env.GUILD_ID);
+        let refreshMsg = '';
+        if (tournament.activeMatches.length > 0 && !guildRR) {
+          sendJson(res, 400, { error: 'Cannot refresh current round threads because the guild is unavailable.' });
+          return;
+        }
+        if (guildRR && tournament.activeMatches.length > 0) {
+          const refreshed = await refreshCurrentRoundThreadsAndSchedule(guildRR);
+          if (refreshed.message) {
+            sendJson(res, 400, { error: refreshed.message });
+            return;
+          }
+          refreshMsg = ` Current round refreshed (${refreshed.refreshedCount} old thread${refreshed.refreshedCount !== 1 ? 's' : ''} archived/reposted).`;
+        } else {
+          const activePlayers = Array.from(tournament.players);
+          recalculateFutureRounds(activePlayers);
+          await saveTournamentData();
+        }
         if (guildRR) updateScoreboard(guildRR).catch(() => null);
-        sendJson(res, 200, { ok: true, message: `Future rounds recalculated. ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned with ${activePlayers.length} active player${activePlayers.length !== 1 ? 's' : ''}.` });
+        const activePlayers = Array.from(tournament.players);
+        sendJson(res, 200, { ok: true, message: `Future rounds recalculated. ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned with ${activePlayers.length} active player${activePlayers.length !== 1 ? 's' : ''}.${refreshMsg}` });
         return;
       }
 
