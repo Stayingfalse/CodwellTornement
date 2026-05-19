@@ -1962,7 +1962,7 @@
   }
 
   function confirmRecalculateRounds() {
-    if (!confirm('Recalculate future rounds?\n\nThis will regenerate all rounds that have not yet started, based on the current active player list and already-played match configurations.\n\nRounds already completed and any in-progress matches are not affected.')) return;
+    if (!confirm('Recalculate rounds?\n\nThis regenerates upcoming rounds from current players and played configurations.\n\nIf the current round is in progress with no completed results yet, active match threads are archived and the current round is reposted fresh.')) return;
     adminAction('recalculate-rounds');
   }
 

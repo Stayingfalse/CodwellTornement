@@ -1116,13 +1116,23 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const activePlayers = Array.from(tournament.players);
-      recalculateFutureRounds(activePlayers);
-      await saveTournamentData();
+      let refreshMsg = '';
+      if (tournament.activeMatches.length > 0) {
+        const refreshed = await refreshCurrentRoundThreadsAndSchedule(interaction.guild);
+        if (refreshed.message) {
+          await interaction.editReply({ content: `⚠️ ${refreshed.message}` });
+          return;
+        }
+        refreshMsg = ` Current round was refreshed and ${refreshed.refreshedCount} old thread${refreshed.refreshedCount !== 1 ? 's were' : ' was'} archived/reposted.`;
+      } else {
+        const activePlayers = Array.from(tournament.players);
+        recalculateFutureRounds(activePlayers);
+        await saveTournamentData();
+      }
       updateScoreboard(interaction.guild).catch(() => null);
       const newTotal = tournament.rounds.length;
       await interaction.editReply({
-        content: `✅ Match-ups recalculated. Already-played games are preserved. Total rounds: ${newTotal}.`,
+        content: `✅ Match-ups recalculated. Already-played games are preserved. Total rounds: ${newTotal}.${refreshMsg}`,
       });
     }
   } else if (interaction.isModalSubmit()) {
@@ -1453,6 +1463,77 @@ function markConfigsAsPlayed(grouping, playedConfigs) {
   playedConfigs.add(`${swapped.blue.guesser}-${swapped.blue.spymaster}-guesser`);
   playedConfigs.add(`${swapped.red.spymaster}-${swapped.red.guesser}-spymaster`);
   playedConfigs.add(`${swapped.red.guesser}-${swapped.red.spymaster}-guesser`);
+}
+
+function rollbackSingleGameScore(grouping, result) {
+  if (!grouping || !result || !['blue', 'red'].includes(result.winner)) return;
+  const winPoints = Number.isFinite(result.winPoints) ? result.winPoints : 3;
+  const losePoints = Number.isFinite(result.losePoints)
+    ? result.losePoints
+    : (result.assassin ? -1 : ((parseInt(result.remainingCards, 10) || 0) <= 3 ? 1 : 0));
+  const bluePlayers = [grouping.blue.spymaster, grouping.blue.guesser];
+  const redPlayers  = [grouping.red.spymaster,  grouping.red.guesser];
+  if (result.winner === 'blue') {
+    bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - winPoints));
+    redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - losePoints));
+  } else {
+    redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - winPoints));
+    bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - losePoints));
+  }
+}
+
+async function refreshCurrentRoundThreadsAndSchedule(guild) {
+  if (!guild || tournament.activeMatches.length === 0) {
+    return { refreshed: false, refreshedCount: 0, message: null };
+  }
+  const hasCompletedCurrentRoundGames =
+    tournament.roundResults.length > 0 ||
+    tournament.history.some(h => h.roundNumber === tournament.currentRound);
+  if (hasCompletedCurrentRoundGames) {
+    return {
+      refreshed: false,
+      refreshedCount: 0,
+      message: 'Cannot refresh the current round after results have been completed. Use force-end if you need to move on, or edit results manually.',
+    };
+  }
+
+  for (const match of tournament.activeMatches) {
+    const phaseResults = match.phaseResults || {};
+    if (match.game1Result && !phaseResults[1]) phaseResults[1] = match.game1Result;
+    const gamesPlanned = clampGamesPerMatch(match.gamesPlanned);
+    for (let phase = 1; phase <= gamesPlanned; phase++) {
+      const result = phaseResults[phase];
+      if (!result) continue;
+      rollbackSingleGameScore(getGroupingForPhase(match.grouping, phase), result);
+    }
+  }
+
+  for (const match of tournament.activeMatches) {
+    try {
+      const thread = await guild.channels.fetch(match.threadId).catch(() => null);
+      if (thread) await thread.setArchived(true).catch(() => null);
+    } catch {}
+  }
+
+  const refreshedCount = tournament.activeMatches.length;
+  tournament.activeMatches = [];
+  tournament.currentRoundIndex = 0;
+  tournament.roundDeadline = null;
+  clearRoundTimers();
+
+  const activePlayers = Array.from(tournament.players);
+  recalculateFutureRounds(activePlayers);
+  await saveTournamentData();
+
+  const allocateResult = await allocateRound(guild);
+  if (!allocateResult.success) {
+    return {
+      refreshed: false,
+      refreshedCount,
+      message: `Recalculated rounds, but failed to repost the current round: ${allocateResult.message}`,
+    };
+  }
+  return { refreshed: true, refreshedCount, message: null };
 }
 
 // Recalculate all future (not-yet-started) rounds given the current set of active players.
@@ -2841,12 +2922,27 @@ async function handleHttpRequest(req, res) {
       // ── recalculate-rounds ─────────────────────────────────────────────────
       if (action === 'recalculate-rounds') {
         if (!tournament.started) { sendJson(res, 400, { error: 'Tournament has not started yet.' }); return; }
-        const activePlayers = Array.from(tournament.players);
-        recalculateFutureRounds(activePlayers);
-        await saveTournamentData();
         const guildRR = client.guilds.cache.get(process.env.GUILD_ID);
+        let refreshMsg = '';
+        if (tournament.activeMatches.length > 0 && !guildRR) {
+          sendJson(res, 400, { error: 'Cannot refresh current round threads because the guild is unavailable.' });
+          return;
+        }
+        if (guildRR && tournament.activeMatches.length > 0) {
+          const refreshed = await refreshCurrentRoundThreadsAndSchedule(guildRR);
+          if (refreshed.message) {
+            sendJson(res, 400, { error: refreshed.message });
+            return;
+          }
+          refreshMsg = ` Current round refreshed (${refreshed.refreshedCount} old thread${refreshed.refreshedCount !== 1 ? 's' : ''} archived/reposted).`;
+        } else {
+          const activePlayers = Array.from(tournament.players);
+          recalculateFutureRounds(activePlayers);
+          await saveTournamentData();
+        }
         if (guildRR) updateScoreboard(guildRR).catch(() => null);
-        sendJson(res, 200, { ok: true, message: `Future rounds recalculated. ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned with ${activePlayers.length} active player${activePlayers.length !== 1 ? 's' : ''}.` });
+        const activePlayers = Array.from(tournament.players);
+        sendJson(res, 200, { ok: true, message: `Future rounds recalculated. ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned with ${activePlayers.length} active player${activePlayers.length !== 1 ? 's' : ''}.${refreshMsg}` });
         return;
       }
 
