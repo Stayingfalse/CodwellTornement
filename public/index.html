@@ -1091,7 +1091,7 @@
 
       <div class="modal-section">
         <h3>Match Format — 2 to 4 Games Per Match</h3>
-        <p>Each match-up consists of <strong>2 to 4 games</strong> (configured by the tournament admin). Game 1 starts with the base roles, then later games apply role swaps so players can rotate through positions within the same 4-player group.</p>
+        <p>Each match-up aims for <strong>up to 4 games</strong>. The bot auto-falls back to 3 or 2 if fewer unique role layouts remain for that 4-player setup.</p>
         <ul>
           <li><strong>Game 1</strong> — Blue Spymaster A &amp; Blue Guesser B vs Red Spymaster C &amp; Red Guesser D</li>
           <li><strong>Game 2</strong> — Both teams swapped: Blue Spymaster B &amp; Blue Guesser A vs Red Spymaster D &amp; Red Guesser C</li>
@@ -1340,12 +1340,6 @@
     return (D && D.playerNames && D.playerNames[id]) ? D.playerNames[id] : id;
   }
 
-  function gamesPerMatch() {
-    const n = parseInt(D?.gamesPerMatch ?? 2, 10);
-    if (Number.isNaN(n)) return 2;
-    return Math.max(2, Math.min(4, n));
-  }
-
   function swapGrouping(g) {
     return {
       blue: { spymaster: g.blue.guesser, guesser: g.blue.spymaster },
@@ -1379,6 +1373,14 @@
     if (phase === 3) return ' <span class="swap-note">blue swapped</span>';
     if (phase === 4) return ' <span class="swap-note">red swapped</span>';
     return '';
+  }
+
+  function getRoundMatchEntry(match) {
+    if (match && match.grouping) {
+      const planned = parseInt(match.gamesPlanned ?? 2, 10);
+      return { grouping: match.grouping, gamesPlanned: Math.max(2, Math.min(4, Number.isNaN(planned) ? 2 : planned)) };
+    }
+    return { grouping: match, gamesPlanned: 2 };
   }
 
   function fmtDate(iso) {
@@ -1504,8 +1506,10 @@
     if (!D || !D.started) { el.innerHTML = '<div class="meta-row"><span class="meta-label">Status</span><span class="meta-value">Not started</span></div>'; return; }
 
     const isComplete = D.currentRound > D.totalRounds;
-    const totalMatchSlots = D.rounds.reduce((s, r) => s + r.length, 0);
-    const totalGames = totalMatchSlots * gamesPerMatch();
+    const totalGames = D.rounds.reduce(
+      (sum, round) => sum + round.reduce((roundSum, match) => roundSum + getRoundMatchEntry(match).gamesPlanned, 0),
+      0,
+    );
     const playedGames = D.history.length;
 
     const activePlayerCount = D.scores.length;
@@ -1660,7 +1664,7 @@
 
       // Completion stats
       const playedCount = D.history.filter(h => h.roundNumber === roundNumber).length;
-      const totalGames  = roundMatches.length * gamesPerMatch();
+      const totalGames  = roundMatches.reduce((sum, match) => sum + getRoundMatchEntry(match).gamesPlanned, 0);
       const pct = totalGames > 0 ? (playedCount / totalGames) * 100 : 0;
 
       const headerClass = isCurrent ? 'is-active' : isPast ? 'is-complete' : 'is-future';
@@ -1685,11 +1689,15 @@
         ? `<button class="round-admin-btn btn-blue" onclick="event.stopPropagation();adminAction('shuffle-rounds')" title="Shuffle remaining rounds">🔀 Shuffle</button>`
         : '';
 
-      const matchesHtml = roundMatches.map((g1grouping, matchIdx) => {
+      const matchesHtml = roundMatches.map((roundMatch, matchIdx) => {
         const matchNumber = matchIdx + 1;
-        const gpm = gamesPerMatch();
+        const roundMatchEntry = getRoundMatchEntry(roundMatch);
+        const g1grouping = roundMatchEntry.grouping;
         const active      = isCurrent ? activeMatch(matchNumber) : null;
         const isMatchActive = !!active;
+        const gpm = active
+          ? Math.max(2, Math.min(4, parseInt(active.gamesPlanned ?? roundMatchEntry.gamesPlanned, 10) || roundMatchEntry.gamesPlanned))
+          : roundMatchEntry.gamesPlanned;
 
         const activePhase = active ? (active.gamePhase ?? 1) : null;
         const phaseResults = active && active.phaseResults ? active.phaseResults : {};

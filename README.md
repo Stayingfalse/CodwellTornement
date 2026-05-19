@@ -74,7 +74,7 @@ Follow these steps in order for a smooth first deployment:
 - **One slash command** — `/tournament` posts the signup embed anywhere in your server
 - **Interactive sign-up** — players join (or withdraw) with a single button click; the embed updates in real time with the current player list and a tournament size prediction
 - **Full round-robin scheduling** — every player plays every other player in all four role configurations (blue spymaster, blue guesser, red spymaster, red guesser)
-- **Configurable match length (2–4 games)** — set `GAMES_PER_MATCH` to run longer role-rotation sets within each 4-player match thread
+- **Adaptive match length (2–4 games)** — each match aims for 4 games and automatically falls back to 3 or 2 when fewer unique role layouts remain
 - **Automatic thread creation** — a dedicated Discord thread is created for each match; players submit results with buttons inside their thread
 - **Result correction** — players (and admins) can undo and re-submit a wrong result at any time before the round ends
 - **Score tracking** — a live scoreboard embed is kept up-to-date in the tournament channel throughout the event
@@ -150,7 +150,6 @@ Copy `.env.example` to `.env` and fill in the values before starting the bot.
 | `DISCORD_CLIENT_SECRET` | ⬜ | — | OAuth2 application client secret — required for web dashboard login |
 | `WEB_URL` | ⬜ | auto-detected | Public base URL of the dashboard (e.g. `https://tournament.example.com`). Used for the OAuth2 redirect URI and the 🌐 Website button on the Discord embed. |
 | `WEB_PORT` | ⬜ | `80` | Port the web server listens on |
-| `GAMES_PER_MATCH` | ⬜ | `2` | Number of games played per match thread (allowed: `2`, `3`, or `4`). |
 | `ROUND_TIMEOUT_DAYS` | ⬜ | `14` | Days before a round deadline fires. Supports decimals — e.g. `0.01` ≈ 15 minutes is useful for a dry run. Minimum practical value for production is `1`. |
 | `DEBUG_MODE` | ⬜ | `false` | Set to `true` to enable the Seed Players debug button in the Discord admin panel |
 | `DEBUG_PLAYER_COUNT` | ⬜ | `8` | How many fake players to seed when Debug Mode is on |
@@ -353,7 +352,7 @@ The tournament uses a **full round-robin** schedule where every player is paired
 
 **Rounds** are generated so that as many matches as possible run concurrently (up to ⌊N/4⌋ simultaneous games per round). All matches within a round start at the same time in their own threads.
 
-**Each match consists of 2 to 4 games** (configured by `GAMES_PER_MATCH`):
+**Each match consists of 2 to 4 games** (auto-managed by the scheduler):
 
 - **Game 1** — Blue Spymaster A & Blue Guesser B vs Red Spymaster C & Red Guesser D
 - **Game 2** — Both teams swapped: Blue Spymaster B & Blue Guesser A vs Red Spymaster D & Red Guesser C

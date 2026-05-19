@@ -41,18 +41,7 @@ let tournament = {
   pendingRemoval: null, // {userId, confirmMessageId, requestedAt} — in-flight leave request
   signupsReopened: false, // true while a mid-tournament signup window is open
   signupReopenMessageId: null, // Discord message ID of the active reopen-signups message
-  gamesPerMatch: normalizeGamesPerMatch(process.env.GAMES_PER_MATCH || 2), // 2-4 games per match thread
 };
-
-function normalizeGamesPerMatch(value) {
-  const n = parseInt(value, 10);
-  if (Number.isNaN(n)) return 2;
-  return Math.max(2, Math.min(4, n));
-}
-
-function getGamesPerMatch() {
-  return normalizeGamesPerMatch(tournament.gamesPerMatch);
-}
 
 // Round timer handles (in-memory only)
 let roundWarningTimer = null;
@@ -241,7 +230,6 @@ async function loadTournamentData() {
     tournament.pendingRemoval = parsed.pendingRemoval || null;
     tournament.signupsReopened = parsed.signupsReopened || false;
     tournament.signupReopenMessageId = parsed.signupReopenMessageId || null;
-    tournament.gamesPerMatch = normalizeGamesPerMatch(parsed.gamesPerMatch ?? process.env.GAMES_PER_MATCH ?? 2);
     console.log('Tournament data loaded from storage');
   } catch (error) {
     console.log('No previous tournament data found, starting fresh');
@@ -272,7 +260,6 @@ async function saveTournamentData() {
       pendingRemoval: tournament.pendingRemoval,
       signupsReopened: tournament.signupsReopened,
       signupReopenMessageId: tournament.signupReopenMessageId,
-      gamesPerMatch: getGamesPerMatch(),
     };
     await fs.writeFile(TOURNAMENT_FILE, JSON.stringify(data, null, 2));
   } catch (error) {
@@ -295,9 +282,9 @@ function buildSignupDescription() {
     const prediction = getTournamentPrediction(playerList.length);
     if (prediction) {
       description += `\n\n**Tournament Prediction:**\n`;
-      description += `${prediction.totalGames} Total Games • ~${prediction.rounds} Rounds`;
+      description += `Up to ${prediction.totalGames} Total Games • ~${prediction.rounds} Rounds`;
       description += `\n${prediction.concurrentGames} game${prediction.concurrentGames === 1 ? '' : 's'} per round`;
-      description += `\n${getGamesPerMatch()} game${getGamesPerMatch() === 1 ? '' : 's'} per match`;
+      description += `\nAim: up to 4 games per match (auto-fallback to 3 or 2 when needed)`;
     }
   }
 
@@ -703,7 +690,6 @@ client.on('interactionCreate', async (interaction) => {
         pendingRemoval: null,
         signupsReopened: false,
         signupReopenMessageId: null,
-        gamesPerMatch: normalizeGamesPerMatch(process.env.GAMES_PER_MATCH || 2),
       };
       await saveTournamentData();
 
@@ -1225,9 +1211,9 @@ async function updateScoreboard(guild) {
       description += `${completedInRound}/${roundMatches.length} matches completed\n\n`;
       if (tournament.activeMatches.length > 0) {
         description += `**⚔️ Active Matches:**\n`;
-        const gamesPerMatch = getGamesPerMatch();
         tournament.activeMatches.forEach(m => {
           const activePhase = m.gamePhase ?? 1;
+          const gamesPerMatch = Math.max(2, Math.min(4, parseInt(m.gamesPlanned, 10) || 2));
           const activeGrouping = getGroupingForPhase(m.grouping, activePhase);
           fields.push({
             name: `Match ${m.matchNumber} — Game ${activePhase}/${gamesPerMatch}`,
@@ -1347,9 +1333,10 @@ async function allocateRound(guild) {
   await channel.send({ embeds: [headerEmbed] });
 
   for (let i = 0; i < currentRoundMatches.length; i++) {
-    const grouping = currentRoundMatches[i];
+    const roundEntry = getRoundMatchEntry(currentRoundMatches[i]);
+    const grouping = roundEntry.grouping;
     const matchNumber = i + 1;
-    const gamesPerMatch = getGamesPerMatch();
+    const gamesPerMatch = roundEntry.gamesPlanned;
 
     const embed = new EmbedBuilder()
       .setTitle(`Round ${tournament.currentRound} — Game ${matchNumber}`)
@@ -1383,7 +1370,7 @@ async function allocateRound(guild) {
         );
 
       await thread.send({ embeds: [threadEmbed], components: [row] });
-      tournament.activeMatches.push({ grouping, threadId: thread.id, matchNumber, gamePhase: 1, game1Result: null, phaseResults: {}, matchCreatedAt: new Date().toISOString() });
+      tournament.activeMatches.push({ grouping, gamesPlanned: gamesPerMatch, threadId: thread.id, matchNumber, gamePhase: 1, game1Result: null, phaseResults: {}, matchCreatedAt: new Date().toISOString() });
     } catch (e) {
       console.error(`Failed to create thread for match ${matchNumber}:`, e.message);
     }
@@ -1474,15 +1461,21 @@ function recalculateFutureRounds(activePlayers) {
 
   // Build the set of already-played (or in-progress) role configs from history and active matches
   const playedConfigs = new Set();
+  const playedLayouts = new Set();
   for (const entry of tournament.history) {
     markConfigsAsPlayed(entry.grouping, playedConfigs);
+    playedLayouts.add(getLayoutKey(entry.grouping));
   }
   for (const match of tournament.activeMatches) {
     markConfigsAsPlayed(match.grouping, playedConfigs);
+    const gamesPlanned = Math.max(2, Math.min(4, parseInt(match.gamesPlanned, 10) || 2));
+    for (let phase = 1; phase <= gamesPlanned; phase++) {
+      playedLayouts.add(getLayoutKey(getGroupingForPhase(match.grouping, phase)));
+    }
   }
 
   // Generate remaining rounds skipping already-played configs
-  const futureRounds = generateRounds(activePlayers, playedConfigs);
+  const futureRounds = generateRounds(activePlayers, playedConfigs, playedLayouts);
 
   // Keep fully-completed rounds + any in-progress round, then append new future rounds
   const keepUntilIndex = tournament.activeMatches.length > 0
@@ -1633,10 +1626,10 @@ async function sendRoundExpiry(guild) {
 function getTournamentPrediction(playerCount) {
   if (playerCount < 4) return null;
 
-  const gamesPerMatch = getGamesPerMatch();
+  const gamesPerMatch = 4;
   // Each player pairs with every other player in 2 role configs (spymaster, guesser),
   // giving N*(N-1)*2 configs total.  Each match covers one 4-player teammate pairing, so there
-  // are N*(N-1)/4 matches. Games per match is configurable (2-4).
+  // are N*(N-1)/4 matches. Prediction uses target max (4) per match.
   // floor(N/4) matches run in parallel.
   // N*(N-1) is always even, so integer division is exact.
   const totalMatches = playerCount * (playerCount - 1) / 4;
@@ -1692,7 +1685,18 @@ function getPhaseButtonSuffix(phase) {
   return phase > 1 ? `_g${phase}` : '';
 }
 
-function generateRounds(players, initialPlayedConfigs = null) {
+function getLayoutKey(grouping) {
+  return `${grouping.blue.spymaster}:${grouping.blue.guesser}|${grouping.red.spymaster}:${grouping.red.guesser}`;
+}
+
+function getRoundMatchEntry(match) {
+  if (match && match.grouping) {
+    return { grouping: match.grouping, gamesPlanned: Math.max(2, Math.min(4, parseInt(match.gamesPlanned, 10) || 2)) };
+  }
+  return { grouping: match, gamesPlanned: 2 };
+}
+
+function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayouts = null) {
   const rounds = [];
 
   // playedConfigs tracks which role-configuration strings have been used.
@@ -1700,6 +1704,8 @@ function generateRounds(players, initialPlayedConfigs = null) {
   // those already-played configs are seeded in so we skip them automatically.
   const initialPlayedConfigsSet = initialPlayedConfigs ? new Set(initialPlayedConfigs) : new Set();
   let currentPlayedConfigs = initialPlayedConfigsSet;
+  const initialPlayedLayoutsSet = initialPlayedLayouts ? new Set(initialPlayedLayouts) : new Set();
+  let currentPlayedLayouts = initialPlayedLayoutsSet;
   const BASE_ROUND_BUILD_ATTEMPTS = 8;
 
   // Total distinct role-configs needed for these players:
@@ -1724,10 +1730,11 @@ function generateRounds(players, initialPlayedConfigs = null) {
   const sitOutTotals = new Map(players.map(p => [p, 0]));
   let lastRoundSitOut = new Set();
 
-  function buildRoundForOrder(orderedPlayers, basePlayedConfigs) {
+  function buildRoundForOrder(orderedPlayers, basePlayedConfigs, basePlayedLayouts) {
     const round = [];
     const playersUsedThisRound = new Set();
     const playedClone = new Set(basePlayedConfigs);
+    const playedLayoutsClone = new Set(basePlayedLayouts);
 
     let continueRound = true;
     while (continueRound) {
@@ -1769,9 +1776,9 @@ function generateRounds(players, initialPlayedConfigs = null) {
                 ];
 
                 for (const assignment of roleAssignments) {
-                  const allUnplayed = checkAndMarkConfigs(assignment, playedClone);
-                  if (allUnplayed) {
-                    round.push(assignment);
+                  const plannedGames = checkAndMarkConfigs(assignment, playedClone, playedLayoutsClone);
+                  if (plannedGames > 0) {
+                    round.push({ grouping: assignment, gamesPlanned: plannedGames });
                     playersUsedThisRound.add(pairing.blue[0]);
                     playersUsedThisRound.add(pairing.blue[1]);
                     playersUsedThisRound.add(pairing.red[0]);
@@ -1792,7 +1799,7 @@ function generateRounds(players, initialPlayedConfigs = null) {
     const repeatSitOutCount = Array.from(sitOutSet).filter(p => lastRoundSitOut.has(p)).length;
     const sitOutPenalty = Array.from(sitOutSet).reduce((sum, p) => sum + (sitOutTotals.get(p) || 0), 0);
 
-    return { round, playersUsedThisRound, playedClone, sitOutSet, repeatSitOutCount, sitOutPenalty };
+    return { round, playersUsedThisRound, playedClone, playedLayoutsClone, sitOutSet, repeatSitOutCount, sitOutPenalty };
   }
 
   while (countActiveConfigsPlayed() < totalNeeded) {
@@ -1818,7 +1825,7 @@ function generateRounds(players, initialPlayedConfigs = null) {
         orderedPlayers = rotated;
       }
 
-      const candidate = buildRoundForOrder(orderedPlayers, currentPlayedConfigs);
+      const candidate = buildRoundForOrder(orderedPlayers, currentPlayedConfigs, currentPlayedLayouts);
       if (candidate.round.length === 0) continue;
 
       if (!best) {
@@ -1840,6 +1847,7 @@ function generateRounds(players, initialPlayedConfigs = null) {
     if (best && best.round.length > 0) {
       rounds.push(best.round);
       currentPlayedConfigs = best.playedClone;
+      currentPlayedLayouts = best.playedLayoutsClone;
       lastRoundSitOut = best.sitOutSet;
       for (const playerId of best.sitOutSet) {
         sitOutTotals.set(playerId, (sitOutTotals.get(playerId) || 0) + 1);
@@ -1853,7 +1861,7 @@ function generateRounds(players, initialPlayedConfigs = null) {
   return rounds;
 }
 
-function checkAndMarkConfigs(assignment, playedConfigs) {
+function checkAndMarkConfigs(assignment, playedConfigs, playedLayouts) {
   const swapped = getSwappedGrouping(assignment);
   // Team colour is intentionally omitted from keys so that swapping blue/red
   // is treated as the same match configuration, preventing duplicate match-ups.
@@ -1868,19 +1876,35 @@ function checkAndMarkConfigs(assignment, playedConfigs) {
     `${swapped.red.guesser}-${swapped.red.spymaster}-guesser`,
   ];
   for (const config of configs) {
-    if (playedConfigs.has(config)) return false;
+    if (playedConfigs.has(config)) return 0;
+  }
+
+  const phaseLayouts = [1, 2, 3, 4].map(phase => getLayoutKey(getGroupingForPhase(assignment, phase)));
+  if (playedLayouts.has(phaseLayouts[0]) || playedLayouts.has(phaseLayouts[1])) {
+    return 0;
   }
   for (const config of configs) {
     playedConfigs.add(config);
   }
-  return true;
+  playedLayouts.add(phaseLayouts[0]);
+  playedLayouts.add(phaseLayouts[1]);
+  let plannedGames = 2;
+  if (!playedLayouts.has(phaseLayouts[2])) {
+    playedLayouts.add(phaseLayouts[2]);
+    plannedGames++;
+  }
+  if (!playedLayouts.has(phaseLayouts[3])) {
+    playedLayouts.add(phaseLayouts[3]);
+    plannedGames++;
+  }
+  return plannedGames;
 }
 
 async function processGameResult(interaction, matchData, winner, assassin, remainingCards) {
   const submittedBy = interaction.user.id;
   const submittedAt = new Date().toISOString();
   const gamePhase = matchData.gamePhase ?? 1;
-  const gamesPerMatch = getGamesPerMatch();
+  const gamesPerMatch = Math.max(2, Math.min(4, parseInt(matchData.gamesPlanned, 10) || 2));
   const currentGrouping = getGroupingForPhase(matchData.grouping, gamePhase);
 
   const winPoints = 3;
@@ -2181,7 +2205,6 @@ function buildWebData() {
     leftPlayers: tournament.leftPlayers,
     pendingRemoval: tournament.pendingRemoval !== null,
     signupsReopened: tournament.signupsReopened,
-    gamesPerMatch: getGamesPerMatch(),
   };
 }
 
@@ -2442,7 +2465,6 @@ async function handleHttpRequest(req, res) {
           pendingRemoval: null,
           signupsReopened: false,
           signupReopenMessageId: null,
-          gamesPerMatch: normalizeGamesPerMatch(process.env.GAMES_PER_MATCH || 2),
         };
         await saveTournamentData();
 
@@ -2485,21 +2507,6 @@ async function handleHttpRequest(req, res) {
         const guild2 = client.guilds.cache.get(process.env.GUILD_ID);
         if (guild2) updateScoreboard(guild2).catch(() => null);
         sendJson(res, 200, { ok: true, message: `Score adjusted: ${oldScore} → ${oldScore + d} pts (${d >= 0 ? '+' : ''}${d})` });
-        return;
-      }
-
-      // ── set-games-per-match ────────────────────────────────────────────────
-      if (action === 'set-games-per-match') {
-        if (tournament.started) {
-          sendJson(res, 400, { error: 'Cannot change games-per-match after the tournament has started.' });
-          return;
-        }
-        let data;
-        try { data = JSON.parse(await readBody(req)); } catch { sendJson(res, 400, { error: 'Invalid JSON body.' }); return; }
-        const games = normalizeGamesPerMatch(data?.gamesPerMatch);
-        tournament.gamesPerMatch = games;
-        await saveTournamentData();
-        sendJson(res, 200, { ok: true, message: `Games per match set to ${games}.`, gamesPerMatch: games });
         return;
       }
 
