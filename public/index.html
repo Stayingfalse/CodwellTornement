@@ -1090,11 +1090,13 @@
       <hr class="modal-divider">
 
       <div class="modal-section">
-        <h3>Match Format — Two Games Per Match</h3>
-        <p>Each match-up consists of <strong>two games</strong>. After Game 1 the roles are swapped — spymasters become guessers and vice versa — so each player tries both roles against the same opponents.</p>
+        <h3>Match Format — 2 to 4 Games Per Match</h3>
+        <p>Each match-up consists of <strong>2 to 4 games</strong> (configured by the tournament admin). Game 1 starts with the base roles, then later games apply role swaps so players can rotate through positions within the same 4-player group.</p>
         <ul>
           <li><strong>Game 1</strong> — Blue Spymaster A &amp; Blue Guesser B vs Red Spymaster C &amp; Red Guesser D</li>
-          <li><strong>Game 2</strong> — Roles swapped: Blue Spymaster B &amp; Blue Guesser A vs Red Spymaster D &amp; Red Guesser C</li>
+          <li><strong>Game 2</strong> — Both teams swapped: Blue Spymaster B &amp; Blue Guesser A vs Red Spymaster D &amp; Red Guesser C</li>
+          <li><strong>Game 3</strong> — Blue team swapped (if enabled)</li>
+          <li><strong>Game 4</strong> — Red team swapped (if enabled)</li>
         </ul>
       </div>
 
@@ -1114,7 +1116,7 @@
 
       <div class="modal-section">
         <h3>Rounds</h3>
-        <p>Matches within a round all run simultaneously in their own Discord threads. A round ends once every match has both games completed (or is skipped by an admin). The next round is then allocated automatically.</p>
+        <p>Matches within a round all run simultaneously in their own Discord threads. A round ends once every match has all configured games completed (or is skipped by an admin). The next round is then allocated automatically.</p>
       </div>
 
       <hr class="modal-divider">
@@ -1338,11 +1340,38 @@
     return (D && D.playerNames && D.playerNames[id]) ? D.playerNames[id] : id;
   }
 
+  function gamesPerMatch() {
+    const n = parseInt(D?.gamesPerMatch ?? 2, 10);
+    if (Number.isNaN(n)) return 2;
+    return Math.max(2, Math.min(4, n));
+  }
+
   function swapGrouping(g) {
     return {
       blue: { spymaster: g.blue.guesser, guesser: g.blue.spymaster },
       red:  { spymaster: g.red.guesser,  guesser: g.red.spymaster },
     };
+  }
+
+  function blueSwapGrouping(g) {
+    return {
+      blue: { spymaster: g.blue.guesser, guesser: g.blue.spymaster },
+      red:  { spymaster: g.red.spymaster, guesser: g.red.guesser },
+    };
+  }
+
+  function redSwapGrouping(g) {
+    return {
+      blue: { spymaster: g.blue.spymaster, guesser: g.blue.guesser },
+      red:  { spymaster: g.red.guesser, guesser: g.red.spymaster },
+    };
+  }
+
+  function groupingForPhase(g, phase) {
+    if (phase === 2) return swapGrouping(g);
+    if (phase === 3) return blueSwapGrouping(g);
+    if (phase === 4) return redSwapGrouping(g);
+    return g;
   }
 
   function fmtDate(iso) {
@@ -1393,8 +1422,8 @@
     if (active && phase === gameIndex) {
       return `<span class="result-chip chip-active">⚡ In Progress</span>`;
     }
-    if (active && gameIndex === 2 && phase === 1) {
-      return `<span class="result-chip chip-waiting">⏳ After Game 1</span>`;
+    if (active && gameIndex > phase) {
+      return `<span class="result-chip chip-waiting">⏳ After Game ${phase}</span>`;
     }
     if (isPast) {
       return `<span class="result-chip chip-skipped">⏭ Skipped</span>`;
@@ -1469,7 +1498,7 @@
 
     const isComplete = D.currentRound > D.totalRounds;
     const totalMatchSlots = D.rounds.reduce((s, r) => s + r.length, 0);
-    const totalGames = totalMatchSlots * 2;
+    const totalGames = totalMatchSlots * gamesPerMatch();
     const playedGames = D.history.length;
 
     const activePlayerCount = D.scores.length;
@@ -1624,7 +1653,7 @@
 
       // Completion stats
       const playedCount = D.history.filter(h => h.roundNumber === roundNumber).length;
-      const totalGames  = roundMatches.length * 2;
+      const totalGames  = roundMatches.length * gamesPerMatch();
       const pct = totalGames > 0 ? (playedCount / totalGames) * 100 : 0;
 
       const headerClass = isCurrent ? 'is-active' : isPast ? 'is-complete' : 'is-future';
@@ -1651,25 +1680,30 @@
 
       const matchesHtml = roundMatches.map((g1grouping, matchIdx) => {
         const matchNumber = matchIdx + 1;
-        const g2grouping  = swapGrouping(g1grouping);
+        const gpm = gamesPerMatch();
         const active      = isCurrent ? activeMatch(matchNumber) : null;
         const isMatchActive = !!active;
 
-        // For a completed match, results come from history
-        const r1 = (isCurrent || isPast) ? historyEntry(roundNumber, matchNumber, 1) : null;
-        const r2 = (isCurrent || isPast) ? historyEntry(roundNumber, matchNumber, 2) : null;
-
-        // For an active match in Game 2, Game 1 result is stored in activeMatches
-        const g1ResultFromActive = (active && active.gamePhase === 2 && active.game1Result)
-          ? active.game1Result : null;
-        const displayR1 = r1 || g1ResultFromActive || null;
-
         const activePhase = active ? (active.gamePhase ?? 1) : null;
-
-        // Admin meta for editable chips (only if result exists)
-        const isAdmin = currentUser && currentUser.isAdmin;
-        const adminMeta1 = (isAdmin && (r1 || g1ResultFromActive)) ? { roundNumber, matchNumber, game: 1 } : null;
-        const adminMeta2 = (isAdmin && r2) ? { roundNumber, matchNumber, game: 2 } : null;
+        const phaseResults = active && active.phaseResults ? active.phaseResults : {};
+        const gameCells = Array.from({ length: gpm }, (_, i) => {
+          const gameIndex = i + 1;
+          const grouping = groupingForPhase(g1grouping, gameIndex);
+          const hist = (isCurrent || isPast) ? historyEntry(roundNumber, matchNumber, gameIndex) : null;
+          const activeResult = phaseResults[gameIndex] || (gameIndex === 1 ? active?.game1Result : null);
+          const displayResult = hist || activeResult || null;
+          const isAdmin = currentUser && currentUser.isAdmin;
+          const adminMeta = (isAdmin && displayResult) ? { roundNumber, matchNumber, game: gameIndex } : null;
+          const note = gameIndex === 2 ? ' <span class="swap-note">both teams swapped</span>' :
+                       gameIndex === 3 ? ' <span class="swap-note">blue swapped</span>' :
+                       gameIndex === 4 ? ' <span class="swap-note">red swapped</span>' : '';
+          return `
+              <div class="game-cell">
+                <div class="game-num">Game ${gameIndex}${note}</div>
+                <div class="teams">${teamRows(grouping)}</div>
+                ${resultChip(displayResult, active, gameIndex, isPast, adminMeta)}
+              </div>`;
+        }).join('');
 
         return `
           <div class="match-card ${isMatchActive ? 'match-active' : ''}" style="animation-delay:${(matchIdx * 0.07).toFixed(2)}s">
@@ -1678,16 +1712,7 @@
               ${isMatchActive ? `<span class="badge badge-amber" style="font-size:0.68rem">⚡ Game ${activePhase} in progress</span>` : ''}
             </div>
             <div class="games-grid">
-              <div class="game-cell">
-                <div class="game-num">Game 1</div>
-                <div class="teams">${teamRows(g1grouping)}</div>
-                ${resultChip(displayR1, active, 1, isPast, adminMeta1)}
-              </div>
-              <div class="game-cell">
-                <div class="game-num">Game 2 <span class="swap-note">roles swapped</span></div>
-                <div class="teams">${teamRows(g2grouping)}</div>
-                ${resultChip(r2, active, 2, isPast, adminMeta2)}
-              </div>
+              ${gameCells}
             </div>
           </div>`;
       }).join('');

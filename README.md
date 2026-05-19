@@ -74,7 +74,7 @@ Follow these steps in order for a smooth first deployment:
 - **One slash command** — `/tournament` posts the signup embed anywhere in your server
 - **Interactive sign-up** — players join (or withdraw) with a single button click; the embed updates in real time with the current player list and a tournament size prediction
 - **Full round-robin scheduling** — every player plays every other player in all four role configurations (blue spymaster, blue guesser, red spymaster, red guesser)
-- **Two games per match** — roles are automatically swapped after Game 1 so every player tries both roles against the same opponents in the same sitting
+- **Configurable match length (2–4 games)** — set `GAMES_PER_MATCH` to run longer role-rotation sets within each 4-player match thread
 - **Automatic thread creation** — a dedicated Discord thread is created for each match; players submit results with buttons inside their thread
 - **Result correction** — players (and admins) can undo and re-submit a wrong result at any time before the round ends
 - **Score tracking** — a live scoreboard embed is kept up-to-date in the tournament channel throughout the event
@@ -150,6 +150,7 @@ Copy `.env.example` to `.env` and fill in the values before starting the bot.
 | `DISCORD_CLIENT_SECRET` | ⬜ | — | OAuth2 application client secret — required for web dashboard login |
 | `WEB_URL` | ⬜ | auto-detected | Public base URL of the dashboard (e.g. `https://tournament.example.com`). Used for the OAuth2 redirect URI and the 🌐 Website button on the Discord embed. |
 | `WEB_PORT` | ⬜ | `80` | Port the web server listens on |
+| `GAMES_PER_MATCH` | ⬜ | `2` | Number of games played per match thread (allowed: `2`, `3`, or `4`). |
 | `ROUND_TIMEOUT_DAYS` | ⬜ | `14` | Days before a round deadline fires. Supports decimals — e.g. `0.01` ≈ 15 minutes is useful for a dry run. Minimum practical value for production is `1`. |
 | `DEBUG_MODE` | ⬜ | `false` | Set to `true` to enable the Seed Players debug button in the Discord admin panel |
 | `DEBUG_PLAYER_COUNT` | ⬜ | `8` | How many fake players to seed when Debug Mode is on |
@@ -335,7 +336,7 @@ These appear inside each match thread:
 
 | Button | What it does |
 |---|---|
-| **Blue Wins** / **Red Wins** | Starts the result submission flow for Game 1 (or Game 2 after the swap). Only the four players in the match or an admin may press these. |
+| **Blue Wins** / **Red Wins** | Starts the result submission flow for the current game in the thread (Game 1 through configured max). Only the four players in the match or an admin may press these. |
 | **Yes, Assassin Hit** / **No, Not Assassin** | Follows the win button — records whether the win was via the assassin word. If not an assassin, a modal prompts for the number of cards remaining (0–8). |
 | **Correct Result** | Appears after a result is recorded. Reverses the recorded scores and re-opens the result buttons so the correct outcome can be submitted. |
 
@@ -352,12 +353,14 @@ The tournament uses a **full round-robin** schedule where every player is paired
 
 **Rounds** are generated so that as many matches as possible run concurrently (up to ⌊N/4⌋ simultaneous games per round). All matches within a round start at the same time in their own threads.
 
-**Each match consists of two games:**
+**Each match consists of 2 to 4 games** (configured by `GAMES_PER_MATCH`):
 
 - **Game 1** — Blue Spymaster A & Blue Guesser B vs Red Spymaster C & Red Guesser D
-- **Game 2** — Roles swapped: Blue Spymaster B & Blue Guesser A vs Red Spymaster D & Red Guesser C
+- **Game 2** — Both teams swapped: Blue Spymaster B & Blue Guesser A vs Red Spymaster D & Red Guesser C
+- **Game 3 (optional)** — Blue team swapped only
+- **Game 4 (optional)** — Red team swapped only
 
-After Game 1 the thread automatically updates with new buttons for Game 2. Once both games are logged the thread is archived and the scoreboard updated. When all threads in a round are complete, the next round is allocated automatically.
+After each game, the thread automatically posts the next game configuration and result buttons. Once all configured games are logged, the thread is archived and the scoreboard updated. When all threads in a round are complete, the next round is allocated automatically.
 
 **Round deadlines** are configurable via `ROUND_TIMEOUT_DAYS` (default 14 days). A warning message is posted to all active threads 2 days before the deadline. When the deadline expires, an expiry embed is posted in the tournament channel with a **Force End** button for admins.
 
