@@ -1698,7 +1698,9 @@ function generateRounds(players, initialPlayedConfigs = null) {
   // playedConfigs tracks which role-configuration strings have been used.
   // When called with initialPlayedConfigs (recalculation after roster change),
   // those already-played configs are seeded in so we skip them automatically.
+  // Reassigned each round to the best candidate's cloned set after fair-order search.
   let playedConfigs = initialPlayedConfigs ? new Set(initialPlayedConfigs) : new Set();
+  const MIN_ROUND_BUILD_ATTEMPTS = 8;
 
   // Total distinct role-configs needed for these players:
   // N*(N-1) ordered pairs × 2 configs each (spymaster, guesser) = N*(N-1)*2.
@@ -1794,7 +1796,7 @@ function generateRounds(players, initialPlayedConfigs = null) {
   }
 
   while (countActiveConfigsPlayed() < totalNeeded) {
-    const attempts = Math.max(players.length, 8);
+    const attempts = Math.max(players.length, MIN_ROUND_BUILD_ATTEMPTS);
     let best = null;
 
     for (let attempt = 0; attempt < attempts; attempt++) {
@@ -1805,16 +1807,12 @@ function generateRounds(players, initialPlayedConfigs = null) {
         const aSit = sitOutTotals.get(a) || 0;
         const bSit = sitOutTotals.get(b) || 0;
         if (aSit !== bSit) return bSit - aSit;
-        return 0;
+        return Math.random() - 0.5;
       });
 
       if (orderedPlayers.length > 1) {
         const rotateBy = attempt % orderedPlayers.length;
         const rotated = orderedPlayers.slice(rotateBy).concat(orderedPlayers.slice(0, rotateBy));
-        for (let i = rotated.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [rotated[i], rotated[j]] = [rotated[j], rotated[i]];
-        }
         orderedPlayers.splice(0, orderedPlayers.length, ...rotated);
       }
 
