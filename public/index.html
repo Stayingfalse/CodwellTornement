@@ -1948,7 +1948,7 @@
       html += `<button class="admin-btn btn-amber" onclick="confirmCloseSignups()">🔒 Close Signups</button>`;
     }
     if (started) {
-      html += `<button class="admin-btn btn-amber" onclick="confirmRecalculateRounds()">🔄 Recalculate Rounds</button>`;
+      html += `<button class="admin-btn btn-amber" onclick="confirmRecalculateRounds()">🔄 Fix Matchups</button>`;
     }
     html += `<button class="admin-btn btn-red" onclick="confirmReset()">🗑 Reset Tournament</button>`;
     html += '</div>';
@@ -1962,7 +1962,7 @@
   }
 
   function confirmRecalculateRounds() {
-    if (!confirm('Recalculate rounds?\n\nThis regenerates upcoming rounds from current players and played configurations.\n\nIf the current round is in progress with no completed results yet, active match threads are archived and the current round is reposted fresh.')) return;
+    if (!confirm('Fix matchups?\n\nThis regenerates upcoming rounds from current players and played configurations.\n\nIf the current round is in progress with no completed results yet, active match threads are archived and the current round is reposted fresh.')) return;
     adminAction('recalculate-rounds');
   }
 
