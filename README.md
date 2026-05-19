@@ -361,6 +361,8 @@ The tournament uses a **full round-robin** schedule where every player is paired
 
 After each game, the thread automatically posts the next game configuration and result buttons. Once all configured games are logged, the thread is archived and the scoreboard updated. When all threads in a round are complete, the next round is allocated automatically.
 
+> **What “unique role layouts” means:** the bot avoids replaying the same exact blue/red role seating for the same 4-player setup. If only 2 or 3 fresh layouts are left, the match ends there instead of forcing duplicates.
+
 **Round deadlines** are configurable via `ROUND_TIMEOUT_DAYS` (default 14 days). A warning message is posted to all active threads 2 days before the deadline. When the deadline expires, an expiry embed is posted in the tournament channel with a **Force End** button for admins.
 
 ---

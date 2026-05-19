@@ -1375,12 +1375,20 @@
     return '';
   }
 
+  const MIN_GAMES_PER_MATCH = 2;
+  const MAX_GAMES_PER_MATCH = 4;
+
+  function clampGamesPerMatch(value) {
+    const n = parseInt(value, 10);
+    if (Number.isNaN(n)) return MIN_GAMES_PER_MATCH;
+    return Math.max(MIN_GAMES_PER_MATCH, Math.min(MAX_GAMES_PER_MATCH, n));
+  }
+
   function getRoundMatchEntry(match) {
     if (match && match.grouping) {
-      const planned = parseInt(match.gamesPlanned ?? 2, 10);
-      return { grouping: match.grouping, gamesPlanned: Math.max(2, Math.min(4, Number.isNaN(planned) ? 2 : planned)) };
+      return { grouping: match.grouping, gamesPlanned: clampGamesPerMatch(match.gamesPlanned) };
     }
-    return { grouping: match, gamesPlanned: 2 };
+    return { grouping: match, gamesPlanned: MIN_GAMES_PER_MATCH };
   }
 
   function fmtDate(iso) {
@@ -1695,13 +1703,13 @@
         const g1grouping = roundMatchEntry.grouping;
         const active      = isCurrent ? activeMatch(matchNumber) : null;
         const isMatchActive = !!active;
-        const gpm = active
-          ? Math.max(2, Math.min(4, parseInt(active.gamesPlanned ?? roundMatchEntry.gamesPlanned, 10) || roundMatchEntry.gamesPlanned))
+        const gamesPerMatch = active
+          ? clampGamesPerMatch(active.gamesPlanned ?? roundMatchEntry.gamesPlanned)
           : roundMatchEntry.gamesPlanned;
 
         const activePhase = active ? (active.gamePhase ?? 1) : null;
         const phaseResults = active && active.phaseResults ? active.phaseResults : {};
-        const gameCells = Array.from({ length: gpm }, (_, i) => {
+        const gameCells = Array.from({ length: gamesPerMatch }, (_, i) => {
           const gameIndex = i + 1;
           const grouping = groupingForPhase(g1grouping, gameIndex);
           const hist = (isCurrent || isPast) ? historyEntry(roundNumber, matchNumber, gameIndex) : null;

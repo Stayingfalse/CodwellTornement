@@ -51,6 +51,14 @@ let removalTimeoutTimer = null;
 
 // Duration of the pending-removal confirmation window (15 minutes)
 const REMOVAL_TIMEOUT_MS = 15 * 60 * 1000;
+const MIN_GAMES_PER_MATCH = 2;
+const MAX_GAMES_PER_MATCH = 4;
+
+function clampGamesPerMatch(value) {
+  const n = parseInt(value, 10);
+  if (Number.isNaN(n)) return MIN_GAMES_PER_MATCH;
+  return Math.max(MIN_GAMES_PER_MATCH, Math.min(MAX_GAMES_PER_MATCH, n));
+}
 
 // Tracks threads currently mid-submission to prevent double-posting
 // Key: `${threadId}:${gamePhase}` — set synchronously before any await, cleared after
@@ -284,7 +292,7 @@ function buildSignupDescription() {
       description += `\n\n**Tournament Prediction:**\n`;
       description += `Up to ${prediction.totalGames} Total Games • ~${prediction.rounds} Rounds`;
       description += `\n${prediction.concurrentGames} game${prediction.concurrentGames === 1 ? '' : 's'} per round`;
-      description += `\nAim: up to 4 games per match (auto-fallback to 3 or 2 when needed)`;
+      description += `\nTarget: up to 4 games per match (auto-fallback to 3 or 2 when needed)`;
     }
   }
 
@@ -1213,7 +1221,7 @@ async function updateScoreboard(guild) {
         description += `**⚔️ Active Matches:**\n`;
         tournament.activeMatches.forEach(m => {
           const activePhase = m.gamePhase ?? 1;
-          const gamesPerMatch = Math.max(2, Math.min(4, parseInt(m.gamesPlanned, 10) || 2));
+          const gamesPerMatch = clampGamesPerMatch(m.gamesPlanned);
           const activeGrouping = getGroupingForPhase(m.grouping, activePhase);
           fields.push({
             name: `Match ${m.matchNumber} — Game ${activePhase}/${gamesPerMatch}`,
@@ -1468,7 +1476,7 @@ function recalculateFutureRounds(activePlayers) {
   }
   for (const match of tournament.activeMatches) {
     markConfigsAsPlayed(match.grouping, playedConfigs);
-    const gamesPlanned = Math.max(2, Math.min(4, parseInt(match.gamesPlanned, 10) || 2));
+    const gamesPlanned = clampGamesPerMatch(match.gamesPlanned);
     for (let phase = 1; phase <= gamesPlanned; phase++) {
       playedLayouts.add(getLayoutKey(getGroupingForPhase(match.grouping, phase)));
     }
@@ -1629,7 +1637,7 @@ function getTournamentPrediction(playerCount) {
   const gamesPerMatch = 4;
   // Each player pairs with every other player in 2 role configs (spymaster, guesser),
   // giving N*(N-1)*2 configs total.  Each match covers one 4-player teammate pairing, so there
-  // are N*(N-1)/4 matches. Prediction uses target max (4) per match.
+  // are N*(N-1)/4 scheduled matches in this scheduler model. Prediction uses target max (4) per match.
   // floor(N/4) matches run in parallel.
   // N*(N-1) is always even, so integer division is exact.
   const totalMatches = playerCount * (playerCount - 1) / 4;
@@ -1691,9 +1699,10 @@ function getLayoutKey(grouping) {
 
 function getRoundMatchEntry(match) {
   if (match && match.grouping) {
-    return { grouping: match.grouping, gamesPlanned: Math.max(2, Math.min(4, parseInt(match.gamesPlanned, 10) || 2)) };
+    return { grouping: match.grouping, gamesPlanned: clampGamesPerMatch(match.gamesPlanned) };
   }
-  return { grouping: match, gamesPlanned: 2 };
+  // Backward compatibility: older saved rounds store grouping directly instead of {grouping, gamesPlanned}.
+  return { grouping: match, gamesPlanned: MIN_GAMES_PER_MATCH };
 }
 
 function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayouts = null) {
@@ -1706,6 +1715,7 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
   let currentPlayedConfigs = initialPlayedConfigsSet;
   const initialPlayedLayoutsSet = initialPlayedLayouts ? new Set(initialPlayedLayouts) : new Set();
   let currentPlayedLayouts = initialPlayedLayoutsSet;
+  // Try at least this many candidate orderings each round to smooth sit-out fairness.
   const BASE_ROUND_BUILD_ATTEMPTS = 8;
 
   // Total distinct role-configs needed for these players:
@@ -1879,7 +1889,10 @@ function checkAndMarkConfigs(assignment, playedConfigs, playedLayouts) {
     if (playedConfigs.has(config)) return 0;
   }
 
-  const phaseLayouts = [1, 2, 3, 4].map(phase => getLayoutKey(getGroupingForPhase(assignment, phase)));
+  const phaseLayouts = Array.from({ length: MAX_GAMES_PER_MATCH }, (_, i) =>
+    getLayoutKey(getGroupingForPhase(assignment, i + 1))
+  );
+  // Require first two phases to be available so each match has a minimum 2-game set.
   if (playedLayouts.has(phaseLayouts[0]) || playedLayouts.has(phaseLayouts[1])) {
     return 0;
   }
@@ -1904,7 +1917,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
   const submittedBy = interaction.user.id;
   const submittedAt = new Date().toISOString();
   const gamePhase = matchData.gamePhase ?? 1;
-  const gamesPerMatch = Math.max(2, Math.min(4, parseInt(matchData.gamesPlanned, 10) || 2));
+  const gamesPerMatch = clampGamesPerMatch(matchData.gamesPlanned);
   const currentGrouping = getGroupingForPhase(matchData.grouping, gamePhase);
 
   const winPoints = 3;
