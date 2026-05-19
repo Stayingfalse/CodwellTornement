@@ -483,6 +483,10 @@ client.on('interactionCreate', async (interaction) => {
             .setCustomId('admin_reopen_signups')
             .setLabel(tournament.signupsReopened ? '🔒 Close Signups' : '📋 Reopen Signups')
             .setStyle(tournament.signupsReopened ? ButtonStyle.Danger : ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId('admin_fix_matchups')
+            .setLabel('🔧 Fix Match-ups')
+            .setStyle(ButtonStyle.Warning),
         );
       }
 
@@ -1087,6 +1091,27 @@ client.on('interactionCreate', async (interaction) => {
         updateScoreboard(interaction.guild).catch(() => null);
         await interaction.editReply({ content: '✅ Signups have been reopened. A message has been posted in the tournament channel.' });
       }
+
+    // ── Admin fix match-ups ───────────────────────────────────────────────────
+    } else if (customId === 'admin_fix_matchups') {
+      const adminRoleId = process.env.ADMIN_ROLE_ID;
+      if (!interaction.member.roles.cache.has(adminRoleId)) {
+        await interaction.reply({ content: 'You do not have permission.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!tournament.started) {
+        await interaction.reply({ content: 'The tournament has not started yet.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const activePlayers = Array.from(tournament.players);
+      recalculateFutureRounds(activePlayers);
+      await saveTournamentData();
+      updateScoreboard(interaction.guild).catch(() => null);
+      const newTotal = tournament.rounds.length;
+      await interaction.editReply({
+        content: `✅ Match-ups recalculated. Already-played games are preserved. Total rounds: ${newTotal}.`,
+      });
     }
   } else if (interaction.isModalSubmit()) {
     const { customId } = interaction;
@@ -1401,16 +1426,18 @@ async function cancelPendingRemoval(guild, reason) {
 }
 
 // Mark all 8 role-config strings for a match (game 1 + swapped game 2) as played.
+// Team colour is intentionally omitted so that {blue: A+B, red: C+D} and
+// {blue: C+D, red: A+B} are treated as the same match.
 function markConfigsAsPlayed(grouping, playedConfigs) {
   const swapped = getSwappedGrouping(grouping);
-  playedConfigs.add(`${grouping.blue.spymaster}-${grouping.blue.guesser}-blue-spymaster`);
-  playedConfigs.add(`${grouping.blue.guesser}-${grouping.blue.spymaster}-blue-guesser`);
-  playedConfigs.add(`${grouping.red.spymaster}-${grouping.red.guesser}-red-spymaster`);
-  playedConfigs.add(`${grouping.red.guesser}-${grouping.red.spymaster}-red-guesser`);
-  playedConfigs.add(`${swapped.blue.spymaster}-${swapped.blue.guesser}-blue-spymaster`);
-  playedConfigs.add(`${swapped.blue.guesser}-${swapped.blue.spymaster}-blue-guesser`);
-  playedConfigs.add(`${swapped.red.spymaster}-${swapped.red.guesser}-red-spymaster`);
-  playedConfigs.add(`${swapped.red.guesser}-${swapped.red.spymaster}-red-guesser`);
+  playedConfigs.add(`${grouping.blue.spymaster}-${grouping.blue.guesser}-spymaster`);
+  playedConfigs.add(`${grouping.blue.guesser}-${grouping.blue.spymaster}-guesser`);
+  playedConfigs.add(`${grouping.red.spymaster}-${grouping.red.guesser}-spymaster`);
+  playedConfigs.add(`${grouping.red.guesser}-${grouping.red.spymaster}-guesser`);
+  playedConfigs.add(`${swapped.blue.spymaster}-${swapped.blue.guesser}-spymaster`);
+  playedConfigs.add(`${swapped.blue.guesser}-${swapped.blue.spymaster}-guesser`);
+  playedConfigs.add(`${swapped.red.spymaster}-${swapped.red.guesser}-spymaster`);
+  playedConfigs.add(`${swapped.red.guesser}-${swapped.red.spymaster}-guesser`);
 }
 
 // Recalculate all future (not-yet-started) rounds given the current set of active players.
@@ -1586,12 +1613,12 @@ async function sendRoundExpiry(guild) {
 function getTournamentPrediction(playerCount) {
   if (playerCount < 4) return null;
 
-  // Analytical formula: each player plays every other player in each of the
-  // 4 role configs (blue-spy, blue-guess, red-spy, red-guess), so total games
-  // = N*(N-1).  floor(N/4) games can run simultaneously per round.
-  const totalGames = playerCount * (playerCount - 1);
+  // Each player pairs with every other player in 2 role configs (spymaster, guesser),
+  // giving N*(N-1) configs total.  Each match (2 games) covers 8 configs, so there
+  // are N*(N-1)/4 matches and N*(N-1)/2 total games.  floor(N/4) matches run in parallel.
+  const totalGames = Math.floor(playerCount * (playerCount - 1) / 2);
   const concurrentGames = Math.floor(playerCount / 4);
-  const totalRounds = Math.ceil((totalGames / 2) / concurrentGames);
+  const totalRounds = Math.ceil((playerCount * (playerCount - 1) / 4) / concurrentGames);
 
   return {
     rounds: totalRounds,
@@ -1625,8 +1652,9 @@ function generateRounds(players, initialPlayedConfigs = null) {
   const playedConfigs = initialPlayedConfigs ? new Set(initialPlayedConfigs) : new Set();
 
   // Total distinct role-configs needed for these players:
-  // N*(N-1) ordered pairs × 4 configs each = N*(N-1)*4
-  const totalNeeded = players.length * (players.length - 1) * 4;
+  // N*(N-1) ordered pairs × 2 configs each (spymaster, guesser) = N*(N-1)*2.
+  // Team colour (blue/red) is not tracked so mirrored matchups are not duplicated.
+  const totalNeeded = players.length * (players.length - 1) * 2;
 
   // Count how many configs for the current active players are already covered.
   function countActiveConfigsPlayed() {
@@ -1635,10 +1663,8 @@ function generateRounds(players, initialPlayedConfigs = null) {
       for (let j = 0; j < players.length; j++) {
         if (i === j) continue;
         const pi = players[i], pj = players[j];
-        if (playedConfigs.has(`${pi}-${pj}-blue-spymaster`)) count++;
-        if (playedConfigs.has(`${pi}-${pj}-blue-guesser`))   count++;
-        if (playedConfigs.has(`${pi}-${pj}-red-spymaster`))  count++;
-        if (playedConfigs.has(`${pi}-${pj}-red-guesser`))    count++;
+        if (playedConfigs.has(`${pi}-${pj}-spymaster`)) count++;
+        if (playedConfigs.has(`${pi}-${pj}-guesser`))   count++;
       }
     }
     return count;
@@ -1729,15 +1755,17 @@ function generateRounds(players, initialPlayedConfigs = null) {
 
 function checkAndMarkConfigs(assignment, playedConfigs) {
   const swapped = getSwappedGrouping(assignment);
+  // Team colour is intentionally omitted from keys so that swapping blue/red
+  // is treated as the same match configuration, preventing duplicate match-ups.
   const configs = [
-    `${assignment.blue.spymaster}-${assignment.blue.guesser}-blue-spymaster`,
-    `${assignment.blue.guesser}-${assignment.blue.spymaster}-blue-guesser`,
-    `${assignment.red.spymaster}-${assignment.red.guesser}-red-spymaster`,
-    `${assignment.red.guesser}-${assignment.red.spymaster}-red-guesser`,
-    `${swapped.blue.spymaster}-${swapped.blue.guesser}-blue-spymaster`,
-    `${swapped.blue.guesser}-${swapped.blue.spymaster}-blue-guesser`,
-    `${swapped.red.spymaster}-${swapped.red.guesser}-red-spymaster`,
-    `${swapped.red.guesser}-${swapped.red.spymaster}-red-guesser`,
+    `${assignment.blue.spymaster}-${assignment.blue.guesser}-spymaster`,
+    `${assignment.blue.guesser}-${assignment.blue.spymaster}-guesser`,
+    `${assignment.red.spymaster}-${assignment.red.guesser}-spymaster`,
+    `${assignment.red.guesser}-${assignment.red.spymaster}-guesser`,
+    `${swapped.blue.spymaster}-${swapped.blue.guesser}-spymaster`,
+    `${swapped.blue.guesser}-${swapped.blue.spymaster}-guesser`,
+    `${swapped.red.spymaster}-${swapped.red.guesser}-spymaster`,
+    `${swapped.red.guesser}-${swapped.red.spymaster}-guesser`,
   ];
   for (const config of configs) {
     if (playedConfigs.has(config)) return false;
