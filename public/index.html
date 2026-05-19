@@ -1374,6 +1374,13 @@
     return g;
   }
 
+  function phaseNote(phase) {
+    if (phase === 2) return ' <span class="swap-note">both teams swapped</span>';
+    if (phase === 3) return ' <span class="swap-note">blue swapped</span>';
+    if (phase === 4) return ' <span class="swap-note">red swapped</span>';
+    return '';
+  }
+
   function fmtDate(iso) {
     if (!iso) return '—';
     const d = new Date(iso);
@@ -1694,9 +1701,7 @@
           const displayResult = hist || activeResult || null;
           const isAdmin = currentUser && currentUser.isAdmin;
           const adminMeta = (isAdmin && displayResult) ? { roundNumber, matchNumber, game: gameIndex } : null;
-          const note = gameIndex === 2 ? ' <span class="swap-note">both teams swapped</span>' :
-                       gameIndex === 3 ? ' <span class="swap-note">blue swapped</span>' :
-                       gameIndex === 4 ? ' <span class="swap-note">red swapped</span>' : '';
+          const note = phaseNote(gameIndex);
           return `
               <div class="game-cell">
                 <div class="game-num">Game ${gameIndex}${note}</div>

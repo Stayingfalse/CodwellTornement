@@ -1698,9 +1698,9 @@ function generateRounds(players, initialPlayedConfigs = null) {
   // playedConfigs tracks which role-configuration strings have been used.
   // When called with initialPlayedConfigs (recalculation after roster change),
   // those already-played configs are seeded in so we skip them automatically.
-  // Reassigned each round to the best candidate's cloned set after fair-order search.
-  let playedConfigs = initialPlayedConfigs ? new Set(initialPlayedConfigs) : new Set();
-  const MIN_ROUND_BUILD_ATTEMPTS = 8;
+  const initialPlayedConfigsSet = initialPlayedConfigs ? new Set(initialPlayedConfigs) : new Set();
+  let currentPlayedConfigs = initialPlayedConfigsSet;
+  const BASE_ROUND_BUILD_ATTEMPTS = 8;
 
   // Total distinct role-configs needed for these players:
   // N*(N-1) ordered pairs × 2 configs each (spymaster, guesser) = N*(N-1)*2.
@@ -1714,8 +1714,8 @@ function generateRounds(players, initialPlayedConfigs = null) {
       for (let j = 0; j < players.length; j++) {
         if (i === j) continue;
         const pi = players[i], pj = players[j];
-        if (playedConfigs.has(`${pi}-${pj}-spymaster`)) count++;
-        if (playedConfigs.has(`${pi}-${pj}-guesser`))   count++;
+        if (currentPlayedConfigs.has(`${pi}-${pj}-spymaster`)) count++;
+        if (currentPlayedConfigs.has(`${pi}-${pj}-guesser`))   count++;
       }
     }
     return count;
@@ -1788,7 +1788,7 @@ function generateRounds(players, initialPlayedConfigs = null) {
       if (!foundMatch) continueRound = false;
     }
 
-    const sitOutSet = new Set(players.filter(p => !playersUsedThisRound.has(p)));
+    const sitOutSet = new Set(orderedPlayers.filter(p => !playersUsedThisRound.has(p)));
     const repeatSitOutCount = Array.from(sitOutSet).filter(p => lastRoundSitOut.has(p)).length;
     const sitOutPenalty = Array.from(sitOutSet).reduce((sum, p) => sum + (sitOutTotals.get(p) || 0), 0);
 
@@ -1796,11 +1796,13 @@ function generateRounds(players, initialPlayedConfigs = null) {
   }
 
   while (countActiveConfigsPlayed() < totalNeeded) {
-    const attempts = Math.max(players.length, MIN_ROUND_BUILD_ATTEMPTS);
+    const attempts = Math.max(players.length, BASE_ROUND_BUILD_ATTEMPTS);
     let best = null;
 
     for (let attempt = 0; attempt < attempts; attempt++) {
-      const orderedPlayers = [...players].sort((a, b) => {
+      // Priority order: players who sat out last round, then players with higher total sit-outs.
+      // Random tie-break only applies when fairness metrics are identical.
+      let orderedPlayers = [...players].sort((a, b) => {
         const aWasOut = lastRoundSitOut.has(a) ? 1 : 0;
         const bWasOut = lastRoundSitOut.has(b) ? 1 : 0;
         if (aWasOut !== bWasOut) return bWasOut - aWasOut;
@@ -1813,10 +1815,10 @@ function generateRounds(players, initialPlayedConfigs = null) {
       if (orderedPlayers.length > 1) {
         const rotateBy = attempt % orderedPlayers.length;
         const rotated = orderedPlayers.slice(rotateBy).concat(orderedPlayers.slice(0, rotateBy));
-        orderedPlayers.splice(0, orderedPlayers.length, ...rotated);
+        orderedPlayers = rotated;
       }
 
-      const candidate = buildRoundForOrder(orderedPlayers, playedConfigs);
+      const candidate = buildRoundForOrder(orderedPlayers, currentPlayedConfigs);
       if (candidate.round.length === 0) continue;
 
       if (!best) {
@@ -1837,7 +1839,7 @@ function generateRounds(players, initialPlayedConfigs = null) {
 
     if (best && best.round.length > 0) {
       rounds.push(best.round);
-      playedConfigs = best.playedClone;
+      currentPlayedConfigs = best.playedClone;
       lastRoundSitOut = best.sitOutSet;
       for (const playerId of best.sitOutSet) {
         sitOutTotals.set(playerId, (sitOutTotals.get(playerId) || 0) + 1);
