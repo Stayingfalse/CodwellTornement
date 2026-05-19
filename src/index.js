@@ -1614,11 +1614,13 @@ function getTournamentPrediction(playerCount) {
   if (playerCount < 4) return null;
 
   // Each player pairs with every other player in 2 role configs (spymaster, guesser),
-  // giving N*(N-1) configs total.  Each match (2 games) covers 8 configs, so there
+  // giving N*(N-1)*2 configs total.  Each match (2 games) covers 8 configs, so there
   // are N*(N-1)/4 matches and N*(N-1)/2 total games.  floor(N/4) matches run in parallel.
-  const totalGames = Math.floor(playerCount * (playerCount - 1) / 2);
+  // N*(N-1) is always even, so integer division is exact.
+  const totalMatches = playerCount * (playerCount - 1) / 4;
+  const totalGames = totalMatches * 2;
   const concurrentGames = Math.floor(playerCount / 4);
-  const totalRounds = Math.ceil((playerCount * (playerCount - 1) / 4) / concurrentGames);
+  const totalRounds = Math.ceil(totalMatches / concurrentGames);
 
   return {
     rounds: totalRounds,
