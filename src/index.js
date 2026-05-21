@@ -1686,7 +1686,8 @@ function recalculateFutureRounds(activePlayers) {
   const activePlayerSet = new Set(activePlayers);
   const normalizedHistory = normalizeHistoryForScheduling(activePlayerSet);
   if (normalizedHistory.reconstructionTriggered) {
-    console.warn(`[scheduler] History reconstruction/audit applied for recalculation (skipped ${normalizedHistory.skippedEntries} invalid entr${normalizedHistory.skippedEntries === 1 ? 'y' : 'ies'}).`);
+    const skippedLabel = normalizedHistory.skippedEntries === 1 ? 'entry' : 'entries';
+    console.warn(`[scheduler] History reconstruction/audit applied for recalculation (skipped ${normalizedHistory.skippedEntries} invalid ${skippedLabel}).`);
   }
 
   // Build the set of already-played (or in-progress) pod-local configs/layouts from history and active matches
@@ -2104,7 +2105,10 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
     return { round, playersUsedThisRound, playedClone, playedLayoutsClone, roleCountsClone, sitOutSet, repeatSitOutCount, sitOutPenalty, weightedScore };
   }
 
-  while (true) {
+  const MAX_GENERATED_ROUNDS = Math.max(players.length * 10, 32);
+  let generatedRoundCount = 0;
+
+  while (generatedRoundCount < MAX_GENERATED_ROUNDS) {
     const attempts = Math.max(players.length, BASE_ROUND_BUILD_ATTEMPTS);
     let best = null;
 
@@ -2150,6 +2154,7 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
 
     if (best && best.round.length > 0) {
       rounds.push(best.round);
+      generatedRoundCount++;
       currentPlayedConfigs = best.playedClone;
       currentPlayedLayouts = best.playedLayoutsClone;
       for (const [id, counts] of best.roleCountsClone.entries()) {
@@ -2176,6 +2181,9 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
     } else {
       break;
     }
+  }
+  if (generatedRoundCount >= MAX_GENERATED_ROUNDS) {
+    console.warn(`[scheduler] Round generation guard reached (${MAX_GENERATED_ROUNDS}); stopping to avoid non-terminating schedule build.`);
   }
   
   return rounds;
@@ -2216,7 +2224,7 @@ function checkAndMarkConfigs(assignment, playedConfigs, playedLayouts, roleCount
 async function processGameResult(interaction, matchData, winner, assassin, remainingCards) {
   const submittedBy = interaction.user.id;
   const submittedAt = new Date().toISOString();
-  const gamePhase = matchData.gamePhase ?? 1; // sequence index within this match
+  const gamePhase = matchData.gamePhase ?? 1; // game number index within this match (1-based)
   const phaseSequence = getMatchPhaseSequence(matchData);
   const gamesPerMatch = phaseSequence.length;
   const currentGrouping = getGroupingForMatchGame(matchData, gamePhase);
