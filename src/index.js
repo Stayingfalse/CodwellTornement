@@ -1617,6 +1617,15 @@ function buildHistoryDerivedFairnessState(players, normalizedHistoryEntries, nor
   return { gamesMissedTotals, lastRoundSitOut, roleCounts };
 }
 
+function cloneRoleCountsMap(roleCountsMap) {
+  return new Map(
+    Array.from(roleCountsMap.entries()).map(([id, counts]) => [
+      id,
+      { spymaster: counts.spymaster, guesser: counts.guesser },
+    ])
+  );
+}
+
 async function refreshCurrentRoundThreadsAndSchedule(guild) {
   if (!guild || tournament.activeMatches.length === 0) {
     return { refreshed: false, refreshedCount: 0, message: null };
@@ -2023,7 +2032,7 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
     ? new Set(fairnessSeed.lastRoundSitOut)
     : new Set();
   const baseRoleCounts = fairnessSeed?.roleCounts
-    ? new Map(Array.from(fairnessSeed.roleCounts.entries()).map(([id, counts]) => [id, { spymaster: counts.spymaster, guesser: counts.guesser }]))
+    ? cloneRoleCountsMap(fairnessSeed.roleCounts)
     : new Map(players.map(p => [p, { spymaster: 0, guesser: 0 }]));
 
   function buildRoundForOrder(orderedPlayers, basePlayedConfigs, basePlayedLayouts, baseRoleCountsForRound) {
@@ -2031,7 +2040,7 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
     const playersUsedThisRound = new Set();
     const playedClone = new Set(basePlayedConfigs);
     const playedLayoutsClone = new Set(basePlayedLayouts);
-    const roleCountsClone = new Map(Array.from(baseRoleCountsForRound.entries()).map(([id, counts]) => [id, { spymaster: counts.spymaster, guesser: counts.guesser }]));
+    const roleCountsClone = cloneRoleCountsMap(baseRoleCountsForRound);
 
     let continueRound = true;
     while (continueRound) {
@@ -2105,6 +2114,9 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
     return { round, playersUsedThisRound, playedClone, playedLayoutsClone, roleCountsClone, sitOutSet, repeatSitOutCount, sitOutPenalty, weightedScore };
   }
 
+  // Guard against non-terminating generation loops:
+  // - allow enough headroom for larger brackets (10x players)
+  // - keep a floor so small brackets still get full schedules.
   const MAX_GENERATED_ROUNDS = Math.max(players.length * 10, 32);
   let generatedRoundCount = 0;
 
@@ -2143,9 +2155,6 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
         best = candidate;
       } else if (
         candidate.weightedScore === best.weightedScore &&
-        candidate.round.length === best.round.length &&
-        candidate.repeatSitOutCount === best.repeatSitOutCount &&
-        candidate.sitOutPenalty === best.sitOutPenalty &&
         Math.random() < 0.5
       ) {
         best = candidate;
