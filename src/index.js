@@ -2191,7 +2191,7 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
       break;
     }
   }
-  if (generatedRoundCount >= MAX_GENERATED_ROUNDS) {
+  if (generatedRoundCount === MAX_GENERATED_ROUNDS) {
     console.warn(`[scheduler] Round generation guard reached (${MAX_GENERATED_ROUNDS}); stopping to avoid non-terminating schedule build.`);
   }
   
@@ -2233,7 +2233,7 @@ function checkAndMarkConfigs(assignment, playedConfigs, playedLayouts, roleCount
 async function processGameResult(interaction, matchData, winner, assassin, remainingCards) {
   const submittedBy = interaction.user.id;
   const submittedAt = new Date().toISOString();
-  const gamePhase = matchData.gamePhase ?? 1; // game number index within this match (1-based)
+  const gamePhase = matchData.gamePhase ?? 1; // sequential game number (1-based); phaseSequence maps this to actual phase config
   const phaseSequence = getMatchPhaseSequence(matchData);
   const gamesPerMatch = phaseSequence.length;
   const currentGrouping = getGroupingForMatchGame(matchData, gamePhase);
