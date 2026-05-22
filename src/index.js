@@ -53,11 +53,23 @@ let removalTimeoutTimer = null;
 const REMOVAL_TIMEOUT_MS = 15 * 60 * 1000;
 const MIN_GAMES_PER_MATCH = 2;
 const MAX_GAMES_PER_MATCH = 4;
+const STRICT_ROLE_CAP_DELTA = 1;
+const ROUND_SCORE_WEIGHTS = {
+  matches: 1000,
+  games: 100,
+  repeatSitOut: 800,
+  sitOutMissedGames: 20,
+};
 
 function clampGamesPerMatch(value) {
   const n = parseInt(value, 10);
   if (Number.isNaN(n)) return MIN_GAMES_PER_MATCH;
   return Math.max(MIN_GAMES_PER_MATCH, Math.min(MAX_GAMES_PER_MATCH, n));
+}
+
+function getDefaultPhaseSequence(gamesPlanned) {
+  const games = clampGamesPerMatch(gamesPlanned);
+  return Array.from({ length: games }, (_, i) => i + 1);
 }
 
 // Tracks threads currently mid-submission to prevent double-posting
@@ -1231,8 +1243,8 @@ async function updateScoreboard(guild) {
         description += `**⚔️ Active Matches:**\n`;
         tournament.activeMatches.forEach(m => {
           const activePhase = m.gamePhase ?? 1;
-          const gamesPerMatch = clampGamesPerMatch(m.gamesPlanned);
-          const activeGrouping = getGroupingForPhase(m.grouping, activePhase);
+          const gamesPerMatch = getMatchPhaseSequence(m).length;
+          const activeGrouping = getGroupingForMatchGame(m, activePhase);
           fields.push({
             name: `Match ${m.matchNumber} — Game ${activePhase}/${gamesPerMatch}`,
             value: `🔵 <@${activeGrouping.blue.spymaster}> & <@${activeGrouping.blue.guesser}>\nvs 🔴 <@${activeGrouping.red.spymaster}> & <@${activeGrouping.red.guesser}>`,
@@ -1355,6 +1367,8 @@ async function allocateRound(guild) {
     const grouping = roundEntry.grouping;
     const matchNumber = i + 1;
     const gamesPerMatch = roundEntry.gamesPlanned;
+    const phaseSequence = roundEntry.phaseSequence;
+    const firstGrouping = getGroupingForPhase(grouping, phaseSequence[0] || 1);
 
     const embed = new EmbedBuilder()
       .setTitle(`Round ${tournament.currentRound} — Game ${matchNumber}`)
@@ -1376,8 +1390,8 @@ async function allocateRound(guild) {
       const threadEmbed = new EmbedBuilder()
         .setTitle(`Round ${tournament.currentRound} \u2014 Match ${matchNumber} (Game 1 of ${gamesPerMatch})`)
         .setDescription(
-          `**Blue Team:**\nSpymaster: <@${grouping.blue.spymaster}>\nGuesser: <@${grouping.blue.guesser}>\n\n` +
-          `**Red Team:**\nSpymaster: <@${grouping.red.spymaster}>\nGuesser: <@${grouping.red.guesser}>\n\nPlay Game 1 then log the result below.`
+          `**Blue Team:**\nSpymaster: <@${firstGrouping.blue.spymaster}>\nGuesser: <@${firstGrouping.blue.guesser}>\n\n` +
+          `**Red Team:**\nSpymaster: <@${firstGrouping.red.spymaster}>\nGuesser: <@${firstGrouping.red.guesser}>\n\nPlay Game 1 then log the result below.`
         )
         .setColor(0x00ff00);
 
@@ -1388,7 +1402,7 @@ async function allocateRound(guild) {
         );
 
       await thread.send({ embeds: [threadEmbed], components: [row] });
-      tournament.activeMatches.push({ grouping, gamesPlanned: gamesPerMatch, threadId: thread.id, matchNumber, gamePhase: 1, game1Result: null, phaseResults: {}, matchCreatedAt: new Date().toISOString() });
+      tournament.activeMatches.push({ grouping, gamesPlanned: gamesPerMatch, phaseSequence, threadId: thread.id, matchNumber, gamePhase: 1, game1Result: null, phaseResults: {}, matchCreatedAt: new Date().toISOString() });
     } catch (e) {
       console.error(`Failed to create thread for match ${matchNumber}:`, e.message);
     }
@@ -1482,6 +1496,136 @@ function rollbackSingleGameScore(grouping, result) {
   }
 }
 
+function deriveGroupingFromStoredRounds(entry) {
+  const roundNumber = parseInt(entry?.roundNumber, 10);
+  const matchNumber = parseInt(entry?.matchNumber, 10);
+  const gamePhase = parseInt(entry?.gamePhase ?? entry?.game, 10) || 1;
+  if (!roundNumber || !matchNumber) return null;
+  const round = tournament.rounds[roundNumber - 1];
+  if (!Array.isArray(round) || !round[matchNumber - 1]) return null;
+  const roundEntry = getRoundMatchEntry(round[matchNumber - 1]);
+  if (!hasValidGrouping(roundEntry.grouping)) return null;
+  return getGroupingForPhase(roundEntry.grouping, gamePhase);
+}
+
+function normalizeHistoryForScheduling(activePlayerSet) {
+  const normalized = [];
+  let reconstructionTriggered = false;
+  let skippedEntries = 0;
+
+  for (const entry of tournament.history) {
+    let grouping = hasValidGrouping(entry?.grouping) ? entry.grouping : null;
+    if (!grouping) {
+      grouping = deriveGroupingFromStoredRounds(entry);
+      if (grouping) reconstructionTriggered = true;
+    }
+    if (!hasValidGrouping(grouping)) {
+      reconstructionTriggered = true;
+      skippedEntries++;
+      continue;
+    }
+    const players = [
+      grouping.blue.spymaster,
+      grouping.blue.guesser,
+      grouping.red.spymaster,
+      grouping.red.guesser,
+    ];
+    if (players.some(id => !activePlayerSet.has(id))) {
+      continue;
+    }
+    normalized.push({ ...entry, grouping });
+  }
+
+  return { normalized, reconstructionTriggered, skippedEntries };
+}
+
+function addGroupingRoleCounts(grouping, roleCounts) {
+  const increments = [
+    [grouping.blue.spymaster, 'spymaster'],
+    [grouping.blue.guesser, 'guesser'],
+    [grouping.red.spymaster, 'spymaster'],
+    [grouping.red.guesser, 'guesser'],
+  ];
+  for (const [id, role] of increments) {
+    if (!roleCounts.has(id)) roleCounts.set(id, { spymaster: 0, guesser: 0 });
+    roleCounts.get(id)[role]++;
+  }
+}
+
+function wouldViolateStrictRoleCaps(grouping, roleCounts) {
+  const clone = new Map();
+  for (const [id, counts] of roleCounts.entries()) {
+    clone.set(id, { spymaster: counts.spymaster, guesser: counts.guesser });
+  }
+  addGroupingRoleCounts(grouping, clone);
+  for (const id of [
+    grouping.blue.spymaster,
+    grouping.blue.guesser,
+    grouping.red.spymaster,
+    grouping.red.guesser,
+  ]) {
+    const counts = clone.get(id) || { spymaster: 0, guesser: 0 };
+    if (Math.abs(counts.spymaster - counts.guesser) > STRICT_ROLE_CAP_DELTA) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function buildHistoryDerivedFairnessState(players, normalizedHistoryEntries, normalizedActiveGroupings) {
+  const gamesMissedTotals = new Map(players.map(p => [p, 0]));
+  const roleCounts = new Map(players.map(p => [p, { spymaster: 0, guesser: 0 }]));
+  const roundGames = new Map();
+
+  for (const entry of normalizedHistoryEntries) {
+    const roundNum = parseInt(entry.roundNumber, 10);
+    if (!roundNum) continue;
+    if (!roundGames.has(roundNum)) roundGames.set(roundNum, new Map(players.map(p => [p, 0])));
+    const map = roundGames.get(roundNum);
+    const ids = [
+      entry.grouping.blue.spymaster,
+      entry.grouping.blue.guesser,
+      entry.grouping.red.spymaster,
+      entry.grouping.red.guesser,
+    ];
+    ids.forEach(id => map.set(id, (map.get(id) || 0) + 1));
+    addGroupingRoleCounts(entry.grouping, roleCounts);
+  }
+
+  for (const grouping of normalizedActiveGroupings) {
+    addGroupingRoleCounts(grouping, roleCounts);
+  }
+
+  const sortedRounds = Array.from(roundGames.keys()).sort((a, b) => a - b);
+  for (const roundNum of sortedRounds) {
+    const map = roundGames.get(roundNum);
+    const maxGames = Math.max(0, ...players.map(p => map.get(p) || 0));
+    for (const playerId of players) {
+      const played = map.get(playerId) || 0;
+      gamesMissedTotals.set(playerId, (gamesMissedTotals.get(playerId) || 0) + Math.max(0, maxGames - played));
+    }
+  }
+
+  let lastRoundSitOut = new Set();
+  const lastRoundNum = sortedRounds.length > 0 ? sortedRounds[sortedRounds.length - 1] : null;
+  if (lastRoundNum !== null) {
+    const map = roundGames.get(lastRoundNum);
+    const maxGames = Math.max(0, ...players.map(p => map.get(p) || 0));
+    lastRoundSitOut = new Set(players.filter(p => (map.get(p) || 0) === 0 && maxGames > 0));
+  }
+
+  return { gamesMissedTotals, lastRoundSitOut, roleCounts };
+}
+
+function cloneRoleCountsMap(roleCountsMap) {
+  return new Map(
+    Array.from(roleCountsMap.entries()).map(([id, counts]) => [
+      id,
+      { spymaster: counts.spymaster, guesser: counts.guesser },
+    ])
+  );
+}
+
 async function refreshCurrentRoundThreadsAndSchedule(guild) {
   if (!guild || tournament.activeMatches.length === 0) {
     return { refreshed: false, refreshedCount: 0, message: null };
@@ -1500,11 +1644,11 @@ async function refreshCurrentRoundThreadsAndSchedule(guild) {
   for (const match of tournament.activeMatches) {
     const phaseResults = match.phaseResults || {};
     if (match.game1Result && !phaseResults[1]) phaseResults[1] = match.game1Result;
-    const gamesPlanned = clampGamesPerMatch(match.gamesPlanned);
-    for (let phase = 1; phase <= gamesPlanned; phase++) {
-      const result = phaseResults[phase];
+    const gamesPlanned = getMatchPhaseSequence(match).length;
+    for (let gameIdx = 1; gameIdx <= gamesPlanned; gameIdx++) {
+      const result = phaseResults[gameIdx];
       if (!result) continue;
-      rollbackSingleGameScore(getGroupingForPhase(match.grouping, phase), result);
+      rollbackSingleGameScore(getGroupingForMatchGame(match, gameIdx), result);
     }
   }
 
@@ -1548,23 +1692,50 @@ function recalculateFutureRounds(activePlayers) {
     return;
   }
 
-  // Build the set of already-played (or in-progress) role configs from history and active matches
+  const activePlayerSet = new Set(activePlayers);
+  const normalizedHistory = normalizeHistoryForScheduling(activePlayerSet);
+  if (normalizedHistory.reconstructionTriggered) {
+    const skippedLabel = normalizedHistory.skippedEntries === 1 ? 'entry' : 'entries';
+    console.warn(`[scheduler] History reconstruction/audit applied for recalculation (skipped ${normalizedHistory.skippedEntries} invalid ${skippedLabel}).`);
+  }
+
+  // Build the set of already-played (or in-progress) pod-local configs/layouts from history and active matches
   const playedConfigs = new Set();
   const playedLayouts = new Set();
-  for (const entry of tournament.history) {
-    markConfigsAsPlayed(entry.grouping, playedConfigs);
-    playedLayouts.add(getLayoutKey(entry.grouping));
+  for (const entry of normalizedHistory.normalized) {
+    const configKeys = getPodScopedConfigKeys(entry.grouping);
+    for (const cfg of configKeys) playedConfigs.add(cfg);
+    playedLayouts.add(getPodScopedLayoutKey(entry.grouping));
   }
+  const normalizedActiveGroupings = [];
   for (const match of tournament.activeMatches) {
-    markConfigsAsPlayed(match.grouping, playedConfigs);
-    const gamesPlanned = clampGamesPerMatch(match.gamesPlanned);
-    for (let phase = 1; phase <= gamesPlanned; phase++) {
-      playedLayouts.add(getLayoutKey(getGroupingForPhase(match.grouping, phase)));
+    if (!hasValidGrouping(match.grouping)) continue;
+    const firstGrouping = getGroupingForMatchGame(match, 1);
+    const players = [
+      firstGrouping.blue.spymaster,
+      firstGrouping.blue.guesser,
+      firstGrouping.red.spymaster,
+      firstGrouping.red.guesser,
+    ];
+    if (players.some(id => !activePlayerSet.has(id))) continue;
+    const gamesPlanned = getMatchPhaseSequence(match).length;
+    for (let gameIdx = 1; gameIdx <= gamesPlanned; gameIdx++) {
+      const grouping = getGroupingForMatchGame(match, gameIdx);
+      const configKeys = getPodScopedConfigKeys(grouping);
+      for (const cfg of configKeys) playedConfigs.add(cfg);
+      playedLayouts.add(getPodScopedLayoutKey(grouping));
+      normalizedActiveGroupings.push(grouping);
     }
   }
 
+  const fairnessState = buildHistoryDerivedFairnessState(
+    activePlayers,
+    normalizedHistory.normalized,
+    normalizedActiveGroupings
+  );
+
   // Generate remaining rounds skipping already-played configs
-  const futureRounds = generateRounds(activePlayers, playedConfigs, playedLayouts);
+  const futureRounds = generateRounds(activePlayers, playedConfigs, playedLayouts, fairnessState);
 
   // Keep fully-completed rounds + any in-progress round, then append new future rounds
   const keepUntilIndex = tournament.activeMatches.length > 0
@@ -1775,18 +1946,73 @@ function getPhaseButtonSuffix(phase) {
 }
 
 function getLayoutKey(grouping) {
-  return `${grouping.blue.spymaster}:${grouping.blue.guesser}|${grouping.red.spymaster}:${grouping.red.guesser}`;
+  const blueTeam = `${grouping.blue.spymaster}:${grouping.blue.guesser}`;
+  const redTeam = `${grouping.red.spymaster}:${grouping.red.guesser}`;
+  return [blueTeam, redTeam].sort().join('|');
+}
+
+function getPodKeyFromGrouping(grouping) {
+  const players = [
+    grouping.blue.spymaster,
+    grouping.blue.guesser,
+    grouping.red.spymaster,
+    grouping.red.guesser,
+  ].filter(Boolean).sort();
+  return players.join('|');
+}
+
+function getPodScopedLayoutKey(grouping) {
+  return `${getPodKeyFromGrouping(grouping)}::${getLayoutKey(grouping)}`;
+}
+
+function getPodScopedConfigKeys(grouping) {
+  const podKey = getPodKeyFromGrouping(grouping);
+  return [
+    `${podKey}::${grouping.blue.spymaster}-${grouping.blue.guesser}-spymaster`,
+    `${podKey}::${grouping.blue.guesser}-${grouping.blue.spymaster}-guesser`,
+    `${podKey}::${grouping.red.spymaster}-${grouping.red.guesser}-spymaster`,
+    `${podKey}::${grouping.red.guesser}-${grouping.red.spymaster}-guesser`,
+  ];
+}
+
+function hasValidGrouping(grouping) {
+  return !!(
+    grouping &&
+    grouping.blue &&
+    grouping.red &&
+    grouping.blue.spymaster &&
+    grouping.blue.guesser &&
+    grouping.red.spymaster &&
+    grouping.red.guesser
+  );
+}
+
+function getMatchPhaseSequence(matchLike) {
+  if (Array.isArray(matchLike?.phaseSequence) && matchLike.phaseSequence.length > 0) {
+    const cleaned = matchLike.phaseSequence
+      .map(n => parseInt(n, 10))
+      .filter(n => Number.isInteger(n) && n >= 1 && n <= MAX_GAMES_PER_MATCH);
+    if (cleaned.length > 0) return cleaned;
+  }
+  return getDefaultPhaseSequence(matchLike?.gamesPlanned);
+}
+
+function getGroupingForMatchGame(matchLike, gameIndex) {
+  const sequence = getMatchPhaseSequence(matchLike);
+  const actualPhase = sequence[gameIndex - 1] || gameIndex;
+  return getGroupingForPhase(matchLike.grouping, actualPhase);
 }
 
 function getRoundMatchEntry(match) {
   if (match && match.grouping) {
-    return { grouping: match.grouping, gamesPlanned: clampGamesPerMatch(match.gamesPlanned) };
+    const phaseSequence = getMatchPhaseSequence(match);
+    return { grouping: match.grouping, gamesPlanned: phaseSequence.length, phaseSequence };
   }
   // Backward compatibility: older saved rounds store grouping directly instead of {grouping, gamesPlanned}.
-  return { grouping: match, gamesPlanned: MIN_GAMES_PER_MATCH };
+  return { grouping: match, gamesPlanned: MIN_GAMES_PER_MATCH, phaseSequence: getDefaultPhaseSequence(MIN_GAMES_PER_MATCH) };
 }
 
-function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayouts = null) {
+function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayouts = null, fairnessSeed = null) {
   const rounds = [];
 
   // playedConfigs tracks which role-configuration strings have been used.
@@ -1799,33 +2025,22 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
   // Try at least this many candidate orderings each round to smooth sit-out fairness.
   const BASE_ROUND_BUILD_ATTEMPTS = 8;
 
-  // Total distinct role-configs needed for these players:
-  // N*(N-1) ordered pairs × 2 configs each (spymaster, guesser) = N*(N-1)*2.
-  // Team colour (blue/red) is not tracked so mirrored matchups are not duplicated.
-  const totalNeeded = players.length * (players.length - 1) * 2;
+  const gamesMissedTotals = fairnessSeed?.gamesMissedTotals
+    ? new Map(fairnessSeed.gamesMissedTotals)
+    : new Map(players.map(p => [p, 0]));
+  let lastRoundSitOut = fairnessSeed?.lastRoundSitOut
+    ? new Set(fairnessSeed.lastRoundSitOut)
+    : new Set();
+  const baseRoleCounts = fairnessSeed?.roleCounts
+    ? cloneRoleCountsMap(fairnessSeed.roleCounts)
+    : new Map(players.map(p => [p, { spymaster: 0, guesser: 0 }]));
 
-  // Count how many configs for the current active players are already covered.
-  function countActiveConfigsPlayed() {
-    let count = 0;
-    for (let i = 0; i < players.length; i++) {
-      for (let j = 0; j < players.length; j++) {
-        if (i === j) continue;
-        const pi = players[i], pj = players[j];
-        if (currentPlayedConfigs.has(`${pi}-${pj}-spymaster`)) count++;
-        if (currentPlayedConfigs.has(`${pi}-${pj}-guesser`))   count++;
-      }
-    }
-    return count;
-  }
-
-  const sitOutTotals = new Map(players.map(p => [p, 0]));
-  let lastRoundSitOut = new Set();
-
-  function buildRoundForOrder(orderedPlayers, basePlayedConfigs, basePlayedLayouts) {
+  function buildRoundForOrder(orderedPlayers, basePlayedConfigs, basePlayedLayouts, baseRoleCountsForRound) {
     const round = [];
     const playersUsedThisRound = new Set();
     const playedClone = new Set(basePlayedConfigs);
     const playedLayoutsClone = new Set(basePlayedLayouts);
+    const roleCountsClone = cloneRoleCountsMap(baseRoleCountsForRound);
 
     let continueRound = true;
     while (continueRound) {
@@ -1867,9 +2082,9 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
                 ];
 
                 for (const assignment of roleAssignments) {
-                  const plannedGames = checkAndMarkConfigs(assignment, playedClone, playedLayoutsClone);
-                  if (plannedGames > 0) {
-                    round.push({ grouping: assignment, gamesPlanned: plannedGames });
+                  const result = checkAndMarkConfigs(assignment, playedClone, playedLayoutsClone, roleCountsClone);
+                  if (result.plannedGames > 0) {
+                    round.push({ grouping: assignment, gamesPlanned: result.plannedGames, phaseSequence: result.phaseSequence });
                     playersUsedThisRound.add(pairing.blue[0]);
                     playersUsedThisRound.add(pairing.blue[1]);
                     playersUsedThisRound.add(pairing.red[0]);
@@ -1888,24 +2103,36 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
 
     const sitOutSet = new Set(orderedPlayers.filter(p => !playersUsedThisRound.has(p)));
     const repeatSitOutCount = Array.from(sitOutSet).filter(p => lastRoundSitOut.has(p)).length;
-    const sitOutPenalty = Array.from(sitOutSet).reduce((sum, p) => sum + (sitOutTotals.get(p) || 0), 0);
+    const sitOutPenalty = Array.from(sitOutSet).reduce((sum, p) => sum + (gamesMissedTotals.get(p) || 0), 0);
+    const gamesScheduled = round.reduce((sum, m) => sum + clampGamesPerMatch(m.gamesPlanned), 0);
+    const weightedScore =
+      (round.length * ROUND_SCORE_WEIGHTS.matches) +
+      (gamesScheduled * ROUND_SCORE_WEIGHTS.games) -
+      (repeatSitOutCount * ROUND_SCORE_WEIGHTS.repeatSitOut) -
+      (sitOutPenalty * ROUND_SCORE_WEIGHTS.sitOutMissedGames);
 
-    return { round, playersUsedThisRound, playedClone, playedLayoutsClone, sitOutSet, repeatSitOutCount, sitOutPenalty };
+    return { round, playersUsedThisRound, playedClone, playedLayoutsClone, roleCountsClone, sitOutSet, repeatSitOutCount, sitOutPenalty, weightedScore };
   }
 
-  while (countActiveConfigsPlayed() < totalNeeded) {
+  // Guard against non-terminating generation loops:
+  // - allow enough headroom for larger brackets (10x players)
+  // - keep a floor so small brackets still get full schedules.
+  const MAX_GENERATED_ROUNDS = Math.max(players.length * 10, 32);
+  let generatedRoundCount = 0;
+
+  while (generatedRoundCount < MAX_GENERATED_ROUNDS) {
     const attempts = Math.max(players.length, BASE_ROUND_BUILD_ATTEMPTS);
     let best = null;
 
     for (let attempt = 0; attempt < attempts; attempt++) {
-      // Priority order: players who sat out last round, then players with higher total sit-outs.
-      // Random tie-break only applies when fairness metrics are identical.
+      // Priority order: players who sat out last round, then players with higher games-missed totals.
+      // Random tie-break is allowed when weighted/fairness metrics are identical.
       let orderedPlayers = [...players].sort((a, b) => {
         const aWasOut = lastRoundSitOut.has(a) ? 1 : 0;
         const bWasOut = lastRoundSitOut.has(b) ? 1 : 0;
         if (aWasOut !== bWasOut) return bWasOut - aWasOut;
-        const aSit = sitOutTotals.get(a) || 0;
-        const bSit = sitOutTotals.get(b) || 0;
+        const aSit = gamesMissedTotals.get(a) || 0;
+        const bSit = gamesMissedTotals.get(b) || 0;
         if (aSit !== bSit) return bSit - aSit;
         return Math.random() - 0.5;
       });
@@ -1916,7 +2143,7 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
         orderedPlayers = rotated;
       }
 
-      const candidate = buildRoundForOrder(orderedPlayers, currentPlayedConfigs, currentPlayedLayouts);
+      const candidate = buildRoundForOrder(orderedPlayers, currentPlayedConfigs, currentPlayedLayouts, baseRoleCounts);
       if (candidate.round.length === 0) continue;
 
       if (!best) {
@@ -1924,12 +2151,11 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
         continue;
       }
 
-      if (
-        candidate.round.length > best.round.length ||
-        (candidate.round.length === best.round.length && candidate.repeatSitOutCount < best.repeatSitOutCount) ||
-        (candidate.round.length === best.round.length &&
-          candidate.repeatSitOutCount === best.repeatSitOutCount &&
-          candidate.sitOutPenalty < best.sitOutPenalty)
+      if (candidate.weightedScore > best.weightedScore) {
+        best = candidate;
+      } else if (
+        candidate.weightedScore === best.weightedScore &&
+        Math.random() < 0.5
       ) {
         best = candidate;
       }
@@ -1937,69 +2163,80 @@ function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayou
 
     if (best && best.round.length > 0) {
       rounds.push(best.round);
+      generatedRoundCount++;
       currentPlayedConfigs = best.playedClone;
       currentPlayedLayouts = best.playedLayoutsClone;
-      lastRoundSitOut = best.sitOutSet;
-      for (const playerId of best.sitOutSet) {
-        sitOutTotals.set(playerId, (sitOutTotals.get(playerId) || 0) + 1);
+      for (const [id, counts] of best.roleCountsClone.entries()) {
+        baseRoleCounts.set(id, { spymaster: counts.spymaster, guesser: counts.guesser });
       }
-    } else if (countActiveConfigsPlayed() < totalNeeded) {
-      console.warn('Could not complete full round-robin schedule');
+      lastRoundSitOut = best.sitOutSet;
+      const roundMaxGames = Math.max(0, ...best.round.map(match => clampGamesPerMatch(match.gamesPlanned)));
+      const roundPlayerGames = new Map(players.map(p => [p, 0]));
+      for (const match of best.round) {
+        const games = clampGamesPerMatch(match.gamesPlanned);
+        const ids = [
+          match.grouping.blue.spymaster,
+          match.grouping.blue.guesser,
+          match.grouping.red.spymaster,
+          match.grouping.red.guesser,
+        ];
+        ids.forEach(id => roundPlayerGames.set(id, (roundPlayerGames.get(id) || 0) + games));
+      }
+      for (const playerId of players) {
+        const played = roundPlayerGames.get(playerId) || 0;
+        const missed = Math.max(0, roundMaxGames - played);
+        gamesMissedTotals.set(playerId, (gamesMissedTotals.get(playerId) || 0) + missed);
+      }
+    } else {
       break;
     }
+  }
+  if (generatedRoundCount === MAX_GENERATED_ROUNDS) {
+    console.warn(`[scheduler] Round generation guard reached (${MAX_GENERATED_ROUNDS}); stopping to avoid non-terminating schedule build.`);
   }
   
   return rounds;
 }
 
-function checkAndMarkConfigs(assignment, playedConfigs, playedLayouts) {
-  const swapped = getSwappedGrouping(assignment);
-  // Team colour is intentionally omitted from keys so that swapping blue/red
-  // is treated as the same match configuration, preventing duplicate match-ups.
-  const configs = [
-    `${assignment.blue.spymaster}-${assignment.blue.guesser}-spymaster`,
-    `${assignment.blue.guesser}-${assignment.blue.spymaster}-guesser`,
-    `${assignment.red.spymaster}-${assignment.red.guesser}-spymaster`,
-    `${assignment.red.guesser}-${assignment.red.spymaster}-guesser`,
-    `${swapped.blue.spymaster}-${swapped.blue.guesser}-spymaster`,
-    `${swapped.blue.guesser}-${swapped.blue.spymaster}-guesser`,
-    `${swapped.red.spymaster}-${swapped.red.guesser}-spymaster`,
-    `${swapped.red.guesser}-${swapped.red.spymaster}-guesser`,
-  ];
-  for (const config of configs) {
-    if (playedConfigs.has(config)) return 0;
+function checkAndMarkConfigs(assignment, playedConfigs, playedLayouts, roleCounts) {
+  const playablePhases = [];
+  const phaseConfigKeys = new Map();
+
+  for (let phase = 1; phase <= MAX_GAMES_PER_MATCH; phase++) {
+    const grouping = getGroupingForPhase(assignment, phase);
+    const layoutKey = getPodScopedLayoutKey(grouping);
+    if (playedLayouts.has(layoutKey)) continue;
+    const configKeys = getPodScopedConfigKeys(grouping);
+    if (configKeys.some(cfg => playedConfigs.has(cfg))) continue;
+    if (wouldViolateStrictRoleCaps(grouping, roleCounts)) continue;
+    playablePhases.push(phase);
+    phaseConfigKeys.set(phase, configKeys);
   }
 
-  const phaseLayouts = Array.from({ length: MAX_GAMES_PER_MATCH }, (_, i) =>
-    getLayoutKey(getGroupingForPhase(assignment, i + 1))
-  );
-  // Require first two phases to be available so each match has a minimum 2-game set.
-  if (playedLayouts.has(phaseLayouts[0]) || playedLayouts.has(phaseLayouts[1])) {
-    return 0;
+  if (playablePhases.length === 0) {
+    return { plannedGames: 0, phaseSequence: [] };
   }
-  for (const config of configs) {
-    playedConfigs.add(config);
+
+  for (const phase of playablePhases) {
+    const grouping = getGroupingForPhase(assignment, phase);
+    const layoutKey = getPodScopedLayoutKey(grouping);
+    playedLayouts.add(layoutKey);
+    for (const cfg of phaseConfigKeys.get(phase) || []) {
+      playedConfigs.add(cfg);
+    }
+    addGroupingRoleCounts(grouping, roleCounts);
   }
-  playedLayouts.add(phaseLayouts[0]);
-  playedLayouts.add(phaseLayouts[1]);
-  let plannedGames = 2;
-  if (!playedLayouts.has(phaseLayouts[2])) {
-    playedLayouts.add(phaseLayouts[2]);
-    plannedGames++;
-  }
-  if (!playedLayouts.has(phaseLayouts[3])) {
-    playedLayouts.add(phaseLayouts[3]);
-    plannedGames++;
-  }
-  return plannedGames;
+
+  return { plannedGames: playablePhases.length, phaseSequence: playablePhases };
 }
 
 async function processGameResult(interaction, matchData, winner, assassin, remainingCards) {
   const submittedBy = interaction.user.id;
   const submittedAt = new Date().toISOString();
-  const gamePhase = matchData.gamePhase ?? 1;
-  const gamesPerMatch = clampGamesPerMatch(matchData.gamesPlanned);
-  const currentGrouping = getGroupingForPhase(matchData.grouping, gamePhase);
+  const gamePhase = matchData.gamePhase ?? 1; // sequential game number (1-based); phaseSequence maps this to actual phase config
+  const phaseSequence = getMatchPhaseSequence(matchData);
+  const gamesPerMatch = phaseSequence.length;
+  const currentGrouping = getGroupingForMatchGame(matchData, gamePhase);
 
   const winPoints = 3;
   const losePoints = assassin ? -1 : (remainingCards <= 3 ? 1 : 0);
@@ -2039,7 +2276,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
     const replyText = `**Game ${gamePhase}** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**\n\n_Game ${nextPhase} is starting._`;
     await interaction.reply({ content: replyText });
 
-    const nextGrouping = getGroupingForPhase(matchData.grouping, nextPhase);
+    const nextGrouping = getGroupingForMatchGame(matchData, nextPhase);
     const nextGameEmbed = new EmbedBuilder()
       .setTitle(`Match ${matchData.matchNumber} — Game ${nextPhase} of ${gamesPerMatch}`)
       .setDescription(
@@ -2059,7 +2296,8 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
     for (let idx = 1; idx <= gamesPerMatch; idx++) {
       const g = phaseResults[idx];
       if (!g) continue;
-      const groupingForGame = getGroupingForPhase(matchData.grouping, idx);
+      const groupingForGame = getGroupingForMatchGame(matchData, idx);
+      const actualGamePhase = phaseSequence[idx - 1] || idx;
       tournament.roundResults.push({
         matchNumber: matchData.matchNumber,
         gameIndex: idx,
@@ -2075,6 +2313,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
         roundNumber: tournament.currentRound,
         matchNumber: matchData.matchNumber,
         game: idx,
+        gamePhase: actualGamePhase,
         grouping: groupingForGame,
         winner: g.winner,
         assassin: g.assassin,
@@ -2671,7 +2910,7 @@ async function handleHttpRequest(req, res) {
             || (gNum === 1 ? activeMatchForGame.game1Result : null);
           oldWinner = activeResult.winner; oldAssassin = activeResult.assassin;
           oldWinPoints = activeResult.winPoints; oldLosePoints = activeResult.losePoints;
-          grouping = getGroupingForPhase(activeMatchForGame.grouping, gNum);
+          grouping = getGroupingForMatchGame(activeMatchForGame, gNum);
         }
 
         const bluePlayers = [grouping.blue.spymaster, grouping.blue.guesser];
@@ -2827,7 +3066,7 @@ async function handleHttpRequest(req, res) {
           const activeResult = (activeMatchForGame.phaseResults && activeMatchForGame.phaseResults[gNum])
             || (gNum === 1 ? activeMatchForGame.game1Result : null);
           oldWinner = activeResult.winner; oldWinPoints = activeResult.winPoints; oldLosePoints = activeResult.losePoints;
-          grouping = getGroupingForPhase(activeMatchForGame.grouping, gNum); threadId = activeMatchForGame.threadId;
+          grouping = getGroupingForMatchGame(activeMatchForGame, gNum); threadId = activeMatchForGame.threadId;
         }
 
         const bluePlayers = [grouping.blue.spymaster, grouping.blue.guesser];
