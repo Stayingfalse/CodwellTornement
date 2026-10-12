@@ -29,6 +29,31 @@ The full API contract is in that repo's
      match, or an admin, presses **Log as Game N** or **Dismiss**.
    - **The game's line-up was already logged by hand:** it is ignored.
 
+## Live status and nudges
+
+- **Dashboard:** every 2 minutes the bot asks the BGA bot what's happening in
+  each active match's room. Each match card then shows a live line, e.g.
+  "🔴 Red guessing “OCEAN” · 2 (Dave) · ⏱ waiting 3h · 🔴 4 · 🔵 6 left", or
+  "📎 No room posted yet", "🛋️ Room ready · Game 3 not started", "✋ Result
+  waiting for confirmation". Waits turn amber after 24 hours and red after
+  72, and there's a link to the match thread.
+- **Turn reminders (BGA bot):** a turn that has waited a day is pinged again,
+  then once a day after that. Within 48 hours of the round deadline it's
+  every 6 hours, and the ping says when the round ends. This is set with
+  `CODENAMES_REMINDER_HOURS` on the BGA bot.
+- **Keep-alive messages (this bot, every 2–3 days)** now chase what's holding
+  each match up:
+  - no room posted: the players are asked to create one;
+  - the room is sitting in the lobby: they're asked to take their seats and
+    start;
+  - a detected result needs confirming: they're pointed at it;
+  - a game in progress: nothing is posted, because the BGA bot's reminders
+    cover it.
+
+  If the BGA bot can't be reached, the classic keep-alive messages are used.
+- **Self-repair:** if the BGA bot ever loses a thread's binding (for example a
+  fresh database), the next status check notices and binds it again.
+
 ## Stats
 
 Games played through the bridge keep their full clue history (every clue

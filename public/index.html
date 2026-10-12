@@ -325,6 +325,16 @@
     }
 
     .match-label { font-size: 0.8rem; font-weight: 700; }
+    .match-status {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.75rem;
+      font-size: 0.74rem; color: var(--text-dim); padding: 0.5rem 1.1rem; border-bottom: 1px solid var(--border);
+    }
+    .match-status .live { color: #e2e8f0; }
+    .match-status .wait-ok    { color: var(--text-dim); }
+    .match-status .wait-slow  { color: #fcd34d; }
+    .match-status .wait-stuck { color: #fca5a5; font-weight: 600; }
+    .match-status a { color: #93c5fd; text-decoration: none; }
+    .match-status a:hover { text-decoration: underline; }
 
     /* ── Games grid ── */
     .games-grid {
@@ -1785,6 +1795,7 @@
               <span class="match-label">Match ${matchNumber}</span>
               ${isMatchActive ? `<span class="badge badge-amber" style="font-size:0.68rem">⚡ Game ${activePhase} in progress</span>` : ''}
             </div>
+            ${isMatchActive ? matchStatusHtml(matchNumber) : ''}
             <div class="games-grid">
               ${gameCells}
             </div>
@@ -1813,6 +1824,53 @@
     }).join('');
 
     container.innerHTML = html;
+  }
+
+  // ── Live match status (from the BGA bot's codenames.game watcher) ─────────
+  function formatWait(ms) {
+    const mins = Math.max(0, Math.floor(ms / 60000));
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 48) return `${hours}h`;
+    return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  }
+
+  function personName(p) {
+    return p.id && D.playerNames && D.playerNames[p.id] ? D.playerNames[p.id] : (p.name || 'someone');
+  }
+
+  function matchStatusHtml(matchNumber) {
+    const st = D.matchStatus && D.matchStatus[matchNumber];
+    if (!st) return '';
+    const parts = [];
+    const live = st.live;
+    if (live) {
+      const team = live.activeTeam === 'red' ? '🔴 Red' : live.activeTeam === 'blue' ? '🔵 Blue' : '';
+      switch (live.state) {
+        case 'no_room':     parts.push('<span>📎 No room posted yet</span>'); break;
+        case 'lobby':       parts.push(`<span>🛋️ Room ready · Game ${st.game} not started</span>`); break;
+        case 'finished':    parts.push(`<span>🏁 Game over in the room · Game ${st.game} not started yet</span>`); break;
+        case 'unreachable': parts.push('<span>⚠️ Live status unavailable</span>'); break;
+        case 'unbound':     parts.push('<span>⏳ Connecting to the room watcher…</span>'); break;
+        case 'in_progress': {
+          const who = (live.waitingOn || []).map(personName).join(' & ') || team;
+          const doing = live.activeRole === 'spymasters'
+            ? `${team} spymaster ${esc(who)} to give a clue`
+            : `${team} guessing${live.clue ? ` “${esc(live.clue.word)}” · ${esc(live.clue.number)}` : ''} (${esc(who)})`;
+          parts.push(`<span class="live">${doing}</span>`);
+          if (live.turnStartedAt) {
+            const waited = Date.now() - new Date(live.turnStartedAt).getTime();
+            const cls = waited > 72 * 3600e3 ? 'wait-stuck' : waited > 24 * 3600e3 ? 'wait-slow' : 'wait-ok';
+            parts.push(`<span class="${cls}" title="Time since this turn started">⏱ waiting ${formatWait(waited)}</span>`);
+          }
+          if (live.remaining) parts.push(`<span title="Agents left to find">🔴 ${live.remaining.red} · 🔵 ${live.remaining.blue} left</span>`);
+          break;
+        }
+      }
+    }
+    if (st.pendingConfirmations > 0) parts.push('<span class="wait-slow">✋ Result waiting for confirmation</span>');
+    if (st.threadUrl) parts.push(`<a href="${esc(st.threadUrl)}" target="_blank" rel="noopener">💬 Open thread</a>`);
+    return parts.length ? `<div class="match-status">${parts.join('')}</div>` : '';
   }
 
   // ── Toggle ────────────────────────────────────────────────────────────────

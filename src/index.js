@@ -56,6 +56,10 @@ let bridgeSyncTimer = null;
 let bridgeSyncRunning = false;
 let bridgeSyncAgain = false;
 const BRIDGE_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
+const BRIDGE_STATUS_INTERVAL_MS = 2 * 60 * 1000;
+// threadId -> live status from the BGA bot (in memory; refreshed every 2 minutes)
+const bridgeStatus = {};
+let bridgeStatusRunning = false;
 
 // Round timer handles (in-memory only)
 let roundWarningTimer = null;
@@ -177,6 +181,8 @@ client.once('clientReady', async () => {
     scheduleBridgeSync(0);
     // Retries bindings the BGA bot couldn't take (e.g. it was restarting).
     setInterval(() => scheduleBridgeSync(0), BRIDGE_RESYNC_INTERVAL_MS);
+    setTimeout(() => pollBridgeStatus().catch(e => console.error('[bridge] Status poll failed:', e.message)), 5000);
+    setInterval(() => pollBridgeStatus().catch(e => console.error('[bridge] Status poll failed:', e.message)), BRIDGE_STATUS_INTERVAL_MS);
   }
 
   // Register commands
@@ -345,6 +351,7 @@ async function syncBridgeBindings() {
           game,
           lastEventId: (match.bridgeEvents || []).slice(-1)[0] || null,
           playerNames: tournament.playerNames,
+          deadlineMs: tournament.roundDeadline,
         }));
       }
       const changed = await bridgeClient.reconcile(desired, codenamesBridgeSynced);
@@ -353,6 +360,57 @@ async function syncBridgeBindings() {
   } finally {
     bridgeSyncRunning = false;
   }
+}
+
+// Ask the BGA bot what is happening in each active match's room.
+async function pollBridgeStatus() {
+  if (!bridgeClient.enabled || bridgeStatusRunning) return;
+  bridgeStatusRunning = true;
+  try {
+    const active = new Set();
+    for (const match of tournament.activeMatches) {
+      if (!match.threadId) continue;
+      active.add(match.threadId);
+      if (!codenamesBridgeSynced[match.threadId]) {
+        bridgeStatus[match.threadId] = { state: 'unbound', checkedAt: new Date().toISOString() };
+        continue;
+      }
+      const res = await bridgeClient.getBinding(match.threadId);
+      if (res.ok) {
+        bridgeStatus[match.threadId] = codenamesBridge.summariseStatus(res.data);
+      } else if (res.status === 404) {
+        // The BGA bot has forgotten this thread (e.g. a fresh database): bind it again.
+        delete codenamesBridgeSynced[match.threadId];
+        bridgeStatus[match.threadId] = { state: 'unbound', checkedAt: new Date().toISOString() };
+        scheduleBridgeSync(0);
+      } else {
+        bridgeStatus[match.threadId] = { state: 'unreachable', checkedAt: new Date().toISOString() };
+      }
+    }
+    for (const threadId of Object.keys(bridgeStatus)) {
+      if (!active.has(threadId)) delete bridgeStatus[threadId];
+    }
+  } finally {
+    bridgeStatusRunning = false;
+  }
+}
+
+function getThreadUrl(threadId) {
+  return process.env.GUILD_ID && threadId ? `https://discord.com/channels/${process.env.GUILD_ID}/${threadId}` : null;
+}
+
+// Live status per active match number, for the dashboard.
+function buildMatchStatus() {
+  const out = {};
+  for (const match of tournament.activeMatches) {
+    out[match.matchNumber] = {
+      threadUrl: getThreadUrl(match.threadId),
+      game: match.gamePhase ?? 1,
+      pendingConfirmations: Object.keys(match.pendingBridgeResults || {}).length,
+      live: bridgeClient.enabled ? (bridgeStatus[match.threadId] || null) : null,
+    };
+  }
+  return out;
 }
 
 function bridgeThreadHint() {
@@ -1899,13 +1957,31 @@ async function closeSignups(guild) {
 async function sendThreadKeepAlive(guild) {
   if (!tournament.started || tournament.activeMatches.length === 0) return;
   const msg = KEEPALIVE_MESSAGES[Math.floor(Math.random() * KEEPALIVE_MESSAGES.length)];
+  if (bridgeClient.enabled) await pollBridgeStatus().catch(() => null);
   for (const match of tournament.activeMatches) {
     try {
       const thread = await guild.channels.fetch(match.threadId).catch(() => null);
       if (!thread) continue;
       // Unarchive if Discord auto-archived it
       if (thread.archived) await thread.setArchived(false).catch(() => null);
-      await thread.send(msg);
+      // With live status, nudge about what's actually holding the match up;
+      // games in progress are left to the BGA bot's own turn reminders.
+      const g = match.grouping;
+      const plan = bridgeClient.enabled
+        ? codenamesBridge.planNudge({
+          status: bridgeStatus[match.threadId],
+          players: [g.blue.spymaster, g.blue.guesser, g.red.spymaster, g.red.guesser],
+          game: match.gamePhase ?? 1,
+          deadlineMs: tournament.roundDeadline,
+          pendingConfirmations: Object.keys(match.pendingBridgeResults || {}).length,
+        })
+        : { action: 'fallback' };
+      if (plan.action === 'skip') continue;
+      if (plan.action === 'send') {
+        await thread.send({ content: plan.content, allowedMentions: { users: plan.users } });
+      } else {
+        await thread.send(msg);
+      }
     } catch (e) { console.error(`[keepalive] Thread ${match.threadId} failed:`, e.message); }
   }
   // Schedule next keep-alive in 2–3 days (random to avoid predictability)
@@ -2765,6 +2841,8 @@ function buildWebData() {
     leftPlayers: tournament.leftPlayers,
     pendingRemoval: tournament.pendingRemoval !== null,
     signupsReopened: tournament.signupsReopened,
+    roundDeadline: tournament.roundDeadline,
+    matchStatus: buildMatchStatus(),
   };
 }
 
