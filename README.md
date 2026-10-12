@@ -22,7 +22,6 @@ A Discord bot and web dashboard for running fully-automated round-robin Codename
 - [Discord Usage](#discord-usage)
   - [Slash Commands](#slash-commands)
   - [Player Buttons](#player-buttons)
-  - [Admin Panel](#admin-panel)
   - [In-Game Buttons](#in-game-buttons)
 - [Tournament Format](#tournament-format)
 - [Scoring](#scoring)
@@ -63,7 +62,7 @@ Follow these steps in order for a smooth first deployment:
    docker-compose up -d
    ```
 7. **Invite the bot** to your server using the invite URL printed to the console on first start
-8. In Discord, run `/tournament` in the channel where you want the signup embed
+8. In Discord, run `/tournament` (as an admin) in the channel where you want the tournament message
 
 > **Web dashboard login is optional.** The bot runs fully without `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`. Those are only needed if you want admin controls in the browser.
 
@@ -71,17 +70,17 @@ Follow these steps in order for a smooth first deployment:
 
 ## Features
 
-- **One slash command** — `/tournament` posts the signup embed anywhere in your server
-- **Interactive sign-up** — players join (or withdraw) with a single button click; the embed updates in real time with the current player list and a tournament size prediction
-- **Full round-robin scheduling** — every player plays every other player in all four role configurations (blue spymaster, blue guesser, red spymaster, red guesser)
-- **Adaptive match length (2–4 games)** — each match aims for 4 games and automatically falls back to 3 or 2 when fewer unique role layouts remain
+- **One slash command** — `/tournament` posts the tournament message anywhere in your server
+- **Interactive sign-up** — players join (or withdraw) with a single button click; the message updates in real time with the current player list and a tournament size prediction
+- **Every pair against every player** — groups of four rotate each round until every pair has teamed up against every other player
+- **6-game matches** — each group plays all three ways of pairing up, each with both role configurations (fewer games when some were already played)
 - **Automatic thread creation** — a dedicated Discord thread is created for each match; players submit results with buttons inside their thread
 - **Result correction** — players (and admins) can undo and re-submit a wrong result at any time before the round ends
-- **Score tracking** — a live scoreboard embed is kept up-to-date in the tournament channel throughout the event
+- **Score tracking** — a live scoreboard message is kept up-to-date in the tournament channel throughout the event
 - **Round deadlines** — configurable deadline per round; a warning fires 2 days before expiry and an expiry notice with a Force End button fires when time runs out
 - **Live match status (with the Codenames bridge)** — the dashboard shows each active match's turn, who it's waiting on and for how long, with a link to the thread. Keep-alive messages chase what's actually holding a match up.
 - **Thread keep-alive messages** — the bot posts a random humorous message every 2–3 days into active match threads to prevent Discord from auto-archiving them and to nudge players to finish
-- **Round summaries** — a rich embed summarising every result is posted at the start of each new round
+- **Round summaries** — a card summarising every result is posted at the start of each new round
 - **Admin controls** — in Discord (ephemeral) and on the web dashboard
 - **Web dashboard** — public live scoreboard, round browser, match history, and a full admin panel accessible via Discord OAuth2 login
 - **Automatic results (optional)** — with the [Codenames bridge](docs/codenames-bridge.md), players post their codenames.game room link in the match thread, the room card shows who should sit where, and every game is scored automatically. Its clue history powers clue and guess stats on the dashboard.
@@ -150,13 +149,11 @@ Copy `.env.example` to `.env` and fill in the values before starting the bot.
 | `ADMIN_ROLE_ID` | ✅ | — | Numeric ID of the role that grants admin access to bot controls |
 | `DISCORD_CLIENT_ID` | ⬜ | — | OAuth2 application client ID — required for web dashboard login |
 | `DISCORD_CLIENT_SECRET` | ⬜ | — | OAuth2 application client secret — required for web dashboard login |
-| `WEB_URL` | ⬜ | auto-detected | Public base URL of the dashboard (e.g. `https://tournament.example.com`). Used for the OAuth2 redirect URI and the 🌐 Website button on the Discord embed. |
+| `WEB_URL` | ⬜ | auto-detected | Public base URL of the dashboard (e.g. `https://tournament.example.com`). Used for the OAuth2 redirect URI and the Website button on the Discord message. |
 | `WEB_PORT` | ⬜ | `80` | Port the web server listens on |
 | `ROUND_TIMEOUT_DAYS` | ⬜ | `14` | Days before a round deadline fires. Supports decimals — e.g. `0.01` ≈ 15 minutes is useful for a dry run. Minimum practical value for production is `1`. |
 | `BRIDGE_TOKEN` | ⬜ | — | Shared secret with the BGA bot's Codenames watcher. Turns on automatic results; see [Codenames bridge](docs/codenames-bridge.md) |
 | `BRIDGE_URLS` | ⬜ | — | Comma-separated base URLs of the BGA bot's bridge API, tried in order (internal first, public HTTPS fallback) |
-| `DEBUG_MODE` | ⬜ | `false` | Set to `true` to enable the Seed Players debug button in the Discord admin panel |
-| `DEBUG_PLAYER_COUNT` | ⬜ | `8` | How many fake players to seed when Debug Mode is on |
 
 ### Required Bot Permissions
 
@@ -165,9 +162,9 @@ When you invite the bot to your server it needs the following permissions (the b
 | Permission | Why |
 |---|---|
 | View Channels | See the tournament channel |
-| Send Messages | Post match embeds and round headers |
+| Send Messages | Post the tournament message, round cards and match cards |
 | Send Messages in Threads | Post inside game threads |
-| Embed Links | Send rich embeds |
+| Embed Links | Link previews (not strictly needed for Components V2 cards) |
 | Read Message History | Fetch old messages to delete between rounds |
 | Manage Messages | Delete old round messages when a new round starts |
 | Create Public Threads | Create a thread for each game |
@@ -252,7 +249,7 @@ On startup the bot will:
 1. Print a permissions invite URL to the console.
 2. Load any previously saved tournament state from `data/tournament.json`.
 3. Re-register the `/tournament` slash command in your guild.
-4. Rebuild the signup/scoreboard embed from saved state.
+4. Rebuild the tournament message from saved state.
 5. Re-schedule any round deadline timers that were active before restart.
 6. Automatically re-allocate the current round if it had no active threads (crash recovery).
 
@@ -304,70 +301,55 @@ sudo journalctl -u codenames-bot -f   # view logs
 
 ## Discord Usage
 
+All bot messages use Discord's **Components V2** layout (cards with sections and buttons) instead of embeds. Messages posted before the switch keep working: their buttons have the same IDs, and the main tournament message is converted (or reposted) the next time it updates.
+
 ### Slash Commands
 
 | Command | Description |
 |---|---|
-| `/tournament` | Post the tournament signup embed in the current channel. If an embed already exists it is replaced. |
+| `/tournament` | Admins only. Posts the tournament message in the current channel, replacing any earlier one. |
 
-### Player Buttons
+### The tournament message
 
-These appear on the main tournament embed:
+One message in the tournament channel, kept up to date:
 
-| Button | Behaviour |
-|---|---|
-| **Sign Up** | Adds you to the tournament player list. Click again to get a confirmation prompt to remove yourself. |
-| **🌐 Website** | Opens the live web dashboard in your browser. |
+- **Before the start:** who's signed up, the expected size, and **Sign up / leave** and **Website** buttons.
+- **During:** the current round and its deadline, the matches in play (each with a link to its thread), standings with points per game, and **Website** and **Leave tournament** buttons.
+- **At the end:** the final standings.
 
-### Admin Panel
+### Rounds and match threads
 
-Clicking **Admin** on the signup embed (requires the configured admin role) opens an ephemeral admin panel with the following buttons:
-
-| Button | What it does |
-|---|---|
-| **Start Tournament** | Locks sign-ups, generates the full round-robin schedule, snapshots display names, and updates the embed to show the live scoreboard. Requires at least 4 players. |
-| **Allocate Next Round** | Creates all game threads for the current round and posts a round header embed with the deadline timestamp. Can only be used when no matches are currently active. |
-| **View Scores** | Shows a private (ephemeral) embed with the current scores of all players. |
-| **Force End Match** | Immediately archives all active threads in the current round, awards 0 points to incomplete matches, and advances to the next round (which is auto-allocated). |
-| **Adjust Score** | Opens a modal to enter a player ID and a point delta (positive or negative) to manually correct a score. |
-| **Reset Tournament** | Wipes all tournament data (players, scores, rounds, history) and resets the signup embed. The embed and channel ID are preserved so the same message can be reused. |
-| **[DEBUG] Seed Players** | Only visible when `DEBUG_MODE=true`. Adds fake players up to `DEBUG_PLAYER_COUNT` so you can test without real sign-ups. |
-
-### In-Game Buttons
-
-These appear inside each match thread:
+When a round starts, each match gets a thread. The first card in the thread pings the four players, shows game 1's line-up and lists the whole match plan. A **round card** in the channel lists every match with a link to its thread. After each game, the next game's card is posted in the thread.
 
 | Button | What it does |
 |---|---|
-| **Blue Wins** / **Red Wins** | Starts the result submission flow for the current game in the thread (Game 1 through configured max). Only the four players in the match or an admin may press these. |
-| **Yes, Assassin Hit** / **No, Not Assassin** | Follows the win button — records whether the win was via the assassin word. If not an assassin, a modal prompts for the number of cards remaining (0–8). |
-| **Correct Result** | Appears after a result is recorded. Reverses the recorded scores and re-opens the result buttons so the correct outcome can be submitted. |
+| **🔵 Blue won** / **🔴 Red won** | Starts logging the current game's result. Only the four players or an admin can press it. |
+| **Yes, Assassin Hit** / **No, Not Assassin** | Follows the win button. If it wasn't the assassin, a form asks how many cards the losing team had left (0–8). |
+| **Log as game N** / **Dismiss** | Shown when codenames.game reports a result whose seats didn't match the line-up. |
+
+Results are corrected from the website's admin view.
 
 ---
 
 ## Tournament Format
 
-The tournament uses a **full round-robin** schedule where every player is paired with every other player across four distinct role configurations:
+**Goal:** every pair of players teams up against every other player. The tournament ends when that is true for every pair.
 
-1. Player A as Blue Spymaster, Player B as Blue Guesser
-2. Player A as Blue Guesser, Player B as Blue Spymaster
-3. Player A as Red Spymaster, Player B as Red Guesser
-4. Player A as Red Guesser, Player B as Red Spymaster
+Each round splits the players into groups of four (⌊N/4⌋ matches run at once; the rest sit out, rotated fairly). **A match is 6 games**: the group plays every way its four players can pair up, and each pairing twice so both teammates take both roles:
 
-**Rounds** are generated so that as many matches as possible run concurrently (up to ⌊N/4⌋ simultaneous games per round). All matches within a round start at the same time in their own threads.
+| Games | Teams | |
+|---|---|---|
+| 1–2 | A & B vs C & D | as drawn, then roles swapped |
+| 3–4 | A & C vs B & D | as drawn, then roles swapped |
+| 5–6 | A & D vs B & C | as drawn, then roles swapped |
 
-**Each match consists of 2 to 4 games** (auto-managed by the scheduler):
+The same four players never meet as a group twice. Games a group already played (for example under the older 2–4 game format) are skipped, so some matches are shorter than 6 games. The scheduler (`src/scheduler.js`) plans the fewest groups it can find that cover every pair-versus-player combination, then packs them into as few rounds as it can. For 14 players that is about 34 rounds (the theoretical minimum is 31).
 
-- **Game 1** — Blue Spymaster A & Blue Guesser B vs Red Spymaster C & Red Guesser D
-- **Game 2** — Both teams swapped: Blue Spymaster B & Blue Guesser A vs Red Spymaster D & Red Guesser C
-- **Game 3 (optional)** — Blue team swapped only
-- **Game 4 (optional)** — Red team swapped only
+To switch a tournament that started on the older format, press **🔄 Fix Matchups** in the web admin panel. It rebuilds every future round straight away, treating the current round as if it finishes as scheduled. Nothing already played is lost. The same button rebuilds the future rounds whenever you need it to.
 
 After each game, the thread automatically posts the next game configuration and result buttons. Once all configured games are logged, the thread is archived and the scoreboard updated. When all threads in a round are complete, the next round is allocated automatically.
 
-> **What “unique role layouts” means:** the bot avoids replaying the same exact blue/red role seating for the same 4-player setup. If only 2 or 3 fresh layouts are left, the match ends there instead of forcing duplicates.
-
-**Round deadlines** are configurable via `ROUND_TIMEOUT_DAYS` (default 14 days). A warning message is posted to all active threads 2 days before the deadline. When the deadline expires, an expiry embed is posted in the tournament channel with a **Force End** button for admins.
+**Round deadlines** are configurable via `ROUND_TIMEOUT_DAYS` (default 14 days). A warning message is posted to all active threads 2 days before the deadline. When the deadline expires, a notice is posted in the tournament channel; admins force-end the round from the website.
 
 ---
 
@@ -397,29 +379,31 @@ The bot starts an HTTP server alongside the Discord bot. Port defaults to `80` a
 
 Accessible at your `WEB_URL` (no login required):
 
-- **Overview** — tournament status, current round, round deadline countdown, player count
-- **Scoreboard** — live rankings with points
-- **Round browser** — expandable list of every round showing all matches, team compositions, and game results with scores
-- **Match history** — full chronological game log
+- **Status** — progress through the tournament, current round, round deadline, players
+- **Current round** — every match with one row per game (teams, spymaster 🔎, result) and live room status from codenames.game
+- **Standings** — points, games played and points per game; your own row and matches are highlighted when you're logged in
+- **Rounds** — one line per upcoming or completed round; expand any to see its matches
+- **Stats** — win rates, role splits, assassin hits and clue/guess stats, filterable by round
 
-The dashboard auto-updates via the **↻ Refresh** button or can be refreshed manually.
+It refreshes itself every minute while open, works on phones, and has light and dark themes.
 
 ### Admin View (web)
 
-Log in with **Discord** (OAuth2) using the login button in the top-right corner. You must be a member of the configured server and hold the admin role.
+Log in with **Discord** (OAuth2) using the button in the top-right corner. You must be a member of the configured server and hold the admin role. All tournament administration happens here:
 
-Once logged in, an **Admin Controls** panel appears above the rounds list with:
-
-| Button | Action |
+| Control | Action |
 |---|---|
-| **▶ Start Tournament** | Same as the Discord admin Start button |
-| **⚡ Allocate Round** | Same as the Discord admin Allocate Next Round button |
-| **⏭ Force End Round** | Same as the Discord admin Force End Match button |
-| **🔀 Shuffle Remaining Rounds** | Randomly reorders all future (not yet started) rounds |
-| **🗑 Reset Tournament** | Same as the Discord admin Reset button (with a confirmation prompt) |
-| **Adjust Score** | Enter a player ID and delta directly in the admin panel |
+| **Start tournament** | Builds the schedule from everyone signed up and switches the Discord message to the live view (4+ players). |
+| **Allocate round** | Starts the current round if it isn't running (normally automatic). |
+| **Force end round** | Next to the current round. Keeps games already logged, scores nothing for the rest, archives the threads and starts the next round. |
+| **Shuffle upcoming** | Randomly reorders the rounds that haven't started. |
+| **Reopen / close signups** | Lets new players join mid-tournament; rounds pause while signups are open. |
+| **Fix matchups** | Rebuilds every future round for the current players (see Tournament Format). |
+| **Reset…** | Deletes everything; you type RESET to confirm. |
+| **Click a score** | Edit a player's points. |
+| **Click a result** | Change or delete a game's result. |
 
-All admin actions are reflected immediately in both the web dashboard and the Discord embed.
+Changes show up on the website and in the Discord message straight away.
 
 ---
 

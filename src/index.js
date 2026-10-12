@@ -3,10 +3,12 @@ require('dotenv').config();
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, PermissionsBitField } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, PermissionsBitField } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
 const codenamesBridge = require('./codenamesBridge');
+const scheduler = require('./scheduler');
+const cards = require('./cards');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const TOURNAMENT_FILE = path.join(DATA_DIR, 'tournament.json');
@@ -71,13 +73,6 @@ let removalTimeoutTimer = null;
 const REMOVAL_TIMEOUT_MS = 15 * 60 * 1000;
 const MIN_GAMES_PER_MATCH = 2;
 const MAX_GAMES_PER_MATCH = 4;
-const STRICT_ROLE_CAP_DELTA = 1;
-const ROUND_SCORE_WEIGHTS = {
-  matches: 1000,
-  games: 100,
-  repeatSitOut: 800,
-  sitOutMissedGames: 20,
-};
 
 function clampGamesPerMatch(value) {
   const n = parseInt(value, 10);
@@ -198,7 +193,7 @@ client.once('clientReady', async () => {
       const channel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
       if (channel) {
         if (tournament.started) {
-          await updateScoreboard(guild);
+          await refreshSetupMessage(guild);
           console.log('[startup] Scoreboard rebuilt');
           // Re-schedule round timers after restart
           if (tournament.roundDeadline) {
@@ -239,7 +234,7 @@ client.once('clientReady', async () => {
             }
           }
         } else {
-          await updateSignupMessage(channel);
+          await refreshSetupMessage(guild);
           console.log('[startup] Signup message rebuilt');
         }
       } else {
@@ -252,38 +247,56 @@ client.once('clientReady', async () => {
 });
 
 async function loadTournamentData() {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  let parsed;
   try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    const data = await fs.readFile(TOURNAMENT_FILE, 'utf-8');
-    const parsed = JSON.parse(data);
-    tournament.players = new Set(parsed.players);
-    tournament.scores = new Map(parsed.scores);
-    tournament.playedGroupings = new Set(parsed.playedGroupings);
-    tournament.currentRound = parsed.currentRound;
-    tournament.currentRoundIndex = parsed.currentRoundIndex || 0;
-    tournament.activeMatches = parsed.activeMatches || [];
-    tournament.roundResults = parsed.roundResults || [];
-    tournament.roundDeadline = parsed.roundDeadline || null;
-    tournament.setupMessage = parsed.setupMessage;
-    tournament.setupChannelId = parsed.setupChannelId;
-    tournament.rounds = parsed.rounds || [];
-    tournament.started = parsed.started || false;
-    tournament.history = parsed.history || [];
-    tournament.playerNames = parsed.playerNames || {};
-    tournament.tournamentStartedAt = parsed.tournamentStartedAt || null;
-    tournament.roundStartedAt = parsed.roundStartedAt || null;
-    tournament.leftPlayers = parsed.leftPlayers || {};
-    tournament.pendingRemoval = parsed.pendingRemoval || null;
-    tournament.signupsReopened = parsed.signupsReopened || false;
-    tournament.signupReopenMessageId = parsed.signupReopenMessageId || null;
-    codenamesBridgeSynced = parsed.codenamesBindings || {};
-    console.log('Tournament data loaded from storage');
+    parsed = JSON.parse(await fs.readFile(TOURNAMENT_FILE, 'utf-8'));
   } catch (error) {
-    console.log('No previous tournament data found, starting fresh');
+    if (error.code === 'ENOENT') {
+      console.log('No previous tournament data found, starting fresh');
+      return;
+    }
+    // Never carry on with an empty tournament: the next save would overwrite the real data.
+    const backup = `${TOURNAMENT_FILE}.unreadable-${Date.now()}`;
+    await fs.copyFile(TOURNAMENT_FILE, backup).catch(() => null);
+    console.error(`[startup] ${TOURNAMENT_FILE} could not be read (${error.message}). A copy was saved to ${backup}. Fix or restore the file, then restart.`);
+    process.exit(1);
   }
+  tournament.players = new Set(parsed.players);
+  tournament.scores = new Map(parsed.scores);
+  tournament.playedGroupings = new Set(parsed.playedGroupings);
+  tournament.currentRound = parsed.currentRound;
+  tournament.currentRoundIndex = parsed.currentRoundIndex || 0;
+  tournament.activeMatches = parsed.activeMatches || [];
+  tournament.roundResults = parsed.roundResults || [];
+  tournament.roundDeadline = parsed.roundDeadline || null;
+  tournament.setupMessage = parsed.setupMessage;
+  tournament.setupChannelId = parsed.setupChannelId;
+  tournament.rounds = parsed.rounds || [];
+  tournament.started = parsed.started || false;
+  tournament.history = parsed.history || [];
+  tournament.playerNames = parsed.playerNames || {};
+  tournament.tournamentStartedAt = parsed.tournamentStartedAt || null;
+  tournament.roundStartedAt = parsed.roundStartedAt || null;
+  tournament.leftPlayers = parsed.leftPlayers || {};
+  tournament.pendingRemoval = parsed.pendingRemoval || null;
+  tournament.signupsReopened = parsed.signupsReopened || false;
+  tournament.signupReopenMessageId = parsed.signupReopenMessageId || null;
+  codenamesBridgeSynced = parsed.codenamesBindings || {};
+  console.log('Tournament data loaded from storage');
 }
 
-async function saveTournamentData() {
+// Saves run one at a time, and each writes a temp file then renames it over
+// the real one, so a crash mid-write can't leave a half-written file.
+let saveChain = Promise.resolve();
+
+function saveTournamentData() {
+  const run = saveChain.then(writeTournamentData);
+  saveChain = run.catch(() => null);
+  return run;
+}
+
+async function writeTournamentData() {
   try {
     await fs.mkdir(DATA_DIR, { recursive: true });
     const data = {
@@ -309,7 +322,9 @@ async function saveTournamentData() {
       signupReopenMessageId: tournament.signupReopenMessageId,
       codenamesBindings: codenamesBridgeSynced,
     };
-    await fs.writeFile(TOURNAMENT_FILE, JSON.stringify(data, null, 2));
+    const tmp = `${TOURNAMENT_FILE}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(data, null, 2));
+    await fs.rename(tmp, TOURNAMENT_FILE);
   } catch (error) {
     console.error('Failed to save tournament data:', error);
   }
@@ -342,7 +357,7 @@ async function syncBridgeBindings() {
       for (const match of tournament.activeMatches) {
         if (!match.threadId) continue;
         const game = match.gamePhase ?? 1;
-        const gamesPlanned = getMatchPhaseSequence(match).length;
+        const gamesPlanned = getMatchGameCount(match);
         desired.set(match.threadId, codenamesBridge.buildBinding({
           guildId: process.env.GUILD_ID,
           externalRef: getMatchBridgeRef(match),
@@ -413,52 +428,84 @@ function buildMatchStatus() {
   return out;
 }
 
-function bridgeThreadHint() {
-  return bridgeClient.enabled
-    ? '\n\n🕵️ Post your **codenames.game** room link in this thread and results are logged automatically. ' +
-      'Use the same room for every game in this match (**Play next game**). The buttons below still work if you need them.'
-    : '';
+// What the main tournament message shows right now (see cards.tournamentCard).
+function buildTournamentCardState() {
+  const standings = Array.from(tournament.scores.entries()).sort((a, b) => b[1] - a[1]);
+  if (!tournament.started) {
+    const players = Array.from(tournament.players);
+    return { phase: 'signup', players, prediction: players.length >= 4 ? scheduler.predictSchedule(players.length) : null };
+  }
+  if (tournament.currentRound > tournament.rounds.length) {
+    return { phase: 'complete', standings, gamesPlayed: getGamesPlayedMap() };
+  }
+  const roundMatches = tournament.rounds[tournament.currentRound - 1] || [];
+  return {
+    phase: 'live',
+    round: tournament.currentRound,
+    totalRounds: tournament.rounds.length,
+    matchesInRound: roundMatches.length,
+    matchesDone: tournament.activeMatches.length ? roundMatches.length - tournament.activeMatches.length : 0,
+    deadlineMs: tournament.activeMatches.length ? tournament.roundDeadline : null,
+    signupsOpen: tournament.signupsReopened,
+    activeMatches: tournament.activeMatches.slice().sort((a, b) => a.matchNumber - b.matchNumber).map(m => ({
+      matchNumber: m.matchNumber,
+      game: m.gamePhase ?? 1,
+      gamesPlanned: getMatchGameCount(m),
+      players: scheduler.playersOf(m.grouping),
+      threadUrl: getThreadUrl(m.threadId),
+    })),
+    standings,
+    gamesPlayed: getGamesPlayedMap(),
+  };
 }
 
-function buildSignupDescription() {
-  const playerList = Array.from(tournament.players);
-  console.log(`[buildSignupDescription] Players in Set (${playerList.length}):`, playerList);
-
-  let description = 'Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n';
-  if (playerList.length > 0) {
-    description += playerList.map(id => id.startsWith('debug_') ? `\`${id}\`` : `<@${id}>`).join('\n');
-  } else {
-    description += 'None yet';
-  }
-
-  if (playerList.length >= 4) {
-    const prediction = getTournamentPrediction(playerList.length);
-    if (prediction) {
-      description += `\n\n**Tournament Prediction:**\n`;
-      description += `Up to ${prediction.totalGames} Total Games • ~${prediction.rounds} Rounds`;
-      description += `\n${prediction.concurrentGames} game${prediction.concurrentGames === 1 ? '' : 's'} per round`;
-      description += `\nTarget: up to 4 games per match (auto-fallback to 3 or 2 when needed)`;
-    }
-  }
-
-  return description;
+function tournamentCardPayload() {
+  return cards.tournamentCard(buildTournamentCardState(), { webUrl: getWebBaseUrl() });
 }
 
-async function updateSignupMessage(channel) {
+// Redraw the main tournament message. A message from before Components V2
+// (an embed) is converted in place when Discord allows it; otherwise it is
+// replaced by a new message, and the old one deleted.
+// Refreshes run one at a time so two can't both replace the message.
+let setupRefreshChain = Promise.resolve();
+function refreshSetupMessage(guild) {
+  setupRefreshChain = setupRefreshChain.then(() => redrawSetupMessage(guild));
+  return setupRefreshChain;
+}
+
+async function redrawSetupMessage(guild) {
+  if (!guild || !tournament.setupMessage || !tournament.setupChannelId) return;
   try {
-    if (!tournament.setupMessage) return;
+    const channel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+    if (!channel) return;
     const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
-    if (!message) {
-      console.warn('[updateSignupMessage] Could not fetch setupMessage:', tournament.setupMessage);
-      return;
+    const card = tournamentCardPayload();
+    if (message) {
+      const isV2 = message.flags && message.flags.has(MessageFlags.IsComponentsV2);
+      try {
+        await message.edit(isV2 ? card : { ...card, content: null, embeds: [] });
+        return;
+      } catch (error) {
+        if (isV2) throw error;
+        console.log('[setup] Replacing the old embed message with a Components V2 one:', error.message);
+      }
     }
-    const embed = message.embeds[0];
-    const updatedEmbed = EmbedBuilder.from(embed).setDescription(buildSignupDescription());
-    await message.edit({ embeds: [updatedEmbed] });
-    console.log('[updateSignupMessage] Setup message updated successfully');
+    const replacement = await channel.send(card);
+    if (message) await message.delete().catch(() => null);
+    tournament.setupMessage = replacement.id;
+    await saveTournamentData();
   } catch (error) {
-    console.error('[updateSignupMessage] Failed:', error.message);
+    console.error('[setup] Failed to refresh the tournament message:', error.message);
   }
+}
+
+// Replace a message's buttons with a short note once it's been dealt with.
+// Components V2 messages can't carry plain content; older embed messages can.
+function resolveInteractionMessage(interaction, note) {
+  const isV2 = interaction.message && interaction.message.flags && interaction.message.flags.has(MessageFlags.IsComponentsV2);
+  return isV2
+    ? interaction.update(cards.noticeCard(note))
+    : interaction.update({ content: note, components: [], allowedMentions: { parse: [] } });
 }
 
 client.on('interactionCreate', async (interaction) => {
@@ -466,6 +513,10 @@ client.on('interactionCreate', async (interaction) => {
     const { commandName } = interaction;
 
     if (commandName === 'tournament') {
+      if (process.env.ADMIN_ROLE_ID && !interaction.member.roles.cache.has(process.env.ADMIN_ROLE_ID)) {
+        await interaction.reply({ content: 'Only tournament admins can post the tournament message.', flags: MessageFlags.Ephemeral });
+        return;
+      }
       // Delete the old setup message if one exists
       if (tournament.setupMessage && tournament.setupChannelId) {
         try {
@@ -479,73 +530,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      let embed;
-      let row;
-
-      if (tournament.started) {
-        // Tournament is live - show current status and scores
-        const roundMatches = tournament.rounds[tournament.currentRound - 1] || [];
-        const completedInRound = roundMatches.length - tournament.activeMatches.length;
-        let description = `**Tournament Live - Round ${tournament.currentRound}/${tournament.rounds.length}**\n`;
-        description += `${completedInRound}/${roundMatches.length} matches completed\n\n`;
-        
-        if (tournament.activeMatches.length > 0) {
-          description += `**Active Matches:**\n`;
-          tournament.activeMatches.forEach(m => {
-            description += `Match ${m.matchNumber}: 🔵 <@${m.grouping.blue.spymaster}> & <@${m.grouping.blue.guesser}> vs 🔴 <@${m.grouping.red.spymaster}> & <@${m.grouping.red.guesser}>\n`;
-          });
-          description += '\n';
-        }
-
-        description += `**Scoreboard:**\n`;
-        const sortedScores = Array.from(tournament.scores.entries())
-          .sort((a, b) => b[1] - a[1]);
-        const gamesPlayedMap = getGamesPlayedMap();
-        let rank = 0;
-        let lastPts = null;
-        sortedScores.forEach((entry, idx) => {
-          if (entry[1] !== lastPts) { rank = idx + 1; lastPts = entry[1]; }
-          const gp = gamesPlayedMap[entry[0]] || 0;
-          description += `${rank}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
-        });
-
-        embed = new EmbedBuilder()
-          .setTitle('Codenames Tournament')
-          .setDescription(description)
-          .setColor(0x00ff00);
-
-        row = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setLabel('🌐 Website')
-              .setStyle(ButtonStyle.Link)
-              .setURL(getWebBaseUrl()),
-            new ButtonBuilder()
-              .setCustomId('leave_tournament')
-              .setLabel('🚪 Leave Tournament')
-              .setStyle(ButtonStyle.Danger),
-          );
-      } else {
-        // Tournament not started - show sign-up
-        embed = new EmbedBuilder()
-          .setTitle('Codenames Tournament')
-          .setDescription(buildSignupDescription())
-          .setColor(0x0099ff);
-
-        row = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId('signup')
-              .setLabel('Sign Up')
-              .setStyle(ButtonStyle.Primary),
-            new ButtonBuilder()
-              .setLabel('🌐 Website')
-              .setStyle(ButtonStyle.Link)
-              .setURL(getWebBaseUrl()),
-          );
-      }
-
-      const response = await interaction.reply({ embeds: [embed], components: [row], withResponse: true });
+      const response = await interaction.reply({ ...tournamentCardPayload(), withResponse: true });
       const message = response.resource.message;
       tournament.setupMessage = message.id;
       tournament.setupChannelId = message.channelId;
@@ -579,322 +564,8 @@ client.on('interactionCreate', async (interaction) => {
         // Reply immediately to avoid interaction timeout, then update message in background
         await interaction.reply({ content: 'You have signed up!', flags: MessageFlags.Ephemeral });
         await saveTournamentData();
-        updateSignupMessage(interaction.channel); // fire-and-forget
+        refreshSetupMessage(interaction.guild); // fire-and-forget
       }
-    } else if (customId === 'admin') {
-      const adminRoleId = process.env.ADMIN_ROLE_ID; // Replace with your admin role ID
-      if (!interaction.member.roles.cache.has(adminRoleId)) {
-        await interaction.reply({ content: 'You do not have permission to access admin functions.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      const adminEmbed = new EmbedBuilder()
-        .setTitle('Admin Panel')
-        .setDescription('Select an admin action.')
-        .setColor(0xff0000);
-
-      const debugMode = process.env.DEBUG_MODE === 'true';
-      const debugPlayerCount = parseInt(process.env.DEBUG_PLAYER_COUNT) || 8;
-
-      const adminComponents = [
-          new ButtonBuilder()
-            .setCustomId('admin_start')
-            .setLabel('Start Tournament')
-            .setStyle(ButtonStyle.Success),
-          new ButtonBuilder()
-            .setCustomId('admin_allocate')
-            .setLabel('Allocate Next Round')
-            .setStyle(ButtonStyle.Primary),
-          new ButtonBuilder()
-            .setCustomId('admin_scores')
-            .setLabel('View Scores')
-            .setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId('admin_force_end')
-            .setLabel('Force End Match')
-            .setStyle(ButtonStyle.Danger),
-          new ButtonBuilder()
-            .setCustomId('admin_adjust_score')
-            .setLabel('Adjust Score')
-            .setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId('admin_reset')
-            .setLabel('Reset Tournament')
-            .setStyle(ButtonStyle.Danger),
-      ];
-
-      if (debugMode) {
-        adminComponents.push(
-          new ButtonBuilder()
-            .setCustomId('debug_seed_players')
-            .setLabel(`[DEBUG] Seed ${debugPlayerCount} Players`)
-            .setStyle(ButtonStyle.Secondary)
-        );
-      }
-
-      if (tournament.started) {
-        adminComponents.push(
-          new ButtonBuilder()
-            .setCustomId('admin_reopen_signups')
-            .setLabel(tournament.signupsReopened ? '🔒 Close Signups' : '📋 Reopen Signups')
-            .setStyle(tournament.signupsReopened ? ButtonStyle.Danger : ButtonStyle.Primary),
-          new ButtonBuilder()
-            .setCustomId('admin_fix_matchups')
-            .setLabel('🔧 Fix Match-ups')
-            .setStyle(ButtonStyle.Warning),
-        );
-      }
-
-      const adminRow = new ActionRowBuilder().addComponents(adminComponents.slice(0, 5));
-      const adminRows = [adminRow];
-      if (adminComponents.length > 5) {
-        adminRows.push(new ActionRowBuilder().addComponents(adminComponents.slice(5)));
-      }
-      if (adminComponents.length > 10) {
-        adminRows.push(new ActionRowBuilder().addComponents(adminComponents.slice(10)));
-      }
-
-      await interaction.reply({ embeds: [adminEmbed], components: adminRows, flags: MessageFlags.Ephemeral });
-    } else if (customId === 'admin_start') {
-      if (tournament.started) {
-        await interaction.reply({ content: 'Tournament has already started.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (tournament.players.size < 4) {
-        await interaction.reply({ content: 'Need at least 4 players to start.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      tournament.currentRound = 1;
-      tournament.currentRoundIndex = 0;
-      tournament.started = true;
-      tournament.tournamentStartedAt = new Date().toISOString();
-      tournament.scores = new Map([...tournament.players].map(id => [id, 0]));
-      tournament.rounds = generateRounds(Array.from(tournament.players));
-
-      // Snapshot display names for all players
-      tournament.playerNames = {};
-      for (const id of tournament.players) {
-        if (id.startsWith('debug_')) {
-          tournament.playerNames[id] = id;
-        } else {
-          try {
-            const member = await interaction.guild.members.fetch(id).catch(() => null);
-            tournament.playerNames[id] = member ? member.displayName : id;
-          } catch { tournament.playerNames[id] = id; }
-        }
-      }
-      
-      // Update the setup message to show tournament live
-      try {
-        if (tournament.setupMessage && tournament.setupChannelId) {
-          const channel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
-          if (!channel) throw new Error('Could not fetch setup channel');
-          const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
-          if (message) {
-            let description = `**Tournament Live - Round ${tournament.currentRound}**\n`;
-            description += `Match ${tournament.currentRoundIndex}/${tournament.rounds[tournament.currentRound - 1]?.length || 0}\n\n`;
-            description += `**Scoreboard:**\n`;
-            const sortedScores = Array.from(tournament.scores.entries())
-              .sort((a, b) => b[1] - a[1]);
-            const gamesPlayedMap = getGamesPlayedMap();
-            let rank = 0;
-            let lastPts = null;
-            sortedScores.forEach((entry, idx) => {
-              if (entry[1] !== lastPts) { rank = idx + 1; lastPts = entry[1]; }
-              const gp = gamesPlayedMap[entry[0]] || 0;
-              description += `${rank}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
-            });
-            
-            const embed = message.embeds[0];
-            const updatedEmbed = EmbedBuilder.from(embed)
-              .setDescription(description)
-              .setFields([])
-              .setColor(0x00ff00);
-            const websiteRow = new ActionRowBuilder().addComponents(
-              new ButtonBuilder().setLabel('🌐 Website').setStyle(ButtonStyle.Link).setURL(getWebBaseUrl()),
-              new ButtonBuilder().setCustomId('leave_tournament').setLabel('🚪 Leave Tournament').setStyle(ButtonStyle.Danger),
-            );
-            await message.edit({ embeds: [updatedEmbed], components: [websiteRow] });
-          }
-        }
-      } catch (error) {
-        console.error('Failed to update setup message:', error.message);
-      }
-      
-      await saveTournamentData();
-      await interaction.editReply({ content: `Tournament started with ${tournament.players.size} players! Generated ${tournament.rounds.length} rounds.` });
-    } else if (customId === 'admin_allocate') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const result = await allocateRound(interaction.guild);
-      if (!result.success) {
-        await interaction.editReply({ content: result.message });
-        return;
-      }
-      await interaction.editReply({ content: result.message });
-    } else if (customId === 'admin_scores') {
-      const scoreList = Array.from(tournament.scores.entries()).map(([id, score]) => `<@${id}>: ${score}`).join('\n');
-      const embed = new EmbedBuilder()
-        .setTitle('Current Scores')
-        .setDescription(scoreList || 'No scores yet.')
-        .setColor(0xff9900);
-      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
-    } else if (customId === 'admin_adjust_score') {
-      const modal = new ModalBuilder()
-        .setCustomId('adjust_score_modal')
-        .setTitle('Adjust Player Score');
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('adjust_player_id')
-            .setLabel('Player ID or @mention')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setPlaceholder('e.g. 123456789012345678'),
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('adjust_delta')
-            .setLabel('Points to add (use negative to subtract)')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setPlaceholder('e.g. 3 or -2'),
-        ),
-      );
-      await interaction.showModal(modal);
-    } else if (customId === 'admin_force_end') {
-      if (tournament.activeMatches.length === 0) {
-        await interaction.reply({ content: 'No matches currently active to force end.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-      // Archive all active threads (fire-and-forget)
-      for (const match of tournament.activeMatches) {
-        try {
-          const t = interaction.guild.channels.cache.get(match.threadId);
-          if (t) t.setArchived(true).catch(() => null);
-        } catch {}
-      }
-      const skippedCount = tournament.activeMatches.length;
-      tournament.activeMatches = [];
-      clearRoundTimers();
-      tournament.currentRound++;
-      tournament.currentRoundIndex = 0;
-      await saveTournamentData();
-
-      let autoAllocated = false;
-      if (tournament.currentRound <= tournament.rounds.length) {
-        allocateRound(interaction.guild).catch(e => console.error('Auto-allocate failed:', e.message));
-      }
-
-      updateScoreboard(interaction.guild).catch(() => null);
-      await interaction.editReply({ content: `Force ended ${skippedCount} active match(es) with 0 points. Next round allocating...` });
-    } else if (customId === 'force_end_round') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-      for (const match of tournament.activeMatches) {
-        try {
-          const t = interaction.guild.channels.cache.get(match.threadId);
-          if (t) t.setArchived(true).catch(() => null);
-        } catch {}
-      }
-      const skippedCount2 = tournament.activeMatches.length;
-      tournament.activeMatches = [];
-      clearRoundTimers();
-      tournament.currentRound++;
-      tournament.currentRoundIndex = 0;
-      await saveTournamentData();
-
-      let autoAllocated2 = false;
-      if (tournament.currentRound <= tournament.rounds.length) {
-        allocateRound(interaction.guild).catch(e => console.error('Auto-allocate failed:', e.message));
-        autoAllocated2 = true;
-      }
-
-      updateScoreboard(interaction.guild).catch(() => null);
-      await interaction.editReply({ content: `Round force ended. ${skippedCount2} match(es) skipped.${autoAllocated2 ? ' Next round automatically allocated.' : ''}` });
-    } else if (customId === 'admin_reset') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      // Capture message/channel IDs before wiping them so we can update the embed after reset
-      const prevSetupMessage = tournament.setupMessage;
-      const prevSetupChannelId = tournament.setupChannelId;
-
-      clearRoundTimers();
-      clearRemovalTimer();
-      tournament = {
-        players: new Set(),
-        currentRound: 0,
-        currentRoundIndex: 0,
-        playedGroupings: new Set(),
-        scores: new Map(),
-        currentGrouping: null,
-        activeMatches: [],
-        roundResults: [],
-        roundDeadline: null,
-        setupMessage: prevSetupMessage,
-        setupChannelId: prevSetupChannelId,
-        rounds: [],
-        started: false,
-        history: [],
-        playerNames: {},
-        tournamentStartedAt: null,
-        roundStartedAt: null,
-        leftPlayers: {},
-        pendingRemoval: null,
-        signupsReopened: false,
-        signupReopenMessageId: null,
-      };
-      await saveTournamentData();
-
-      // Update the signup embed to show the cleared player list
-      if (prevSetupMessage && prevSetupChannelId) {
-        try {
-          const channel = await interaction.guild.channels.fetch(prevSetupChannelId).catch(() => null);
-          if (channel) {
-            const message = await channel.messages.fetch(prevSetupMessage).catch(() => null);
-            if (message) {
-              const signupRow = new ActionRowBuilder()
-                .addComponents(
-                  new ButtonBuilder()
-                    .setCustomId('signup')
-                    .setLabel('Sign Up')
-                    .setStyle(ButtonStyle.Primary),
-                  new ButtonBuilder()
-                    .setLabel('🌐 Website')
-                    .setStyle(ButtonStyle.Link)
-                    .setURL(getWebBaseUrl()),
-                );
-              const resetEmbed = new EmbedBuilder()
-                .setTitle('Codenames Tournament')
-                .setDescription(buildSignupDescription())
-                .setColor(0x0099ff);
-              await message.edit({ embeds: [resetEmbed], components: [signupRow] });
-            }
-          }
-        } catch (error) {
-          console.error('[admin_reset] Failed to update signup message:', error.message);
-        }
-      }
-
-      await interaction.editReply({ content: 'Tournament reset.' });
-    } else if (customId === 'debug_seed_players') {
-      if (process.env.DEBUG_MODE !== 'true') {
-        await interaction.reply({ content: 'Debug mode is not enabled.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (tournament.started) {
-        await interaction.reply({ content: 'Cannot seed players after tournament has started.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      const debugPlayerCount = parseInt(process.env.DEBUG_PLAYER_COUNT) || 8;
-      // Use fake snowflake-style IDs for debug players
-      const seedCount = Math.max(0, debugPlayerCount - tournament.players.size);
-      for (let i = 0; i < seedCount; i++) {
-        tournament.players.add(`debug_player_${Date.now()}_${i}`);
-      }
-      await saveTournamentData();
-      updateSignupMessage(interaction.channel); // fire-and-forget
-      await interaction.reply({ content: `[DEBUG] Seeded ${seedCount} fake player(s). Total players: ${tournament.players.size}`, flags: MessageFlags.Ephemeral });
     } else if (customId.startsWith('log_')) {
       const matchData = tournament.activeMatches.find(m => m.threadId === interaction.channelId);
       if (!matchData) {
@@ -925,15 +596,6 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      // Deduplication guard — prevent two simultaneous button clicks for the same game.
-      // JavaScript is single-threaded so has() + add() with no await between is atomic.
-      const submissionKey = `${interaction.channelId}:${expectedPhase}:button`;
-      if (processingThreads.has(submissionKey)) {
-        await interaction.reply({ content: 'A result is already being submitted for this game. Please wait.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      processingThreads.add(submissionKey);
-
       // Show buttons for assassin question instead of modal
       const assassinRow = new ActionRowBuilder()
         .addComponents(
@@ -947,11 +609,7 @@ client.on('interactionCreate', async (interaction) => {
             .setStyle(ButtonStyle.Primary),
         );
 
-      try {
-        await interaction.reply({ content: `Game ${expectedPhase}: Was the winning move an assassin hit?`, components: [assassinRow], flags: MessageFlags.Ephemeral });
-      } finally {
-        processingThreads.delete(submissionKey);
-      }
+      await interaction.reply({ content: `Game ${expectedPhase}: Was the winning move an assassin hit?`, components: [assassinRow], flags: MessageFlags.Ephemeral });
     } else if (customId.startsWith('assassin_')) {
       const parts = customId.split('_');
       const wasAssassin = parts[1] === 'yes';
@@ -1032,14 +690,14 @@ client.on('interactionCreate', async (interaction) => {
       if (!accept) {
         delete matchData.pendingBridgeResults[pendingId];
         await saveTournamentData();
-        await interaction.update({ content: `Dismissed by <@${interaction.user.id}>.`, components: [] });
+        await resolveInteractionMessage(interaction, `Dismissed by <@${interaction.user.id}>.`);
         return;
       }
       const currentPhase = matchData.gamePhase ?? 1;
       if (currentPhase !== pending.gamePhase) {
         delete matchData.pendingBridgeResults[pendingId];
         await saveTournamentData();
-        await interaction.update({ content: `Not logged: this match has moved on to Game ${currentPhase}.`, components: [] });
+        await resolveInteractionMessage(interaction, `Not logged: this match has moved on to Game ${currentPhase}.`);
         return;
       }
       const confirmKey = `${interaction.channelId}:${currentPhase}:result`;
@@ -1050,7 +708,7 @@ client.on('interactionCreate', async (interaction) => {
       processingThreads.add(confirmKey);
       try {
         delete matchData.pendingBridgeResults[pendingId];
-        await interaction.update({ content: `Confirmed by <@${interaction.user.id}>.`, components: [] });
+        await resolveInteractionMessage(interaction, `Confirmed by <@${interaction.user.id}>.`);
         await recordGameResult({
           guild: interaction.guild,
           channel: interaction.channel,
@@ -1062,44 +720,13 @@ client.on('interactionCreate', async (interaction) => {
       } finally {
         processingThreads.delete(confirmKey);
       }
-    } else if (customId === 'timeout_force_end') {
-      const adminRoleId = process.env.ADMIN_ROLE_ID;
-      if (!interaction.member.roles.cache.has(adminRoleId)) {
-        await interaction.reply({ content: 'Only admins can force end the round.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const skippedT = tournament.activeMatches.length;
-      for (const match of tournament.activeMatches) {
-        try {
-          const t = await interaction.guild.channels.fetch(match.threadId).catch(() => null);
-          if (t) t.setArchived(true).catch(() => null);
-        } catch {}
-      }
-      tournament.activeMatches = [];
-      clearRoundTimers();
-      tournament.roundDeadline = null;
-      tournament.currentRound++;
-      tournament.currentRoundIndex = 0;
-      await saveTournamentData();
-      updateScoreboard(interaction.guild).catch(() => null);
-      if (tournament.currentRound <= tournament.rounds.length) {
-        allocateRound(interaction.guild).catch(e => console.error('Auto-allocate after timeout failed:', e.message));
-      }
-      await interaction.editReply({ content: `Timeout force end: ${skippedT} match(es) skipped. Advancing...` });
-    } else if (customId.startsWith('correct_result_')) {
-      // Result correction has been moved to the tournament website admin panel.
-      await interaction.reply({
-        content: `⚠️ Result corrections can no longer be made from Discord. Please visit the **tournament website** and log in as admin to correct this result.`,
-        flags: MessageFlags.Ephemeral,
-      });
     } else if (customId.startsWith('confirm_remove_')) {
       const userId = customId.split('_')[2];
       if (interaction.user.id === userId) {
         tournament.players.delete(userId);
         await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
         await saveTournamentData();
-        updateSignupMessage(interaction.channel); // fire-and-forget
+        refreshSetupMessage(interaction.guild); // fire-and-forget
       } else {
         await interaction.reply({ content: 'You cannot confirm removal for another user.', flags: MessageFlags.Ephemeral });
       }
@@ -1192,7 +819,7 @@ client.on('interactionCreate', async (interaction) => {
         const remaining = activePlayers.length;
         await leaveChannel.send(`✅ <@${userId}> has left the tournament. Future rounds have been recalculated with ${remaining} remaining player${remaining !== 1 ? 's' : ''}. ${tournament.rounds.length} total rounds now planned.`);
       }
-      updateScoreboard(interaction.guild).catch(() => null);
+      refreshSetupMessage(interaction.guild).catch(() => null);
       if (tournament.activeMatches.length === 0 && tournament.currentRound <= tournament.rounds.length) {
         allocateRound(interaction.guild).catch(e => console.error('[leave] Auto-allocate failed:', e.message));
       }
@@ -1261,72 +888,6 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await closeSignups(interaction.guild);
       await interaction.editReply({ content: `✅ Signups closed. Future rounds recalculated.` });
-
-    // ── Admin reopen signups (from the Discord admin panel) ──────────────────
-    } else if (customId === 'admin_reopen_signups') {
-      const adminRoleId = process.env.ADMIN_ROLE_ID;
-      if (!interaction.member.roles.cache.has(adminRoleId)) {
-        await interaction.reply({ content: 'You do not have permission.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (!tournament.started) {
-        await interaction.reply({ content: 'The tournament has not started yet.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      if (tournament.signupsReopened) {
-        // Toggle: close signups
-        await closeSignups(interaction.guild);
-        await interaction.editReply({ content: `✅ Signups closed. Future rounds recalculated.` });
-      } else {
-        // Open signups
-        const channel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
-        if (!channel) { await interaction.editReply({ content: 'Could not find the tournament channel.' }); return; }
-        const reopenRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('reopen_signup').setLabel('✅ Join Tournament').setStyle(ButtonStyle.Success),
-          new ButtonBuilder().setCustomId('close_signups').setLabel('🔒 Close Signups (Admin)').setStyle(ButtonStyle.Danger),
-        );
-        const msg = await channel.send({
-          content: '📋 **Signups are reopened!** Click below to join the tournament. New rounds won\'t start until signups are closed by an admin.',
-          components: [reopenRow],
-        });
-        tournament.signupsReopened = true;
-        tournament.signupReopenMessageId = msg.id;
-        await saveTournamentData();
-        updateScoreboard(interaction.guild).catch(() => null);
-        await interaction.editReply({ content: '✅ Signups have been reopened. A message has been posted in the tournament channel.' });
-      }
-
-    // ── Admin fix match-ups ───────────────────────────────────────────────────
-    } else if (customId === 'admin_fix_matchups') {
-      const adminRoleId = process.env.ADMIN_ROLE_ID;
-      if (!interaction.member.roles.cache.has(adminRoleId)) {
-        await interaction.reply({ content: 'You do not have permission.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (!tournament.started) {
-        await interaction.reply({ content: 'The tournament has not started yet.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      let refreshMsg = '';
-      if (tournament.activeMatches.length > 0) {
-        const refreshed = await refreshCurrentRoundThreadsAndSchedule(interaction.guild);
-        if (refreshed.message) {
-          await interaction.editReply({ content: `⚠️ ${refreshed.message}` });
-          return;
-        }
-        refreshMsg = ` Current round was refreshed and ${refreshed.refreshedCount} old thread${refreshed.refreshedCount !== 1 ? 's were' : ' was'} archived/reposted.`;
-      } else {
-        const activePlayers = Array.from(tournament.players);
-        recalculateFutureRounds(activePlayers);
-        await saveTournamentData();
-      }
-      updateScoreboard(interaction.guild).catch(() => null);
-      const newTotal = tournament.rounds.length;
-      await interaction.editReply({
-        content: `✅ Match-ups recalculated. Already-played games are preserved. Total rounds: ${newTotal}.${refreshMsg}`,
-      });
     }
   } else if (interaction.isModalSubmit()) {
     const { customId } = interaction;
@@ -1373,88 +934,9 @@ client.on('interactionCreate', async (interaction) => {
       } finally {
         processingThreads.delete(modalProcessingKey);
       }
-    } else if (customId === 'adjust_score_modal') {
-      const rawId = interaction.fields.getTextInputValue('adjust_player_id').trim().replace(/[<@!>]/g, '');
-      const delta = parseInt(interaction.fields.getTextInputValue('adjust_delta').trim());
-      if (isNaN(delta)) {
-        await interaction.reply({ content: 'Invalid points value. Please enter a number like `3` or `-2`.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (!tournament.scores.has(rawId)) {
-        await interaction.reply({ content: `No score found for player ID \`${rawId}\`. Make sure you used the raw numeric ID.`, flags: MessageFlags.Ephemeral });
-        return;
-      }
-      const oldScore = tournament.scores.get(rawId);
-      tournament.scores.set(rawId, oldScore + delta);
-      await saveTournamentData();
-      updateScoreboard(interaction.guild).catch(() => null);
-      await interaction.reply({ content: `Score adjusted: <@${rawId}> ${oldScore} → **${oldScore + delta} pts** (${delta > 0 ? '+' : ''}${delta})`, flags: MessageFlags.Ephemeral });
     }
   }
 });
-
-async function updateScoreboard(guild) {
-  if (!tournament.setupMessage || !tournament.setupChannelId) return;
-  try {
-    const channel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
-    if (!channel) return;
-    const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
-    if (!message) return;
-
-    let description;
-    const fields = [];
-    const gamesPlayedMap = getGamesPlayedMap();
-    if (tournament.currentRound > tournament.rounds.length) {
-      description = `**Tournament Complete!**\n\n**Final Scoreboard:**\n`;
-      let rankF = 0;
-      let lastPtsF = null;
-      Array.from(tournament.scores.entries())
-        .sort((a, b) => b[1] - a[1])
-        .forEach((entry, idx) => {
-          if (entry[1] !== lastPtsF) { rankF = idx + 1; lastPtsF = entry[1]; }
-          const gp = gamesPlayedMap[entry[0]] || 0;
-          description += `${rankF}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
-        });
-    } else {
-      const roundMatches = tournament.rounds[tournament.currentRound - 1] || [];
-      const completedInRound = roundMatches.length - tournament.activeMatches.length;
-      description = `**Tournament Live - Round ${tournament.currentRound}/${tournament.rounds.length}**\n`;
-      description += `${completedInRound}/${roundMatches.length} matches completed\n\n`;
-      if (tournament.activeMatches.length > 0) {
-        description += `**⚔️ Active Matches:**\n`;
-        tournament.activeMatches.forEach(m => {
-          const activePhase = m.gamePhase ?? 1;
-          const gamesPerMatch = getMatchPhaseSequence(m).length;
-          const activeGrouping = getGroupingForMatchGame(m, activePhase);
-          fields.push({
-            name: `Match ${m.matchNumber} — Game ${activePhase}/${gamesPerMatch}`,
-            value: `🔵 <@${activeGrouping.blue.spymaster}> & <@${activeGrouping.blue.guesser}>\nvs 🔴 <@${activeGrouping.red.spymaster}> & <@${activeGrouping.red.guesser}>`,
-            inline: true,
-          });
-        });
-      }
-      description += `**Scoreboard:**\n`;
-      let rankL = 0;
-      let lastPtsL = null;
-      Array.from(tournament.scores.entries())
-        .sort((a, b) => b[1] - a[1])
-        .forEach((entry, idx) => {
-          if (entry[1] !== lastPtsL) { rankL = idx + 1; lastPtsL = entry[1]; }
-          const gp = gamesPlayedMap[entry[0]] || 0;
-          description += `${rankL}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
-        });
-    }
-
-    const websiteRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setLabel('🌐 Website').setStyle(ButtonStyle.Link).setURL(getWebBaseUrl()),
-      new ButtonBuilder().setCustomId('leave_tournament').setLabel('🚪 Leave Tournament').setStyle(ButtonStyle.Danger),
-    );
-    const updatedEmbed = EmbedBuilder.from(message.embeds[0]).setDescription(description).setFields(fields);
-    await message.edit({ embeds: [updatedEmbed], components: [websiteRow] });
-  } catch (error) {
-    console.error('[updateScoreboard] Failed:', error.message);
-  }
-}
 
 async function allocateRound(guild) {
   if (!tournament.started || tournament.rounds.length === 0) {
@@ -1486,38 +968,23 @@ async function allocateRound(guild) {
   if (tournament.currentRound > 1) {
     try {
       const channel = mainChannel;
+      // Clear out last round's messages (bulk delete only works on messages under 14 days old).
       const messages = await channel.messages.fetch({ limit: 100 });
       const toDelete = messages.filter(msg => msg.id !== tournament.setupMessage);
-      for (const msg of toDelete.values()) await msg.delete().catch(() => null);
-
-      const completedRound = tournament.currentRound - 1;
-      const summaryEmbed = new EmbedBuilder()
-        .setTitle(`📊 Round ${completedRound} Complete!`)
-        .setColor(0x0099ff);
+      const recent = toDelete.filter(msg => Date.now() - msg.createdTimestamp < 13.5 * 864e5);
+      if (recent.size > 0) await channel.bulkDelete(recent, true).catch(e => console.warn('[allocate] Bulk delete failed:', e.message));
+      for (const msg of toDelete.values()) if (!recent.has(msg.id)) await msg.delete().catch(() => null);
 
       const results = tournament.roundResults.slice().sort((a, b) => a.matchNumber - b.matchNumber || (a.gameIndex || 1) - (b.gameIndex || 1));
-      if (results.length > 0) {
-        results.forEach(r => {
-          const howStr = r.assassin ? 'assassin' : `${r.remainingCards} card${r.remainingCards !== 1 ? 's' : ''} left`;
-          const winnerLabel = r.winner === 'blue' ? '🔵 Blue wins' : '🔴 Red wins';
-          const wSpy  = r.winner === 'blue' ? r.grouping.blue.spymaster  : r.grouping.red.spymaster;
-          const wGues = r.winner === 'blue' ? r.grouping.blue.guesser    : r.grouping.red.guesser;
-          const lSpy  = r.winner === 'blue' ? r.grouping.red.spymaster   : r.grouping.blue.spymaster;
-          const lGues = r.winner === 'blue' ? r.grouping.red.guesser     : r.grouping.blue.guesser;
-          const ptsLine = r.losePoints !== 0
-            ? `+${r.winPoints} / ${r.losePoints > 0 ? '+' : ''}${r.losePoints} pts`
-            : `+${r.winPoints} / +0 pts`;
-          const gameLabel = r.gameIndex ? ` (Game ${r.gameIndex})` : '';
-          summaryEmbed.addFields({
-            name: `Match ${r.matchNumber}${gameLabel} — ${winnerLabel} (${howStr})`,
-            value: `🔵 <@${r.grouping.blue.spymaster}> & <@${r.grouping.blue.guesser}> vs 🔴 <@${r.grouping.red.spymaster}> & <@${r.grouping.red.guesser}>\n` +
-                   `🏆 <@${wSpy}> & <@${wGues}>  ${ptsLine}  ·  😔 <@${lSpy}> & <@${lGues}>`,
-          });
-        });
-      } else {
-        summaryEmbed.setDescription('No match results recorded.');
+      const byMatch = new Map();
+      for (const r of results) {
+        if (!byMatch.has(r.matchNumber)) byMatch.set(r.matchNumber, []);
+        byMatch.get(r.matchNumber).push(r);
       }
-      await channel.send({ embeds: [summaryEmbed] });
+      await channel.send(cards.roundSummaryCard({
+        round: tournament.currentRound - 1,
+        byMatch: Array.from(byMatch, ([matchNumber, games]) => ({ matchNumber, games })),
+      }));
 
       // Clear results only after the summary has been successfully posted
       tournament.roundResults = [];
@@ -1533,60 +1000,42 @@ async function allocateRound(guild) {
   // Allocate all matches in this round simultaneously
   const channel = mainChannel;
 
-  // Post round header with deadline (deadline is set just after the loop, so compute it now for display)
-  const timeoutDaysHeader = parseFloat(process.env.ROUND_TIMEOUT_DAYS) || 14;
-  const deadlineMs = Date.now() + timeoutDaysHeader * 24 * 60 * 60 * 1000;
-  const deadlineTs = Math.floor(deadlineMs / 1000);
-  const headerEmbed = new EmbedBuilder()
-    .setTitle(`📋 Round ${tournament.currentRound} — ${currentRoundMatches.length} Game${currentRoundMatches.length !== 1 ? 's' : ''}`)
-    .setDescription(`Complete all games below before <t:${deadlineTs}:F> (<t:${deadlineTs}:R>).`)
-    .setColor(0x5865f2);
-  await channel.send({ embeds: [headerEmbed] });
+  const timeoutDays = parseFloat(process.env.ROUND_TIMEOUT_DAYS) || 14;
+  const deadlineMs = Date.now() + timeoutDays * 24 * 60 * 60 * 1000;
 
+  // One thread per match, opened with game 1's card (which pings the four players).
   for (let i = 0; i < currentRoundMatches.length; i++) {
     const roundEntry = getRoundMatchEntry(currentRoundMatches[i]);
     const grouping = roundEntry.grouping;
     const matchNumber = i + 1;
     const gamesPerMatch = roundEntry.gamesPlanned;
     const phaseSequence = roundEntry.phaseSequence;
-    const firstGrouping = getGroupingForPhase(grouping, phaseSequence[0] || 1);
-
-    const embed = new EmbedBuilder()
-      .setTitle(`Round ${tournament.currentRound} — Game ${matchNumber}`)
-      .setDescription(
-        `<@${grouping.blue.spymaster}> - Spymaster, <@${grouping.blue.guesser}> - Guesser\n**vs**\n` +
-        `<@${grouping.red.spymaster}> - Spymaster, <@${grouping.red.guesser}> - Guesser`
-      )
-      .setColor(0x0099ff);
+    const games = roundEntry.games || getMatchGames(roundEntry);
 
     try {
-      await channel.send({ embeds: [embed] });
-
       const thread = await channel.threads.create({
         name: `R${tournament.currentRound}M${matchNumber} Game`,
         autoArchiveDuration: 10080,
         reason: 'Tournament game thread',
       });
-
-      const threadEmbed = new EmbedBuilder()
-        .setTitle(`Round ${tournament.currentRound} \u2014 Match ${matchNumber} (Game 1 of ${gamesPerMatch})`)
-        .setDescription(
-          `**Blue Team:**\nSpymaster: <@${firstGrouping.blue.spymaster}>\nGuesser: <@${firstGrouping.blue.guesser}>\n\n` +
-          `**Red Team:**\nSpymaster: <@${firstGrouping.red.spymaster}>\nGuesser: <@${firstGrouping.red.guesser}>\n\nPlay Game 1 then log the result below.${bridgeThreadHint()}`
-        )
-        .setColor(0x00ff00);
-
-      const row = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder().setCustomId('log_blue_win').setLabel('Blue Wins').setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId('log_red_win').setLabel('Red Wins').setStyle(ButtonStyle.Danger),
-        );
-
-      await thread.send({ embeds: [threadEmbed], components: [row] });
-      tournament.activeMatches.push({ grouping, gamesPlanned: gamesPerMatch, phaseSequence, threadId: thread.id, matchNumber, gamePhase: 1, game1Result: null, phaseResults: {}, matchCreatedAt: new Date().toISOString() });
+      await thread.send(cards.gameCard({
+        round: tournament.currentRound, matchNumber, gameIndex: 1, games, bridgeEnabled: bridgeClient.enabled, intro: true,
+      }));
+      tournament.activeMatches.push({ grouping, games: roundEntry.games || undefined, gamesPlanned: gamesPerMatch, phaseSequence: roundEntry.games ? undefined : phaseSequence, threadId: thread.id, matchNumber, gamePhase: 1, game1Result: null, phaseResults: {}, matchCreatedAt: new Date().toISOString() });
     } catch (e) {
       console.error(`Failed to create thread for match ${matchNumber}:`, e.message);
     }
+  }
+
+  // Then one message in the channel listing every match with a link to its thread.
+  if (tournament.activeMatches.length > 0) {
+    await channel.send(cards.roundCard({
+      round: tournament.currentRound,
+      deadlineMs,
+      matches: tournament.activeMatches.map(m => ({
+        matchNumber: m.matchNumber, players: scheduler.playersOf(m.grouping), gamesPlanned: getMatchGameCount(m), threadUrl: getThreadUrl(m.threadId),
+      })),
+    })).catch(e => console.error('[allocate] Failed to post the round card:', e.message));
   }
 
   if (tournament.activeMatches.length === 0) {
@@ -1594,12 +1043,12 @@ async function allocateRound(guild) {
   }
 
   // Set round deadline and schedule warning + expiry timers
-  const timeoutDays = parseFloat(process.env.ROUND_TIMEOUT_DAYS) || 14;
-  tournament.roundDeadline = Date.now() + timeoutDays * 24 * 60 * 60 * 1000;
+  tournament.roundDeadline = deadlineMs;
   tournament.roundStartedAt = new Date().toISOString();
   await saveTournamentData();
   scheduleRoundTimers(guild);
   startThreadKeepAlive(guild);
+  refreshSetupMessage(guild).catch(() => null);
   return { success: true, message: `Round ${tournament.currentRound} allocated with ${tournament.activeMatches.length} match(es).` };
 }
 
@@ -1645,38 +1094,6 @@ async function cancelPendingRemoval(guild, reason) {
   }
 }
 
-// Mark all 8 role-config strings for a match (game 1 + swapped game 2) as played.
-// Team colour is intentionally omitted so that {blue: A+B, red: C+D} and
-// {blue: C+D, red: A+B} are treated as the same match.
-function markConfigsAsPlayed(grouping, playedConfigs) {
-  const swapped = getSwappedGrouping(grouping);
-  playedConfigs.add(`${grouping.blue.spymaster}-${grouping.blue.guesser}-spymaster`);
-  playedConfigs.add(`${grouping.blue.guesser}-${grouping.blue.spymaster}-guesser`);
-  playedConfigs.add(`${grouping.red.spymaster}-${grouping.red.guesser}-spymaster`);
-  playedConfigs.add(`${grouping.red.guesser}-${grouping.red.spymaster}-guesser`);
-  playedConfigs.add(`${swapped.blue.spymaster}-${swapped.blue.guesser}-spymaster`);
-  playedConfigs.add(`${swapped.blue.guesser}-${swapped.blue.spymaster}-guesser`);
-  playedConfigs.add(`${swapped.red.spymaster}-${swapped.red.guesser}-spymaster`);
-  playedConfigs.add(`${swapped.red.guesser}-${swapped.red.spymaster}-guesser`);
-}
-
-function rollbackSingleGameScore(grouping, result) {
-  if (!grouping || !result || !['blue', 'red'].includes(result.winner)) return;
-  const winPoints = Number.isFinite(result.winPoints) ? result.winPoints : 3;
-  const losePoints = Number.isFinite(result.losePoints)
-    ? result.losePoints
-    : (result.assassin ? -1 : ((parseInt(result.remainingCards, 10) || 0) <= 3 ? 1 : 0));
-  const bluePlayers = [grouping.blue.spymaster, grouping.blue.guesser];
-  const redPlayers  = [grouping.red.spymaster,  grouping.red.guesser];
-  if (result.winner === 'blue') {
-    bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - winPoints));
-    redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - losePoints));
-  } else {
-    redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - winPoints));
-    bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - losePoints));
-  }
-}
-
 function deriveGroupingFromStoredRounds(entry) {
   const roundNumber = parseInt(entry?.roundNumber, 10);
   const matchNumber = parseInt(entry?.matchNumber, 10);
@@ -1685,6 +1102,7 @@ function deriveGroupingFromStoredRounds(entry) {
   const round = tournament.rounds[roundNumber - 1];
   if (!Array.isArray(round) || !round[matchNumber - 1]) return null;
   const roundEntry = getRoundMatchEntry(round[matchNumber - 1]);
+  if (roundEntry.games) return roundEntry.games[(parseInt(entry?.game, 10) || 1) - 1] || null;
   if (!hasValidGrouping(roundEntry.grouping)) return null;
   return getGroupingForPhase(roundEntry.grouping, gamePhase);
 }
@@ -1720,212 +1138,76 @@ function normalizeHistoryForScheduling(activePlayerSet) {
   return { normalized, reconstructionTriggered, skippedEntries };
 }
 
-function addGroupingRoleCounts(grouping, roleCounts) {
-  const increments = [
-    [grouping.blue.spymaster, 'spymaster'],
-    [grouping.blue.guesser, 'guesser'],
-    [grouping.red.spymaster, 'spymaster'],
-    [grouping.red.guesser, 'guesser'],
-  ];
-  for (const [id, role] of increments) {
-    if (!roleCounts.has(id)) roleCounts.set(id, { spymaster: 0, guesser: 0 });
-    roleCounts.get(id)[role]++;
+// Rounds each active player has sat out so far (rounds since they first
+// played, or since round 1 for players who were there from the start).
+function getSitOutCounts(activePlayers) {
+  const playedIn = new Map(activePlayers.map(p => [p, new Set()]));
+  for (const entry of tournament.history) {
+    if (!hasValidGrouping(entry.grouping)) continue;
+    for (const id of scheduler.playersOf(entry.grouping)) if (playedIn.has(id)) playedIn.get(id).add(entry.roundNumber);
   }
+  const completedRounds = Math.max(0, tournament.currentRound - 1);
+  const counts = new Map();
+  for (const p of activePlayers) {
+    const rounds = playedIn.get(p);
+    const first = rounds.size > 0 ? Math.min(...rounds) : completedRounds + 1;
+    const span = Math.max(0, completedRounds - Math.min(first, completedRounds + 1) + 1);
+    counts.set(p, Math.max(0, span - rounds.size));
+  }
+  return counts;
 }
 
-function wouldViolateStrictRoleCaps(grouping, roleCounts) {
-  const clone = new Map();
-  for (const [id, counts] of roleCounts.entries()) {
-    clone.set(id, { spymaster: counts.spymaster, guesser: counts.guesser });
-  }
-  addGroupingRoleCounts(grouping, clone);
-  for (const id of [
-    grouping.blue.spymaster,
-    grouping.blue.guesser,
-    grouping.red.spymaster,
-    grouping.red.guesser,
-  ]) {
-    const counts = clone.get(id) || { spymaster: 0, guesser: 0 };
-    if (Math.abs(counts.spymaster - counts.guesser) > STRICT_ROLE_CAP_DELTA) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function buildHistoryDerivedFairnessState(players, normalizedHistoryEntries, normalizedActiveGroupings) {
-  const gamesMissedTotals = new Map(players.map(p => [p, 0]));
-  const roleCounts = new Map(players.map(p => [p, { spymaster: 0, guesser: 0 }]));
-  const roundGames = new Map();
-
-  for (const entry of normalizedHistoryEntries) {
-    const roundNum = parseInt(entry.roundNumber, 10);
-    if (!roundNum) continue;
-    if (!roundGames.has(roundNum)) roundGames.set(roundNum, new Map(players.map(p => [p, 0])));
-    const map = roundGames.get(roundNum);
-    const ids = [
-      entry.grouping.blue.spymaster,
-      entry.grouping.blue.guesser,
-      entry.grouping.red.spymaster,
-      entry.grouping.red.guesser,
-    ];
-    ids.forEach(id => map.set(id, (map.get(id) || 0) + 1));
-    addGroupingRoleCounts(entry.grouping, roleCounts);
-  }
-
-  for (const grouping of normalizedActiveGroupings) {
-    addGroupingRoleCounts(grouping, roleCounts);
-  }
-
-  const sortedRounds = Array.from(roundGames.keys()).sort((a, b) => a - b);
-  for (const roundNum of sortedRounds) {
-    const map = roundGames.get(roundNum);
-    const maxGames = Math.max(0, ...players.map(p => map.get(p) || 0));
-    for (const playerId of players) {
-      const played = map.get(playerId) || 0;
-      gamesMissedTotals.set(playerId, (gamesMissedTotals.get(playerId) || 0) + Math.max(0, maxGames - played));
-    }
-  }
-
-  let lastRoundSitOut = new Set();
-  const lastRoundNum = sortedRounds.length > 0 ? sortedRounds[sortedRounds.length - 1] : null;
-  if (lastRoundNum !== null) {
-    const map = roundGames.get(lastRoundNum);
-    const maxGames = Math.max(0, ...players.map(p => map.get(p) || 0));
-    lastRoundSitOut = new Set(players.filter(p => (map.get(p) || 0) === 0 && maxGames > 0));
-  }
-
-  return { gamesMissedTotals, lastRoundSitOut, roleCounts };
-}
-
-function cloneRoleCountsMap(roleCountsMap) {
-  return new Map(
-    Array.from(roleCountsMap.entries()).map(([id, counts]) => [
-      id,
-      { spymaster: counts.spymaster, guesser: counts.guesser },
-    ])
-  );
-}
-
-async function refreshCurrentRoundThreadsAndSchedule(guild) {
-  if (!guild || tournament.activeMatches.length === 0) {
-    return { refreshed: false, refreshedCount: 0, message: null };
-  }
-  const hasCompletedCurrentRoundGames =
-    tournament.roundResults.length > 0 ||
-    tournament.history.some(h => h.roundNumber === tournament.currentRound);
-  if (hasCompletedCurrentRoundGames) {
-    return {
-      refreshed: false,
-      refreshedCount: 0,
-      message: 'Cannot refresh the current round after results have been completed. Use force-end if you need to move on, or edit results manually.',
-    };
-  }
-
-  for (const match of tournament.activeMatches) {
-    const phaseResults = match.phaseResults || {};
-    if (match.game1Result && !phaseResults[1]) phaseResults[1] = match.game1Result;
-    const gamesPlanned = getMatchPhaseSequence(match).length;
-    for (let gameIdx = 1; gameIdx <= gamesPlanned; gameIdx++) {
-      const result = phaseResults[gameIdx];
-      if (!result) continue;
-      rollbackSingleGameScore(getGroupingForMatchGame(match, gameIdx), result);
-    }
-  }
-
-  for (const match of tournament.activeMatches) {
-    try {
-      const thread = await guild.channels.fetch(match.threadId).catch(() => null);
-      if (thread) await thread.setArchived(true).catch(() => null);
-    } catch {}
-  }
-
-  const refreshedCount = tournament.activeMatches.length;
-  tournament.activeMatches = [];
-  tournament.currentRoundIndex = 0;
-  tournament.roundDeadline = null;
-  clearRoundTimers();
-
-  const activePlayers = Array.from(tournament.players);
-  recalculateFutureRounds(activePlayers);
-  await saveTournamentData();
-
-  const allocateResult = await allocateRound(guild);
-  if (!allocateResult.success) {
-    return {
-      refreshed: false,
-      refreshedCount,
-      message: `Recalculated rounds, but failed to repost the current round: ${allocateResult.message}`,
-    };
-  }
-  return { refreshed: true, refreshedCount, message: null };
-}
-
-// Recalculate all future (not-yet-started) rounds given the current set of active players.
-// Preserves completed rounds and any currently in-progress round.
+// Recalculate all future (not-yet-started) rounds for the current players,
+// using the 6-game format (src/scheduler.js). Everything already played
+// (history) or in progress (active matches) counts, so groups only get the
+// games they still owe. Completed rounds and any in-progress round are kept.
 function recalculateFutureRounds(activePlayers) {
+  const keepUntilIndex = tournament.activeMatches.length > 0
+    ? tournament.currentRound   // rounds[0..currentRound-1] inclusive
+    : tournament.currentRound - 1;
   if (activePlayers.length < 4) {
     // Not enough players for any new matches — trim future rounds so tournament ends naturally
-    const keepUntilIndex = tournament.activeMatches.length > 0
-      ? tournament.currentRound
-      : tournament.currentRound - 1;
     tournament.rounds = tournament.rounds.slice(0, keepUntilIndex);
     return;
   }
 
-  const activePlayerSet = new Set(activePlayers);
-  const normalizedHistory = normalizeHistoryForScheduling(activePlayerSet);
+  const normalizedHistory = normalizeHistoryForScheduling(new Set(activePlayers));
   if (normalizedHistory.reconstructionTriggered) {
     const skippedLabel = normalizedHistory.skippedEntries === 1 ? 'entry' : 'entries';
     console.warn(`[scheduler] History reconstruction/audit applied for recalculation (skipped ${normalizedHistory.skippedEntries} invalid ${skippedLabel}).`);
   }
+  const playedGroupings = normalizedHistory.normalized.map(entry => entry.grouping);
+  for (const match of tournament.activeMatches) playedGroupings.push(...getMatchGames(match));
 
-  // Build the set of already-played (or in-progress) pod-local configs/layouts from history and active matches
-  const playedConfigs = new Set();
-  const playedLayouts = new Set();
-  for (const entry of normalizedHistory.normalized) {
-    const configKeys = getPodScopedConfigKeys(entry.grouping);
-    for (const cfg of configKeys) playedConfigs.add(cfg);
-    playedLayouts.add(getPodScopedLayoutKey(entry.grouping));
-  }
-  const normalizedActiveGroupings = [];
-  for (const match of tournament.activeMatches) {
-    if (!hasValidGrouping(match.grouping)) continue;
-    const firstGrouping = getGroupingForMatchGame(match, 1);
-    const players = [
-      firstGrouping.blue.spymaster,
-      firstGrouping.blue.guesser,
-      firstGrouping.red.spymaster,
-      firstGrouping.red.guesser,
-    ];
-    if (players.some(id => !activePlayerSet.has(id))) continue;
-    const gamesPlanned = getMatchPhaseSequence(match).length;
-    for (let gameIdx = 1; gameIdx <= gamesPlanned; gameIdx++) {
-      const grouping = getGroupingForMatchGame(match, gameIdx);
-      const configKeys = getPodScopedConfigKeys(grouping);
-      for (const cfg of configKeys) playedConfigs.add(cfg);
-      playedLayouts.add(getPodScopedLayoutKey(grouping));
-      normalizedActiveGroupings.push(grouping);
-    }
-  }
-
-  const fairnessState = buildHistoryDerivedFairnessState(
-    activePlayers,
-    normalizedHistory.normalized,
-    normalizedActiveGroupings
-  );
-
-  // Generate remaining rounds skipping already-played configs
-  const futureRounds = generateRounds(activePlayers, playedConfigs, playedLayouts, fairnessState);
-
-  // Keep fully-completed rounds + any in-progress round, then append new future rounds
-  const keepUntilIndex = tournament.activeMatches.length > 0
-    ? tournament.currentRound   // rounds[0..currentRound-1] inclusive
-    : tournament.currentRound - 1;
+  const futureRounds = scheduler.generateSchedule(activePlayers, {
+    playedGroupings,
+    sitOutCounts: getSitOutCounts(activePlayers),
+  });
   tournament.rounds = [
     ...tournament.rounds.slice(0, keepUntilIndex),
     ...futureRounds,
   ];
+  console.log(`[scheduler] ${futureRounds.length} future round(s) planned for ${activePlayers.length} players.`);
+}
+
+// "Fix Matchups": rebuild every future round with the current scheduler,
+// assuming the current round finishes as scheduled (its matches count as
+// played). Also how a schedule from an older format is switched over.
+async function fixMatchups(guild) {
+  const before = tournament.rounds.length;
+  recalculateFutureRounds(Array.from(tournament.players));
+  await saveTournamentData();
+  if (guild) refreshSetupMessage(guild).catch(() => null);
+  const keptThrough = tournament.activeMatches.length > 0 ? tournament.currentRound : tournament.currentRound - 1;
+  return { before, after: tournament.rounds.length, future: tournament.rounds.length - keptThrough, keptThrough };
+}
+
+function describeFixMatchups({ before, after, future, keptThrough }) {
+  const kept = keptThrough > 0
+    ? `Rounds 1–${keptThrough}${tournament.activeMatches.length > 0 ? ' (including the current round)' : ''} are unchanged. `
+    : '';
+  return `Future rounds recalculated with ${tournament.players.size} players. ${kept}` +
+    `${future} round${future !== 1 ? 's' : ''} still to play (${before} → ${after} rounds in total).`;
 }
 
 // Shared logic for closing a mid-tournament signup window.
@@ -1947,7 +1229,7 @@ async function closeSignups(guild) {
     await channel.send(`✅ Signups closed with ${activePlayers.length} player${activePlayers.length !== 1 ? 's' : ''}. Future rounds have been recalculated — ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned.`);
   }
   if (guild) {
-    updateScoreboard(guild).catch(() => null);
+    refreshSetupMessage(guild).catch(() => null);
     if (tournament.activeMatches.length === 0 && tournament.currentRound <= tournament.rounds.length) {
       allocateRound(guild).catch(e => console.error('[closeSignups] Auto-allocate failed:', e.message));
     }
@@ -2048,68 +1330,21 @@ async function sendRoundExpiry(guild) {
   const mainChannel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
   if (!mainChannel) return;
 
-  const ts = Math.floor(tournament.roundDeadline / 1000);
   const allRoundMatches = tournament.rounds[tournament.currentRound - 1] || [];
-  const completedNums  = new Set(tournament.roundResults.map(r => r.matchNumber));
-  const stillActive    = tournament.activeMatches;
+  const stillActive = tournament.activeMatches.slice().sort((a, b) => a.matchNumber - b.matchNumber);
+  const activeNums = new Set(stillActive.map(m => m.matchNumber));
 
-  const expiredEmbed = new EmbedBuilder()
-    .setTitle(`⏰ Round ${tournament.currentRound} Timer Expired`)
-    .setColor(0xff4500)
-    .setDescription(`The round deadline was <t:${ts}:F>.`);
-
-  if (completedNums.size > 0) {
-    const completedLines = tournament.roundResults
-      .sort((a, b) => a.matchNumber - b.matchNumber)
-      .map(r => {
-        const wLabel = r.winner === 'blue' ? '🔵 Blue' : '🔴 Red';
-        return `Game ${r.matchNumber}: **${wLabel}** won`;
-      }).join('\n');
-    expiredEmbed.addFields({ name: `✅ Completed (${completedNums.size}/${allRoundMatches.length})`, value: completedLines });
-  }
-
-  if (stillActive.length > 0) {
-    const activeLines = stillActive
-      .sort((a, b) => a.matchNumber - b.matchNumber)
-      .map(m => `Game ${m.matchNumber}: 🔵 <@${m.grouping.blue.spymaster}> & <@${m.grouping.blue.guesser}> vs 🔴 <@${m.grouping.red.spymaster}> & <@${m.grouping.red.guesser}>`)
-      .join('\n');
-    expiredEmbed.addFields({ name: `⏳ Still Active (${stillActive.length}/${allRoundMatches.length})`, value: activeLines });
-  }
-
-  const webUrl = getWebBaseUrl();
-  expiredEmbed.addFields({ name: '⚙️ Admin Action Required', value: `Log in to the **[tournament website](${webUrl})** as admin to force-end this round and advance to the next.` });
-
-  await mainChannel.send({ embeds: [expiredEmbed] });
-}
-
-function getTournamentPrediction(playerCount) {
-  if (playerCount < 4) return null;
-
-  const gamesPerMatch = 4;
-  // Each player pairs with every other player in 2 role configs (spymaster, guesser),
-  // giving N*(N-1)*2 configs total.  Each match covers one 4-player teammate pairing, so there
-  // are N*(N-1)/4 scheduled matches in this scheduler model. Prediction uses target max (4) per match.
-  // floor(N/4) matches run in parallel.
-  // N*(N-1) is always even, so integer division is exact.
-  const totalMatches = playerCount * (playerCount - 1) / 4;
-  const totalGames = totalMatches * gamesPerMatch;
-  const concurrentGames = Math.floor(playerCount / 4);
-  const totalRounds = Math.ceil(totalMatches / concurrentGames);
-
-  return {
-    rounds: totalRounds,
-    concurrentGames,
-    totalGames,
-  };
-}
-
-function generateGrouping(players) {
-  // Shuffle players
-  const shuffled = [...players].sort(() => Math.random() - 0.5);
-  return {
-    blue: { spymaster: shuffled[0], guesser: shuffled[1] },
-    red: { spymaster: shuffled[2], guesser: shuffled[3] },
-  };
+  await mainChannel.send(cards.roundExpiryCard({
+    round: tournament.currentRound,
+    deadlineMs: tournament.roundDeadline,
+    totalMatches: allRoundMatches.length,
+    completed: allRoundMatches.map((_, i) => i + 1).filter(n => !activeNums.has(n)).map(n => {
+      const games = tournament.roundResults.filter(r => r.matchNumber === n);
+      return { matchNumber: n, played: games.length, blueWins: games.filter(r => r.winner === 'blue').length };
+    }),
+    active: stillActive.map(m => ({ matchNumber: m.matchNumber, game: m.gamePhase ?? 1, gamesPlanned: getMatchGameCount(m), players: scheduler.playersOf(m.grouping) })),
+    webUrl: getWebBaseUrl(),
+  }));
 }
 
 function getSwappedGrouping(grouping) {
@@ -2119,59 +1354,13 @@ function getSwappedGrouping(grouping) {
   };
 }
 
-function getBlueSwappedGrouping(grouping) {
-  return {
-    blue: { spymaster: grouping.blue.guesser, guesser: grouping.blue.spymaster },
-    red:  { spymaster: grouping.red.spymaster,  guesser: grouping.red.guesser },
-  };
-}
-
-function getRedSwappedGrouping(grouping) {
-  return {
-    blue: { spymaster: grouping.blue.spymaster, guesser: grouping.blue.guesser },
-    red:  { spymaster: grouping.red.guesser,  guesser: grouping.red.spymaster },
-  };
-}
-
+// Legacy matches (before the 6-game format) stored one grouping plus a list of
+// "phases": 2 = both teams swap roles, 3 = only blue swaps, 4 = only red swaps.
 function getGroupingForPhase(grouping, phase) {
   if (phase === 2) return getSwappedGrouping(grouping);
-  if (phase === 3) return getBlueSwappedGrouping(grouping);
-  if (phase === 4) return getRedSwappedGrouping(grouping);
+  if (phase === 3) return { blue: getSwappedGrouping(grouping).blue, red: grouping.red };
+  if (phase === 4) return { blue: grouping.blue, red: getSwappedGrouping(grouping).red };
   return grouping;
-}
-
-function getPhaseButtonSuffix(phase) {
-  return phase > 1 ? `_g${phase}` : '';
-}
-
-function getLayoutKey(grouping) {
-  const blueTeam = `${grouping.blue.spymaster}:${grouping.blue.guesser}`;
-  const redTeam = `${grouping.red.spymaster}:${grouping.red.guesser}`;
-  return [blueTeam, redTeam].sort().join('|');
-}
-
-function getPodKeyFromGrouping(grouping) {
-  const players = [
-    grouping.blue.spymaster,
-    grouping.blue.guesser,
-    grouping.red.spymaster,
-    grouping.red.guesser,
-  ].filter(Boolean).sort();
-  return players.join('|');
-}
-
-function getPodScopedLayoutKey(grouping) {
-  return `${getPodKeyFromGrouping(grouping)}::${getLayoutKey(grouping)}`;
-}
-
-function getPodScopedConfigKeys(grouping) {
-  const podKey = getPodKeyFromGrouping(grouping);
-  return [
-    `${podKey}::${grouping.blue.spymaster}-${grouping.blue.guesser}-spymaster`,
-    `${podKey}::${grouping.blue.guesser}-${grouping.blue.spymaster}-guesser`,
-    `${podKey}::${grouping.red.spymaster}-${grouping.red.guesser}-spymaster`,
-    `${podKey}::${grouping.red.guesser}-${grouping.red.spymaster}-guesser`,
-  ];
 }
 
 function hasValidGrouping(grouping) {
@@ -2196,237 +1385,105 @@ function getMatchPhaseSequence(matchLike) {
   return getDefaultPhaseSequence(matchLike?.gamesPlanned);
 }
 
+// The line-up of every game in a match. New matches store it (`games`);
+// legacy ones derive it from their grouping and phase sequence.
+function getMatchGames(matchLike) {
+  if (Array.isArray(matchLike?.games) && matchLike.games.length > 0) return matchLike.games;
+  return getMatchPhaseSequence(matchLike).map(phase => getGroupingForPhase(matchLike.grouping, phase));
+}
+
+function getMatchGameCount(matchLike) {
+  return getMatchGames(matchLike).length;
+}
+
 function getGroupingForMatchGame(matchLike, gameIndex) {
-  const sequence = getMatchPhaseSequence(matchLike);
-  const actualPhase = sequence[gameIndex - 1] || gameIndex;
-  return getGroupingForPhase(matchLike.grouping, actualPhase);
+  const games = getMatchGames(matchLike);
+  return games[gameIndex - 1] || games[0];
 }
 
 function getRoundMatchEntry(match) {
-  if (match && match.grouping) {
-    const phaseSequence = getMatchPhaseSequence(match);
-    return { grouping: match.grouping, gamesPlanned: phaseSequence.length, phaseSequence };
+  if (match && Array.isArray(match.games) && match.games.length > 0) {
+    return { grouping: match.games[0], games: match.games, gamesPlanned: match.games.length, phaseSequence: null };
   }
-  // Backward compatibility: older saved rounds store grouping directly instead of {grouping, gamesPlanned}.
-  return { grouping: match, gamesPlanned: MIN_GAMES_PER_MATCH, phaseSequence: getDefaultPhaseSequence(MIN_GAMES_PER_MATCH) };
+  // Legacy: {grouping, gamesPlanned, phaseSequence}, or older still a bare grouping.
+  const legacy = match && match.grouping ? match : { grouping: match, gamesPlanned: MIN_GAMES_PER_MATCH };
+  const phaseSequence = getMatchPhaseSequence(legacy);
+  return { grouping: legacy.grouping, games: null, gamesPlanned: phaseSequence.length, phaseSequence };
 }
 
-function generateRounds(players, initialPlayedConfigs = null, initialPlayedLayouts = null, fairnessSeed = null) {
-  const rounds = [];
-
-  // playedConfigs tracks which role-configuration strings have been used.
-  // When called with initialPlayedConfigs (recalculation after roster change),
-  // those already-played configs are seeded in so we skip them automatically.
-  const initialPlayedConfigsSet = initialPlayedConfigs ? new Set(initialPlayedConfigs) : new Set();
-  let currentPlayedConfigs = initialPlayedConfigsSet;
-  const initialPlayedLayoutsSet = initialPlayedLayouts ? new Set(initialPlayedLayouts) : new Set();
-  let currentPlayedLayouts = initialPlayedLayoutsSet;
-  // Try at least this many candidate orderings each round to smooth sit-out fairness.
-  const BASE_ROUND_BUILD_ATTEMPTS = 8;
-
-  const gamesMissedTotals = fairnessSeed?.gamesMissedTotals
-    ? new Map(fairnessSeed.gamesMissedTotals)
-    : new Map(players.map(p => [p, 0]));
-  let lastRoundSitOut = fairnessSeed?.lastRoundSitOut
-    ? new Set(fairnessSeed.lastRoundSitOut)
-    : new Set();
-  const baseRoleCounts = fairnessSeed?.roleCounts
-    ? cloneRoleCountsMap(fairnessSeed.roleCounts)
-    : new Map(players.map(p => [p, { spymaster: 0, guesser: 0 }]));
-
-  function buildRoundForOrder(orderedPlayers, basePlayedConfigs, basePlayedLayouts, baseRoleCountsForRound) {
-    const round = [];
-    const playersUsedThisRound = new Set();
-    const playedClone = new Set(basePlayedConfigs);
-    const playedLayoutsClone = new Set(basePlayedLayouts);
-    const roleCountsClone = cloneRoleCountsMap(baseRoleCountsForRound);
-
-    let continueRound = true;
-    while (continueRound) {
-      let foundMatch = false;
-      matchSearch:
-      for (let i = 0; i < orderedPlayers.length; i++) {
-        if (playersUsedThisRound.has(orderedPlayers[i])) continue;
-        for (let j = i + 1; j < orderedPlayers.length; j++) {
-          if (playersUsedThisRound.has(orderedPlayers[j])) continue;
-          for (let k = 0; k < orderedPlayers.length; k++) {
-            if (k === i || k === j || playersUsedThisRound.has(orderedPlayers[k])) continue;
-            for (let l = k + 1; l < orderedPlayers.length; l++) {
-              if (l === i || l === j || playersUsedThisRound.has(orderedPlayers[l])) continue;
-
-              const pairings = [
-                { blue: [orderedPlayers[i], orderedPlayers[j]], red: [orderedPlayers[k], orderedPlayers[l]] },
-                { blue: [orderedPlayers[i], orderedPlayers[k]], red: [orderedPlayers[j], orderedPlayers[l]] },
-                { blue: [orderedPlayers[i], orderedPlayers[l]], red: [orderedPlayers[j], orderedPlayers[k]] },
-              ];
-
-              for (const pairing of pairings) {
-                const roleAssignments = [
-                  {
-                    blue: { spymaster: pairing.blue[0], guesser: pairing.blue[1] },
-                    red: { spymaster: pairing.red[0], guesser: pairing.red[1] }
-                  },
-                  {
-                    blue: { spymaster: pairing.blue[1], guesser: pairing.blue[0] },
-                    red: { spymaster: pairing.red[0], guesser: pairing.red[1] }
-                  },
-                  {
-                    blue: { spymaster: pairing.blue[0], guesser: pairing.blue[1] },
-                    red: { spymaster: pairing.red[1], guesser: pairing.red[0] }
-                  },
-                  {
-                    blue: { spymaster: pairing.blue[1], guesser: pairing.blue[0] },
-                    red: { spymaster: pairing.red[1], guesser: pairing.red[0] }
-                  },
-                ];
-
-                for (const assignment of roleAssignments) {
-                  const result = checkAndMarkConfigs(assignment, playedClone, playedLayoutsClone, roleCountsClone);
-                  if (result.plannedGames > 0) {
-                    round.push({ grouping: assignment, gamesPlanned: result.plannedGames, phaseSequence: result.phaseSequence });
-                    playersUsedThisRound.add(pairing.blue[0]);
-                    playersUsedThisRound.add(pairing.blue[1]);
-                    playersUsedThisRound.add(pairing.red[0]);
-                    playersUsedThisRound.add(pairing.red[1]);
-                    foundMatch = true;
-                    break matchSearch;
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-      if (!foundMatch) continueRound = false;
-    }
-
-    const sitOutSet = new Set(orderedPlayers.filter(p => !playersUsedThisRound.has(p)));
-    const repeatSitOutCount = Array.from(sitOutSet).filter(p => lastRoundSitOut.has(p)).length;
-    const sitOutPenalty = Array.from(sitOutSet).reduce((sum, p) => sum + (gamesMissedTotals.get(p) || 0), 0);
-    const gamesScheduled = round.reduce((sum, m) => sum + clampGamesPerMatch(m.gamesPlanned), 0);
-    const weightedScore =
-      (round.length * ROUND_SCORE_WEIGHTS.matches) +
-      (gamesScheduled * ROUND_SCORE_WEIGHTS.games) -
-      (repeatSitOutCount * ROUND_SCORE_WEIGHTS.repeatSitOut) -
-      (sitOutPenalty * ROUND_SCORE_WEIGHTS.sitOutMissedGames);
-
-    return { round, playersUsedThisRound, playedClone, playedLayoutsClone, roleCountsClone, sitOutSet, repeatSitOutCount, sitOutPenalty, weightedScore };
+// Copy a match's logged games into history and this round's results.
+// Returns how many games were copied.
+function moveMatchResultsToHistory(matchData) {
+  const phaseResults = matchData.phaseResults || {};
+  if (matchData.game1Result && !phaseResults[1]) phaseResults[1] = matchData.game1Result;
+  const phaseSequence = Array.isArray(matchData.games) ? null : getMatchPhaseSequence(matchData);
+  const gamesPerMatch = getMatchGameCount(matchData);
+  let moved = 0;
+  for (let idx = 1; idx <= gamesPerMatch; idx++) {
+    const g = phaseResults[idx];
+    if (!g) continue;
+    const groupingForGame = getGroupingForMatchGame(matchData, idx);
+    const actualGamePhase = phaseSequence ? (phaseSequence[idx - 1] || idx) : idx;
+    tournament.roundResults.push({
+      matchNumber: matchData.matchNumber,
+      gameIndex: idx,
+      grouping: groupingForGame,
+      winner: g.winner,
+      assassin: g.assassin,
+      remainingCards: g.remainingCards,
+      winPoints: g.winPoints,
+      losePoints: g.losePoints,
+      threadId: matchData.threadId,
+    });
+    tournament.history.push({
+      roundNumber: tournament.currentRound,
+      matchNumber: matchData.matchNumber,
+      game: idx,
+      gamePhase: actualGamePhase,
+      grouping: groupingForGame,
+      winner: g.winner,
+      assassin: g.assassin,
+      remainingCards: g.remainingCards,
+      winPoints: g.winPoints,
+      losePoints: g.losePoints,
+      threadId: matchData.threadId,
+      matchCreatedAt: matchData.matchCreatedAt || null,
+      submittedAt: g.submittedAt || null,
+      submittedBy: g.submittedBy || null,
+      source: g.source || 'manual',
+      detail: g.detail || null, // clue-by-clue history when the game came from codenames.game
+    });
+    moved++;
   }
-
-  // Guard against non-terminating generation loops:
-  // - allow enough headroom for larger brackets (10x players)
-  // - keep a floor so small brackets still get full schedules.
-  const MAX_GENERATED_ROUNDS = Math.max(players.length * 10, 32);
-  let generatedRoundCount = 0;
-
-  while (generatedRoundCount < MAX_GENERATED_ROUNDS) {
-    const attempts = Math.max(players.length, BASE_ROUND_BUILD_ATTEMPTS);
-    let best = null;
-
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      // Priority order: players who sat out last round, then players with higher games-missed totals.
-      // Random tie-break is allowed when weighted/fairness metrics are identical.
-      let orderedPlayers = [...players].sort((a, b) => {
-        const aWasOut = lastRoundSitOut.has(a) ? 1 : 0;
-        const bWasOut = lastRoundSitOut.has(b) ? 1 : 0;
-        if (aWasOut !== bWasOut) return bWasOut - aWasOut;
-        const aSit = gamesMissedTotals.get(a) || 0;
-        const bSit = gamesMissedTotals.get(b) || 0;
-        if (aSit !== bSit) return bSit - aSit;
-        return Math.random() - 0.5;
-      });
-
-      if (orderedPlayers.length > 1) {
-        const rotateBy = attempt % orderedPlayers.length;
-        const rotated = orderedPlayers.slice(rotateBy).concat(orderedPlayers.slice(0, rotateBy));
-        orderedPlayers = rotated;
-      }
-
-      const candidate = buildRoundForOrder(orderedPlayers, currentPlayedConfigs, currentPlayedLayouts, baseRoleCounts);
-      if (candidate.round.length === 0) continue;
-
-      if (!best) {
-        best = candidate;
-        continue;
-      }
-
-      if (candidate.weightedScore > best.weightedScore) {
-        best = candidate;
-      } else if (
-        candidate.weightedScore === best.weightedScore &&
-        Math.random() < 0.5
-      ) {
-        best = candidate;
-      }
-    }
-
-    if (best && best.round.length > 0) {
-      rounds.push(best.round);
-      generatedRoundCount++;
-      currentPlayedConfigs = best.playedClone;
-      currentPlayedLayouts = best.playedLayoutsClone;
-      for (const [id, counts] of best.roleCountsClone.entries()) {
-        baseRoleCounts.set(id, { spymaster: counts.spymaster, guesser: counts.guesser });
-      }
-      lastRoundSitOut = best.sitOutSet;
-      const roundMaxGames = Math.max(0, ...best.round.map(match => clampGamesPerMatch(match.gamesPlanned)));
-      const roundPlayerGames = new Map(players.map(p => [p, 0]));
-      for (const match of best.round) {
-        const games = clampGamesPerMatch(match.gamesPlanned);
-        const ids = [
-          match.grouping.blue.spymaster,
-          match.grouping.blue.guesser,
-          match.grouping.red.spymaster,
-          match.grouping.red.guesser,
-        ];
-        ids.forEach(id => roundPlayerGames.set(id, (roundPlayerGames.get(id) || 0) + games));
-      }
-      for (const playerId of players) {
-        const played = roundPlayerGames.get(playerId) || 0;
-        const missed = Math.max(0, roundMaxGames - played);
-        gamesMissedTotals.set(playerId, (gamesMissedTotals.get(playerId) || 0) + missed);
-      }
-    } else {
-      break;
-    }
-  }
-  if (generatedRoundCount === MAX_GENERATED_ROUNDS) {
-    console.warn(`[scheduler] Round generation guard reached (${MAX_GENERATED_ROUNDS}); stopping to avoid non-terminating schedule build.`);
-  }
-  
-  return rounds;
+  return moved;
 }
 
-function checkAndMarkConfigs(assignment, playedConfigs, playedLayouts, roleCounts) {
-  const playablePhases = [];
-  const phaseConfigKeys = new Map();
-
-  for (let phase = 1; phase <= MAX_GAMES_PER_MATCH; phase++) {
-    const grouping = getGroupingForPhase(assignment, phase);
-    const layoutKey = getPodScopedLayoutKey(grouping);
-    if (playedLayouts.has(layoutKey)) continue;
-    const configKeys = getPodScopedConfigKeys(grouping);
-    if (configKeys.some(cfg => playedConfigs.has(cfg))) continue;
-    if (wouldViolateStrictRoleCaps(grouping, roleCounts)) continue;
-    playablePhases.push(phase);
-    phaseConfigKeys.set(phase, configKeys);
-  }
-
-  if (playablePhases.length === 0) {
-    return { plannedGames: 0, phaseSequence: [] };
-  }
-
-  for (const phase of playablePhases) {
-    const grouping = getGroupingForPhase(assignment, phase);
-    const layoutKey = getPodScopedLayoutKey(grouping);
-    playedLayouts.add(layoutKey);
-    for (const cfg of phaseConfigKeys.get(phase) || []) {
-      playedConfigs.add(cfg);
+// End the current round now: logged games are kept (scores already include
+// them), unplayed games score nothing, threads are archived, and the next
+// round is allocated.
+async function forceEndRound(guild) {
+  const ended = tournament.activeMatches.length;
+  let gamesKept = 0;
+  for (const match of tournament.activeMatches) {
+    gamesKept += moveMatchResultsToHistory(match);
+    if (guild) {
+      const thread = await guild.channels.fetch(match.threadId).catch(() => null);
+      if (thread) await thread.setArchived(true).catch(() => null);
     }
-    addGroupingRoleCounts(grouping, roleCounts);
   }
-
-  return { plannedGames: playablePhases.length, phaseSequence: playablePhases };
+  tournament.activeMatches = [];
+  clearRoundTimers();
+  tournament.roundDeadline = null;
+  tournament.currentRound++;
+  tournament.currentRoundIndex = 0;
+  await saveTournamentData();
+  if (guild) {
+    refreshSetupMessage(guild).catch(() => null);
+    if (tournament.currentRound <= tournament.rounds.length) {
+      allocateRound(guild).catch(e => console.error('[force-end] Auto-allocate failed:', e.message));
+    }
+  }
+  return { ended, gamesKept };
 }
 
 async function processGameResult(interaction, matchData, winner, assassin, remainingCards) {
@@ -2444,9 +1501,8 @@ async function recordGameResult(ctx, matchData, winner, assassin, remainingCards
   const { guild } = ctx;
   const submittedBy = ctx.submittedBy;
   const submittedAt = new Date().toISOString();
-  const gamePhase = matchData.gamePhase ?? 1; // sequential game number (1-based); phaseSequence maps this to actual phase config
-  const phaseSequence = getMatchPhaseSequence(matchData);
-  const gamesPerMatch = phaseSequence.length;
+  const gamePhase = matchData.gamePhase ?? 1; // sequential game number (1-based)
+  const gamesPerMatch = getMatchGameCount(matchData);
   const currentGrouping = getGroupingForMatchGame(matchData, gamePhase);
 
   const winPoints = 3;
@@ -2484,64 +1540,17 @@ async function recordGameResult(ctx, matchData, winner, assassin, remainingCards
     const nextPhase = gamePhase + 1;
     matchData.gamePhase = nextPhase;
     await saveTournamentData();
-    updateScoreboard(guild).catch(() => null);
+    refreshSetupMessage(guild).catch(() => null);
 
     const replyText = `**Game ${gamePhase}** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**\n\n_Game ${nextPhase} is starting._`;
     await ctx.reply(replyText);
 
-    const nextGrouping = getGroupingForMatchGame(matchData, nextPhase);
-    const nextGameEmbed = new EmbedBuilder()
-      .setTitle(`Match ${matchData.matchNumber} — Game ${nextPhase} of ${gamesPerMatch}`)
-      .setDescription(
-        `**Blue Team:**\nSpymaster: <@${nextGrouping.blue.spymaster}>\nGuesser: <@${nextGrouping.blue.guesser}>\n\n` +
-        `**Red Team:**\nSpymaster: <@${nextGrouping.red.spymaster}>\nGuesser: <@${nextGrouping.red.guesser}>\n\nPlay Game ${nextPhase} then log the result below.` +
-        (bridgeClient.enabled ? '\n\n🕵️ Use **Play next game** in the same codenames.game room — the result is logged automatically.' : '')
-      )
-      .setColor(0xff9900);
-
-    const nextPhaseSuffix = getPhaseButtonSuffix(nextPhase);
-    const nextGameRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`log_blue_win${nextPhaseSuffix}`).setLabel('Blue Wins').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`log_red_win${nextPhaseSuffix}`).setLabel('Red Wins').setStyle(ButtonStyle.Danger),
-    );
-
-    await ctx.channel.send({ embeds: [nextGameEmbed], components: [nextGameRow] });
+    await ctx.channel.send(cards.gameCard({
+      round: tournament.currentRound, matchNumber: matchData.matchNumber, gameIndex: nextPhase,
+      games: getMatchGames(matchData), bridgeEnabled: bridgeClient.enabled,
+    }));
   } else {
-    for (let idx = 1; idx <= gamesPerMatch; idx++) {
-      const g = phaseResults[idx];
-      if (!g) continue;
-      const groupingForGame = getGroupingForMatchGame(matchData, idx);
-      const actualGamePhase = phaseSequence[idx - 1] || idx;
-      tournament.roundResults.push({
-        matchNumber: matchData.matchNumber,
-        gameIndex: idx,
-        grouping: groupingForGame,
-        winner: g.winner,
-        assassin: g.assassin,
-        remainingCards: g.remainingCards,
-        winPoints: g.winPoints,
-        losePoints: g.losePoints,
-        threadId: matchData.threadId,
-      });
-      tournament.history.push({
-        roundNumber: tournament.currentRound,
-        matchNumber: matchData.matchNumber,
-        game: idx,
-        gamePhase: actualGamePhase,
-        grouping: groupingForGame,
-        winner: g.winner,
-        assassin: g.assassin,
-        remainingCards: g.remainingCards,
-        winPoints: g.winPoints,
-        losePoints: g.losePoints,
-        threadId: matchData.threadId,
-        matchCreatedAt: matchData.matchCreatedAt || null,
-        submittedAt: g.submittedAt || null,
-        submittedBy: g.submittedBy || null,
-        source: g.source || 'manual',
-        detail: g.detail || null, // clue-by-clue history when the game came from codenames.game
-      });
-    }
+    moveMatchResultsToHistory(matchData);
 
     tournament.activeMatches = tournament.activeMatches.filter(m => m.threadId !== matchData.threadId);
     tournament.currentRoundIndex++;
@@ -2557,7 +1566,7 @@ async function recordGameResult(ctx, matchData, winner, assassin, remainingCards
     await ctx.reply(replyText);
 
     await saveTournamentData();
-    updateScoreboard(guild).catch(() => null);
+    refreshSetupMessage(guild).catch(() => null);
 
     if (roundComplete) {
       clearRoundTimers();
@@ -2605,7 +1614,7 @@ async function handleBridgeResult(body) {
     const { winner } = body;
     const assassin = Boolean(body.assassin);
     const remainingCards = codenamesBridge.remainingCardsFromPayload(body);
-    const gamesPlanned = getMatchPhaseSequence(matchData).length;
+    const gamesPlanned = getMatchGameCount(matchData);
     const seatedGame = codenamesBridge.findGameForSeats(body.seats, gamesPlanned, idx => getGroupingForMatchGame(matchData, idx));
 
     if (seatedGame === gamePhase) {
@@ -2635,23 +1644,11 @@ async function handleBridgeResult(body) {
     };
     await saveTournamentData();
 
-    const expected = getGroupingForMatchGame(matchData, gamePhase);
-    const winnerLabel = winner === 'blue' ? '🔵 Blue' : '🔴 Red';
-    const howStr = assassin ? 'assassin hit' : `${remainingCards} card${remainingCards !== 1 ? 's' : ''} remaining`;
-    const embed = new EmbedBuilder()
-      .setTitle(`🕵️ Game ${gamePhase} result detected — please confirm`)
-      .setDescription(
-        `codenames.game says **${winnerLabel}** won (${howStr})${body.room_url ? ` in ${body.room_url}` : ''}.\n\n` +
-        `The seats in the room didn't match the line-up for Game ${gamePhase} (or some players haven't pressed **I'm playing** on the room card), so it wasn't logged automatically.\n\n` +
-        `**Expected:**\n🔵 Spymaster: <@${expected.blue.spymaster}> · Guesser: <@${expected.blue.guesser}>\n🔴 Spymaster: <@${expected.red.spymaster}> · Guesser: <@${expected.red.guesser}>\n\n` +
-        `**In the room:**\n${codenamesBridge.describeSeats(body.seats)}`
-      )
-      .setColor(0xffcc00);
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`cnb_ok_${pendingId}`).setLabel(`Log as Game ${gamePhase}`).setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`cnb_no_${pendingId}`).setLabel('Dismiss').setStyle(ButtonStyle.Secondary),
-    );
-    await thread.send({ embeds: [embed], components: [row] });
+    await thread.send(cards.bridgeConfirmCard({
+      pendingId, gamePhase, winner, assassin, remainingCards, roomUrl: body.room_url || null,
+      expected: getGroupingForMatchGame(matchData, gamePhase),
+      seatsText: codenamesBridge.describeSeats(body.seats),
+    }));
     return { status: 202, data: { status: 'needs_confirmation', game: gamePhase } };
   } catch (error) {
     // Let the BGA bot retry: the seat check stops a retry from scoring the game twice.
@@ -2846,12 +1843,37 @@ function buildWebData() {
   };
 }
 
+// The dashboard page and its static files, read once at startup. `__V__` in
+// the page becomes a per-start version so browsers fetch new CSS/JS after a deploy.
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const STATIC_TYPES = { '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+const ASSET_VERSION = Date.now().toString(36);
 let cachedDashboardHtml = null;
 try {
-  cachedDashboardHtml = require('fs').readFileSync(path.join(__dirname, '..', 'public', 'index.html'));
+  cachedDashboardHtml = require('fs').readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf-8').replaceAll('__V__', ASSET_VERSION);
 } catch {
   console.warn('[web] public/index.html not found — dashboard will return 404');
 }
+const staticFiles = new Map(); // "/static/app.js" -> { body, type }
+try {
+  for (const name of require('fs').readdirSync(path.join(PUBLIC_DIR, 'static'))) {
+    const type = STATIC_TYPES[path.extname(name)];
+    if (type) staticFiles.set(`/static/${name}`, { body: require('fs').readFileSync(path.join(PUBLIC_DIR, 'static', name)), type });
+  }
+} catch {
+  console.warn('[web] public/static not found — dashboard styles and scripts will be missing');
+}
+// Chart.js is served from the package rather than a CDN.
+try {
+  staticFiles.set('/static/vendor/chart.umd.js', { body: require('fs').readFileSync(path.join(path.dirname(require.resolve('chart.js')), 'chart.umd.js')), type: STATIC_TYPES['.js'] });
+} catch {
+  console.warn('[web] chart.js package not installed — the Stats charts will not render');
+}
+const HTML_SECURITY_HEADERS = {
+  'X-Frame-Options': 'DENY',
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'same-origin',
+};
 
 const WEB_PORT = parseInt(process.env.WEB_PORT) || 80;
 
@@ -3032,7 +2054,7 @@ async function handleHttpRequest(req, res) {
         tournament.started = true;
         tournament.tournamentStartedAt = new Date().toISOString();
         tournament.scores = new Map([...tournament.players].map(id => [id, 0]));
-        tournament.rounds = generateRounds(Array.from(tournament.players));
+        tournament.rounds = scheduler.generateSchedule(Array.from(tournament.players));
 
         // Snapshot display names
         tournament.playerNames = {};
@@ -3049,7 +2071,7 @@ async function handleHttpRequest(req, res) {
         }
 
         await saveTournamentData();
-        if (guild) updateScoreboard(guild).catch(() => null);
+        if (guild) refreshSetupMessage(guild).catch(() => null);
 
         sendJson(res, 200, { ok: true, message: `Tournament started with ${tournament.players.size} players! Generated ${tournament.rounds.length} rounds.` });
         return;
@@ -3068,25 +2090,8 @@ async function handleHttpRequest(req, res) {
       if (action === 'force-end') {
         if (tournament.activeMatches.length === 0) { sendJson(res, 400, { error: 'No active matches to force-end.' }); return; }
         const guild = client.guilds.cache.get(process.env.GUILD_ID);
-        for (const match of tournament.activeMatches) {
-          try {
-            const t = guild ? guild.channels.cache.get(match.threadId) : null;
-            if (t) t.setArchived(true).catch(() => null);
-          } catch {}
-        }
-        const count = tournament.activeMatches.length;
-        tournament.activeMatches = [];
-        clearRoundTimers();
-        tournament.currentRound++;
-        tournament.currentRoundIndex = 0;
-        await saveTournamentData();
-        if (guild) {
-          updateScoreboard(guild).catch(() => null);
-          if (tournament.currentRound <= tournament.rounds.length) {
-            allocateRound(guild).catch(e => console.error('[web] Auto-allocate after force-end:', e.message));
-          }
-        }
-        sendJson(res, 200, { ok: true, message: `Force-ended ${count} active match(es). Advancing to next round.` });
+        const { ended, gamesKept } = await forceEndRound(guild);
+        sendJson(res, 200, { ok: true, message: `Force-ended ${ended} active match(es); ${gamesKept} game(s) already played were kept. Advancing to next round.` });
         return;
       }
 
@@ -3123,26 +2128,8 @@ async function handleHttpRequest(req, res) {
         };
         await saveTournamentData();
 
-        // Update the Discord embed to show the cleared state
-        if (prevSetupMessage && prevSetupChannelId && guild) {
-          try {
-            const channel = await guild.channels.fetch(prevSetupChannelId).catch(() => null);
-            if (channel) {
-              const message = await channel.messages.fetch(prevSetupMessage).catch(() => null);
-              if (message) {
-                const signupRow = new ActionRowBuilder().addComponents(
-                  new ButtonBuilder().setCustomId('signup').setLabel('Sign Up').setStyle(ButtonStyle.Primary),
-                  new ButtonBuilder().setLabel('🌐 Website').setStyle(ButtonStyle.Link).setURL(getWebBaseUrl()),
-                );
-                const resetEmbed = new EmbedBuilder()
-                  .setTitle('Codenames Tournament')
-                  .setDescription(buildSignupDescription())
-                  .setColor(0x0099ff);
-                await message.edit({ embeds: [resetEmbed], components: [signupRow] });
-              }
-            }
-          } catch (err) { console.error('[web admin reset] Failed to update Discord embed:', err.message); }
-        }
+        // Show the cleared state (sign-up) on the tournament message.
+        if (guild) await refreshSetupMessage(guild);
 
         sendJson(res, 200, { ok: true, message: 'Tournament has been reset.' });
         return;
@@ -3160,7 +2147,7 @@ async function handleHttpRequest(req, res) {
         tournament.scores.set(userId, oldScore + d);
         await saveTournamentData();
         const guild2 = client.guilds.cache.get(process.env.GUILD_ID);
-        if (guild2) updateScoreboard(guild2).catch(() => null);
+        if (guild2) refreshSetupMessage(guild2).catch(() => null);
         sendJson(res, 200, { ok: true, message: `Score adjusted: ${oldScore} → ${oldScore + d} pts (${d >= 0 ? '+' : ''}${d})` });
         return;
       }
@@ -3306,7 +2293,7 @@ async function handleHttpRequest(req, res) {
 
         await saveTournamentData();
         const guildOverride = client.guilds.cache.get(process.env.GUILD_ID);
-        if (guildOverride) updateScoreboard(guildOverride).catch(() => null);
+        if (guildOverride) refreshSetupMessage(guildOverride).catch(() => null);
 
         // Post a notification to the game thread if it still exists
         const threadId = (histIdx !== -1 ? tournament.history[histIdx].threadId : null)
@@ -3424,7 +2411,7 @@ async function handleHttpRequest(req, res) {
 
         await saveTournamentData();
         const guildOverride = client.guilds.cache.get(process.env.GUILD_ID);
-        if (guildOverride) updateScoreboard(guildOverride).catch(() => null);
+        if (guildOverride) refreshSetupMessage(guildOverride).catch(() => null);
 
         // Notify thread
         if (threadId && guildOverride) {
@@ -3466,7 +2453,7 @@ async function handleHttpRequest(req, res) {
         tournament.signupsReopened = true;
         tournament.signupReopenMessageId = reopenMsg.id;
         await saveTournamentData();
-        if (guildRO) updateScoreboard(guildRO).catch(() => null);
+        if (guildRO) refreshSetupMessage(guildRO).catch(() => null);
         sendJson(res, 200, { ok: true, message: 'Signups reopened. A message has been posted in the tournament channel.' });
         return;
       }
@@ -3483,31 +2470,22 @@ async function handleHttpRequest(req, res) {
       // ── recalculate-rounds ─────────────────────────────────────────────────
       if (action === 'recalculate-rounds') {
         if (!tournament.started) { sendJson(res, 400, { error: 'Tournament has not started yet.' }); return; }
-        const guildRR = client.guilds.cache.get(process.env.GUILD_ID);
-        let refreshMsg = '';
-        if (tournament.activeMatches.length > 0 && !guildRR) {
-          sendJson(res, 400, { error: 'Cannot refresh current round threads because the guild is unavailable.' });
-          return;
-        }
-        if (guildRR && tournament.activeMatches.length > 0) {
-          const refreshed = await refreshCurrentRoundThreadsAndSchedule(guildRR);
-          if (refreshed.message) {
-            sendJson(res, 400, { error: refreshed.message });
-            return;
-          }
-          refreshMsg = ` Current round refreshed (${refreshed.refreshedCount} old thread${refreshed.refreshedCount !== 1 ? 's' : ''} archived/reposted).`;
-        } else {
-          const activePlayers = Array.from(tournament.players);
-          recalculateFutureRounds(activePlayers);
-          await saveTournamentData();
-        }
-        if (guildRR) updateScoreboard(guildRR).catch(() => null);
-        const activePlayers = Array.from(tournament.players);
-        sendJson(res, 200, { ok: true, message: `Future rounds recalculated. ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned with ${activePlayers.length} active player${activePlayers.length !== 1 ? 's' : ''}.${refreshMsg}` });
+        const result = await fixMatchups(client.guilds.cache.get(process.env.GUILD_ID));
+        sendJson(res, 200, { ok: true, message: describeFixMatchups(result) });
         return;
       }
 
       sendJson(res, 404, { error: `Unknown admin action "${action}".` });
+      return;
+    }
+
+    // ── Static files ─────────────────────────────────────────────────────────
+    if (pathname.startsWith('/static/')) {
+      const file = staticFiles.get(pathname);
+      if (!file) { res.writeHead(404); res.end('Not found'); return; }
+      // Versioned URLs (?v=) can be cached for long; the page itself is never cached.
+      res.writeHead(200, { 'Content-Type': file.type, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+      res.end(file.body);
       return;
     }
 
@@ -3517,7 +2495,7 @@ async function handleHttpRequest(req, res) {
       res.end('Dashboard not available. Ensure public/index.html exists.');
       return;
     }
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...HTML_SECURITY_HEADERS });
     res.end(cachedDashboardHtml);
   } catch (err) {
     console.error('[web] Unhandled request error:', err);
