@@ -11,17 +11,31 @@ Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · �
 
 ## Phase 0 — Fix bugs first (small, high value)
 
-- [ ] 🔴❓ **Scheduler: the rule explodes, and the safety cap silently cuts it short.** The rule as intended:
-      every pair plays in both role configs against every other disjoint pair (A&B v C&D, A&C v B&D, A&D v B&C, across every 4-player group).
-      The scheduler implements that, but it means 3 × C(n,4) match-ups. At 4 games per match (all role combinations, not just "both swapped"):
-      | players | match-ups | games (4/match) | rounds | what actually gets generated |
+- [ ] 🔴 **Scheduler: rebuild around the agreed format** (decided 2026-10-12).
+      **Rule:** every 4-player group {A,B,C,D} plays all three team splits (AB v CD, AC v BD, AD v BC). Each split is played twice:
+      as drawn, then with both teams swapping roles.
+      **Shape:** each group gets one **4-game match** covering two splits, plus one **2-game match** covering the third split in a later round:
+      ```
+      Match (4 games)  G1 A&B v C&D   G2 B&A v D&C   G3 A&C v B&D   G4 C&A v D&B
+      Later (2 games)  G1 A&D v B&C   G2 D&A v C&B
+      ```
+      Totals: matches = 2·C(n,4), games = 6·C(n,4).
+      | players | groups | matches | games | rounds (⌊n/4⌋ matches each) |
       |---|---|---|---|---|
-      | 6 | 45 | 180 | 45 | all 45 rounds |
-      | 8 | 210 | 840 | 105 | **cut to 80 rounds** by `MAX_GENERATED_ROUNDS`, with no notice |
-      | 10 | 630 | 2,520 | 320 | cut to 100 |
-      | 12 | 1,485 | 5,940 | 511 | cut to 120 |
-      The sign-up prediction (`getTournamentPrediction`) uses n(n-1)/4 match-ups, so it says ~7 rounds for 8 players.
-      **Decision needed:** what the format should be (see chat). After that, make the cap, the prediction and the README agree, and add `test/scheduler.test.js`.
+      | 6 | 15 | 30 | 90 | 30 |
+      | 8 | 70 | 140 | 420 | 70 |
+      | 10 | 210 | 420 | 1,260 | 210 |
+      | 12 | 495 | 990 | 2,970 | 330 |
+      Today's model can't express this: a match is one split plus a `phaseSequence` of role variants (phases 3 and 4 are "only blue swapped" and "only red swapped").
+      Work:
+      - Store an explicit per-game line-up on each match (`games: [grouping, …]`). `getGroupingForMatchGame` reads it; old saved matches fall back to `phaseSequence`.
+      - Replace the config/layout-key search with "groups × splits still owed". Build rounds from disjoint groups. Prefer rounds where every match has the same length (all 4-game or all 2-game), so nobody waits on a longer match.
+        Keep the existing sit-out fairness for n not divisible by 4.
+      - Remove the silent `MAX_GENERATED_ROUNDS` cut-off (the schedule is finite now), and log a warning if any owed split can't be placed.
+      - Make `getTournamentPrediction`, the sign-up embed, the "How it works" modal and the README use the formulas above.
+      - Recalculation after a leave or join: work out the owed splits from `history` plus active matches, using the same rule.
+      - Bridge: `buildBinding`/`findGameForSeats` already take a per-game line-up, so they should work unchanged. Verify this with a test.
+      - `test/scheduler.test.js`: every split appears exactly twice with both role configs, the counts match the formulas, nobody plays twice in a round, and sit-outs are fair.
 - [ ] 🔴 **A corrupt `tournament.json` gets wiped.** In `loadTournamentData` (`src/index.js:281`) any error, a JSON parse error included,
       is treated as "no previous data". The next save then overwrites the file. Fix: only treat `ENOENT` as fresh. On any other error, back up the file and stop.
 - [ ] 🔴 **Saves aren't atomic or serialised.** `saveTournamentData` calls `fs.writeFile` straight onto the live file and is fired from many places at once.
