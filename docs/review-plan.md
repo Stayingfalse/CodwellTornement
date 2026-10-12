@@ -1,6 +1,6 @@
 # CodwellTornement — review & improvement plan
 
-Review of `main` at `53b7e8d` (after the BGA bridge work). Status: **Phase 0 done** (scheduler rebuilt plus the bug fixes); later phases are still to do.
+Review of `main` at `53b7e8d` (after the BGA bridge work). Status: **Phase 0 done**; Discord admin dead code removed; Components V2 and the dashboard rebuild done. The rest is still to do.
 
 Scope: `src/index.js` (3,533 lines), `src/codenamesBridge.js`, `public/index.html` (2,942 lines),
 tests, Docker/CI. The BoardGameArena bot was read for patterns to borrow, not reviewed.
@@ -36,13 +36,13 @@ Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · �
 
 ## Phase 1 — Remove dead code (≈700–900 lines out of `index.js`)
 
-- [ ] 🧹 **The whole Discord admin panel can't be reached.** Nothing has created a `customId('admin')` button since `be41312` moved admin to the web.
+- [x] 🧹 **The whole Discord admin panel can't be reached.** Nothing has created a `customId('admin')` button since `be41312` moved admin to the web.
       So these handlers are dead: `admin`, `admin_start`, `admin_allocate`, `admin_scores`, `admin_force_end`, `admin_adjust_score`,
       `admin_reset`, `admin_reopen_signups`, `admin_fix_matchups`, `debug_seed_players`, and the `adjust_score_modal` submit.
       None of them re-check the admin role, so they would be a hole if a button ever came back. Delete them, or re-add them properly as slash commands (Phase 3).
-- [ ] 🧹 Buttons that are never created: ~~`force_end_round`, `timeout_force_end`~~ (removed; all force-ends now go through `forceEndRound()`) (the expiry embed now points to the website) and `correct_result_` (a legacy stub).
+- [x] 🧹 Buttons that are never created: ~~`force_end_round`, `timeout_force_end`~~ (removed; all force-ends now go through `forceEndRound()`) (the expiry embed now points to the website) and `correct_result_` (a legacy stub).
 - [ ] 🧹 The `outcome_modal_*_assassin_*` branch: assassin wins skip the modal, so `parts[3] === 'assassin'` never happens.
-- [ ] 🧹 The `log_` handler's `processingThreads` guard only covers showing an ephemeral prompt, so it adds nothing.
+- [x] 🧹 The `log_` handler's `processingThreads` guard only covers showing an ephemeral prompt, so it adds nothing.
 - [ ] 🧹 Unused functions: ~~`markConfigsAsPlayed`, `generateGrouping`~~ (removed with the old scheduler), `processGameResult` (a one-line wrapper), `startThreadKeepAlive` (an alias).
 - [ ] 🧹 Unused or legacy state: `playedGroupings`, `currentGrouping` (only in the reset object), `currentRoundIndex` (only drives a "Match 0/N" label).
       `game1Result` has been superseded by `phaseResults`; load old files through a one-time migration and remove it.
@@ -70,16 +70,16 @@ Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · �
 
 ## Phase 3 — Discord UI/UX
 
-- [ ] 🎨 Admin in Discord: either commit to "web only" (and drop the dead code), or add a `/tournament admin <action>` slash command
+- [x] 🎨 Admin in Discord: either commit to "web only" (and drop the dead code), or add a `/tournament admin <action>` slash command
       with `setDefaultMemberPermissions` and a server-side role check. Recommendation: web only, plus `/tournament status`.
 - [ ] 🎨 Show the round's deadline and live status (from `bridgeStatus`) on the scoreboard embed, not only on the website.
-- [ ] 🎨 The `admin_start` setup message shows "Match 0/N". Remove the label, or show "0/N matches completed" as `updateScoreboard` does.
+- [x] 🎨 The `admin_start` setup message shows "Match 0/N". Remove the label, or show "0/N matches completed" as `updateScoreboard` does.
 - [x] 🎨 The round summary embed has one field per game, so a round with more than 25 games (e.g. 7 matches × 4) breaks the 25-field limit. The send then fails and the summary is lost: `roundResults` is cleared in the `catch`. Group the fields by match, or split across embeds.
-- [ ] 🎨 Ping the four players when their thread is created (a thread mention plus `allowedMentions`), so nobody misses a round. The README already lists this as a roadmap item.
+- [x] 🎨 Ping the four players when their thread is created (a thread mention plus `allowedMentions`), so nobody misses a round. The README already lists this as a roadmap item.
 - [ ] 🎨 Remaining-cards modal: the input accepts 1 character but the label says "0-8". Fine, but say "of the losing team" to make it clear.
-- [ ] 🧠 Optional: move cards to **Components V2** (`ContainerBuilder` / `SectionBuilder` / `TextDisplayBuilder`, discord.js ≥14.19; 14.26 is installed), like the BGA bot's cards.
+- [x] 🧠 Optional: move cards to **Components V2** (`ContainerBuilder` / `SectionBuilder` / `TextDisplayBuilder`, discord.js ≥14.19; 14.26 is installed), like the BGA bot's cards.
       You get a cleaner match card, with the line-up, the live room state and the result buttons in one message.
-- [ ] ⚡ `allocateRound` deletes up to 100 channel messages one at a time. Use `channel.bulkDelete(filter, true)`. It also deletes any message in the channel, including human chat. Consider tracking bot message IDs and deleting only those.
+- [x] ⚡ `allocateRound` deletes up to 100 channel messages one at a time. Use `channel.bulkDelete(filter, true)`. It also deletes any message in the channel, including human chat. Consider tracking bot message IDs and deleting only those.
 
 ## Phase 4 — Persistence, security and ops (BGA-bot learnings)
 
@@ -102,15 +102,15 @@ Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · �
 
 ## Phase 5 — Web dashboard UX
 
-- [ ] 🎨 **Auto-refresh.** The page only updates on a manual click, even though the bridge now provides live room status every 2 minutes.
+- [x] 🎨 **Auto-refresh.** The page only updates on a manual click, even though the bridge now provides live room status every 2 minutes.
       Poll `/api` every 30–60 s while the tab is visible (`visibilitychange`), with ETag/304 from Phase 4.
-- [ ] 🎨 **Light mode.** The dashboard is dark only. The BGA dashboard follows `prefers-color-scheme`. Move the colours to CSS variables (mostly done) and add a light set.
+- [x] 🎨 **Light mode.** The dashboard is dark only. The BGA dashboard follows `prefers-color-scheme`. Move the colours to CSS variables (mostly done) and add a light set.
 - [ ] 🎨 Admin panel: move "Force End" into the panel with a confirm (it is only an icon button on the current round now). Show the round deadline and a "nudge now" action.
-- [ ] 🎨 Use a proper dialog for confirms, not stacked `confirm()` calls (reset uses three).
-- [ ] 🎨 Highlight "your matches" for the logged-in player (the session already knows `userId`), and link to their open thread.
-- [ ] ⚡ Split `public/index.html` (~1,000 lines of CSS and ~1,500 of JS inline) into `style.css`, `app.js` and `stats.js` as static files with cache headers, as the BGA bot does.
+- [x] 🎨 Use a proper dialog for confirms, not stacked `confirm()` calls (reset uses three).
+- [x] 🎨 Highlight "your matches" for the logged-in player (the session already knows `userId`), and link to their open thread.
+- [x] ⚡ Split `public/index.html` (~1,000 lines of CSS and ~1,500 of JS inline) into `style.css`, `app.js` and `stats.js` as static files with cache headers, as the BGA bot does.
       Serve Chart.js from the same place, or keep the CDN with SRI (`integrity=`).
-- [ ] 🎨 Mobile: check the round browser and stats tables at phone width.
+- [x] 🎨 Mobile: check the round browser and stats tables at phone width.
 
 ## Phase 6 — Tests
 

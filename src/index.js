@@ -3,11 +3,12 @@ require('dotenv').config();
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, PermissionsBitField } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, PermissionsBitField } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
 const codenamesBridge = require('./codenamesBridge');
 const scheduler = require('./scheduler');
+const cards = require('./cards');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const TOURNAMENT_FILE = path.join(DATA_DIR, 'tournament.json');
@@ -192,7 +193,7 @@ client.once('clientReady', async () => {
       const channel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
       if (channel) {
         if (tournament.started) {
-          await updateScoreboard(guild);
+          await refreshSetupMessage(guild);
           console.log('[startup] Scoreboard rebuilt');
           // Re-schedule round timers after restart
           if (tournament.roundDeadline) {
@@ -233,7 +234,7 @@ client.once('clientReady', async () => {
             }
           }
         } else {
-          await updateSignupMessage(channel);
+          await refreshSetupMessage(guild);
           console.log('[startup] Signup message rebuilt');
         }
       } else {
@@ -427,51 +428,84 @@ function buildMatchStatus() {
   return out;
 }
 
-function bridgeThreadHint() {
-  return bridgeClient.enabled
-    ? '\n\n🕵️ Post your **codenames.game** room link in this thread and results are logged automatically. ' +
-      'Use the same room for every game in this match (**Play next game**). The buttons below still work if you need them.'
-    : '';
+// What the main tournament message shows right now (see cards.tournamentCard).
+function buildTournamentCardState() {
+  const standings = Array.from(tournament.scores.entries()).sort((a, b) => b[1] - a[1]);
+  if (!tournament.started) {
+    const players = Array.from(tournament.players);
+    return { phase: 'signup', players, prediction: players.length >= 4 ? scheduler.predictSchedule(players.length) : null };
+  }
+  if (tournament.currentRound > tournament.rounds.length) {
+    return { phase: 'complete', standings, gamesPlayed: getGamesPlayedMap() };
+  }
+  const roundMatches = tournament.rounds[tournament.currentRound - 1] || [];
+  return {
+    phase: 'live',
+    round: tournament.currentRound,
+    totalRounds: tournament.rounds.length,
+    matchesInRound: roundMatches.length,
+    matchesDone: tournament.activeMatches.length ? roundMatches.length - tournament.activeMatches.length : 0,
+    deadlineMs: tournament.activeMatches.length ? tournament.roundDeadline : null,
+    signupsOpen: tournament.signupsReopened,
+    activeMatches: tournament.activeMatches.slice().sort((a, b) => a.matchNumber - b.matchNumber).map(m => ({
+      matchNumber: m.matchNumber,
+      game: m.gamePhase ?? 1,
+      gamesPlanned: getMatchGameCount(m),
+      players: scheduler.playersOf(m.grouping),
+      threadUrl: getThreadUrl(m.threadId),
+    })),
+    standings,
+    gamesPlayed: getGamesPlayedMap(),
+  };
 }
 
-function buildSignupDescription() {
-  const playerList = Array.from(tournament.players);
-
-  let description = 'Sign up for the tournament and manage it with the buttons below.\n\n**Signed Up Players:**\n';
-  if (playerList.length > 0) {
-    description += playerList.map(id => id.startsWith('debug_') ? `\`${id}\`` : `<@${id}>`).join('\n');
-  } else {
-    description += 'None yet';
-  }
-
-  if (playerList.length >= 4) {
-    const prediction = scheduler.predictSchedule(playerList.length);
-    if (prediction) {
-      description += `\n\n**Tournament Prediction:**\n`;
-      description += `At least ${prediction.matches} matches (${prediction.games} games) • ${prediction.minRounds}+ rounds`;
-      description += `\n${prediction.matchesPerRound} match${prediction.matchesPerRound === 1 ? '' : 'es'} per round, 6 games each`;
-      description += `\nEvery pair teams up against every other player`;
-    }
-  }
-
-  return description;
+function tournamentCardPayload() {
+  return cards.tournamentCard(buildTournamentCardState(), { webUrl: getWebBaseUrl() });
 }
 
-async function updateSignupMessage(channel) {
+// Redraw the main tournament message. A message from before Components V2
+// (an embed) is converted in place when Discord allows it; otherwise it is
+// replaced by a new message, and the old one deleted.
+// Refreshes run one at a time so two can't both replace the message.
+let setupRefreshChain = Promise.resolve();
+function refreshSetupMessage(guild) {
+  setupRefreshChain = setupRefreshChain.then(() => redrawSetupMessage(guild));
+  return setupRefreshChain;
+}
+
+async function redrawSetupMessage(guild) {
+  if (!guild || !tournament.setupMessage || !tournament.setupChannelId) return;
   try {
-    if (!tournament.setupMessage) return;
+    const channel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+    if (!channel) return;
     const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
-    if (!message) {
-      console.warn('[updateSignupMessage] Could not fetch setupMessage:', tournament.setupMessage);
-      return;
+    const card = tournamentCardPayload();
+    if (message) {
+      const isV2 = message.flags && message.flags.has(MessageFlags.IsComponentsV2);
+      try {
+        await message.edit(isV2 ? card : { ...card, content: null, embeds: [] });
+        return;
+      } catch (error) {
+        if (isV2) throw error;
+        console.log('[setup] Replacing the old embed message with a Components V2 one:', error.message);
+      }
     }
-    const embed = message.embeds[0];
-    const updatedEmbed = EmbedBuilder.from(embed).setDescription(buildSignupDescription());
-    await message.edit({ embeds: [updatedEmbed] });
-    console.log('[updateSignupMessage] Setup message updated successfully');
+    const replacement = await channel.send(card);
+    if (message) await message.delete().catch(() => null);
+    tournament.setupMessage = replacement.id;
+    await saveTournamentData();
   } catch (error) {
-    console.error('[updateSignupMessage] Failed:', error.message);
+    console.error('[setup] Failed to refresh the tournament message:', error.message);
   }
+}
+
+// Replace a message's buttons with a short note once it's been dealt with.
+// Components V2 messages can't carry plain content; older embed messages can.
+function resolveInteractionMessage(interaction, note) {
+  const isV2 = interaction.message && interaction.message.flags && interaction.message.flags.has(MessageFlags.IsComponentsV2);
+  return isV2
+    ? interaction.update(cards.noticeCard(note))
+    : interaction.update({ content: note, components: [], allowedMentions: { parse: [] } });
 }
 
 client.on('interactionCreate', async (interaction) => {
@@ -479,6 +513,10 @@ client.on('interactionCreate', async (interaction) => {
     const { commandName } = interaction;
 
     if (commandName === 'tournament') {
+      if (process.env.ADMIN_ROLE_ID && !interaction.member.roles.cache.has(process.env.ADMIN_ROLE_ID)) {
+        await interaction.reply({ content: 'Only tournament admins can post the tournament message.', flags: MessageFlags.Ephemeral });
+        return;
+      }
       // Delete the old setup message if one exists
       if (tournament.setupMessage && tournament.setupChannelId) {
         try {
@@ -492,73 +530,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      let embed;
-      let row;
-
-      if (tournament.started) {
-        // Tournament is live - show current status and scores
-        const roundMatches = tournament.rounds[tournament.currentRound - 1] || [];
-        const completedInRound = roundMatches.length - tournament.activeMatches.length;
-        let description = `**Tournament Live - Round ${tournament.currentRound}/${tournament.rounds.length}**\n`;
-        description += `${completedInRound}/${roundMatches.length} matches completed\n\n`;
-        
-        if (tournament.activeMatches.length > 0) {
-          description += `**Active Matches:**\n`;
-          tournament.activeMatches.forEach(m => {
-            description += `Match ${m.matchNumber}: 🔵 <@${m.grouping.blue.spymaster}> & <@${m.grouping.blue.guesser}> vs 🔴 <@${m.grouping.red.spymaster}> & <@${m.grouping.red.guesser}>\n`;
-          });
-          description += '\n';
-        }
-
-        description += `**Scoreboard:**\n`;
-        const sortedScores = Array.from(tournament.scores.entries())
-          .sort((a, b) => b[1] - a[1]);
-        const gamesPlayedMap = getGamesPlayedMap();
-        let rank = 0;
-        let lastPts = null;
-        sortedScores.forEach((entry, idx) => {
-          if (entry[1] !== lastPts) { rank = idx + 1; lastPts = entry[1]; }
-          const gp = gamesPlayedMap[entry[0]] || 0;
-          description += `${rank}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
-        });
-
-        embed = new EmbedBuilder()
-          .setTitle('Codenames Tournament')
-          .setDescription(description)
-          .setColor(0x00ff00);
-
-        row = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setLabel('🌐 Website')
-              .setStyle(ButtonStyle.Link)
-              .setURL(getWebBaseUrl()),
-            new ButtonBuilder()
-              .setCustomId('leave_tournament')
-              .setLabel('🚪 Leave Tournament')
-              .setStyle(ButtonStyle.Danger),
-          );
-      } else {
-        // Tournament not started - show sign-up
-        embed = new EmbedBuilder()
-          .setTitle('Codenames Tournament')
-          .setDescription(buildSignupDescription())
-          .setColor(0x0099ff);
-
-        row = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId('signup')
-              .setLabel('Sign Up')
-              .setStyle(ButtonStyle.Primary),
-            new ButtonBuilder()
-              .setLabel('🌐 Website')
-              .setStyle(ButtonStyle.Link)
-              .setURL(getWebBaseUrl()),
-          );
-      }
-
-      const response = await interaction.reply({ embeds: [embed], components: [row], withResponse: true });
+      const response = await interaction.reply({ ...tournamentCardPayload(), withResponse: true });
       const message = response.resource.message;
       tournament.setupMessage = message.id;
       tournament.setupChannelId = message.channelId;
@@ -592,270 +564,8 @@ client.on('interactionCreate', async (interaction) => {
         // Reply immediately to avoid interaction timeout, then update message in background
         await interaction.reply({ content: 'You have signed up!', flags: MessageFlags.Ephemeral });
         await saveTournamentData();
-        updateSignupMessage(interaction.channel); // fire-and-forget
+        refreshSetupMessage(interaction.guild); // fire-and-forget
       }
-    } else if (customId === 'admin') {
-      const adminRoleId = process.env.ADMIN_ROLE_ID; // Replace with your admin role ID
-      if (!interaction.member.roles.cache.has(adminRoleId)) {
-        await interaction.reply({ content: 'You do not have permission to access admin functions.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      const adminEmbed = new EmbedBuilder()
-        .setTitle('Admin Panel')
-        .setDescription('Select an admin action.')
-        .setColor(0xff0000);
-
-      const debugMode = process.env.DEBUG_MODE === 'true';
-      const debugPlayerCount = parseInt(process.env.DEBUG_PLAYER_COUNT) || 8;
-
-      const adminComponents = [
-          new ButtonBuilder()
-            .setCustomId('admin_start')
-            .setLabel('Start Tournament')
-            .setStyle(ButtonStyle.Success),
-          new ButtonBuilder()
-            .setCustomId('admin_allocate')
-            .setLabel('Allocate Next Round')
-            .setStyle(ButtonStyle.Primary),
-          new ButtonBuilder()
-            .setCustomId('admin_scores')
-            .setLabel('View Scores')
-            .setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId('admin_force_end')
-            .setLabel('Force End Match')
-            .setStyle(ButtonStyle.Danger),
-          new ButtonBuilder()
-            .setCustomId('admin_adjust_score')
-            .setLabel('Adjust Score')
-            .setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder()
-            .setCustomId('admin_reset')
-            .setLabel('Reset Tournament')
-            .setStyle(ButtonStyle.Danger),
-      ];
-
-      if (debugMode) {
-        adminComponents.push(
-          new ButtonBuilder()
-            .setCustomId('debug_seed_players')
-            .setLabel(`[DEBUG] Seed ${debugPlayerCount} Players`)
-            .setStyle(ButtonStyle.Secondary)
-        );
-      }
-
-      if (tournament.started) {
-        adminComponents.push(
-          new ButtonBuilder()
-            .setCustomId('admin_reopen_signups')
-            .setLabel(tournament.signupsReopened ? '🔒 Close Signups' : '📋 Reopen Signups')
-            .setStyle(tournament.signupsReopened ? ButtonStyle.Danger : ButtonStyle.Primary),
-          new ButtonBuilder()
-            .setCustomId('admin_fix_matchups')
-            .setLabel('🔧 Fix Match-ups')
-            .setStyle(ButtonStyle.Warning),
-        );
-      }
-
-      const adminRow = new ActionRowBuilder().addComponents(adminComponents.slice(0, 5));
-      const adminRows = [adminRow];
-      if (adminComponents.length > 5) {
-        adminRows.push(new ActionRowBuilder().addComponents(adminComponents.slice(5)));
-      }
-      if (adminComponents.length > 10) {
-        adminRows.push(new ActionRowBuilder().addComponents(adminComponents.slice(10)));
-      }
-
-      await interaction.reply({ embeds: [adminEmbed], components: adminRows, flags: MessageFlags.Ephemeral });
-    } else if (customId === 'admin_start') {
-      if (tournament.started) {
-        await interaction.reply({ content: 'Tournament has already started.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (tournament.players.size < 4) {
-        await interaction.reply({ content: 'Need at least 4 players to start.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      tournament.currentRound = 1;
-      tournament.currentRoundIndex = 0;
-      tournament.started = true;
-      tournament.tournamentStartedAt = new Date().toISOString();
-      tournament.scores = new Map([...tournament.players].map(id => [id, 0]));
-      tournament.rounds = scheduler.generateSchedule(Array.from(tournament.players));
-
-      // Snapshot display names for all players
-      tournament.playerNames = {};
-      for (const id of tournament.players) {
-        if (id.startsWith('debug_')) {
-          tournament.playerNames[id] = id;
-        } else {
-          try {
-            const member = await interaction.guild.members.fetch(id).catch(() => null);
-            tournament.playerNames[id] = member ? member.displayName : id;
-          } catch { tournament.playerNames[id] = id; }
-        }
-      }
-      
-      // Update the setup message to show tournament live
-      try {
-        if (tournament.setupMessage && tournament.setupChannelId) {
-          const channel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
-          if (!channel) throw new Error('Could not fetch setup channel');
-          const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
-          if (message) {
-            let description = `**Tournament Live - Round ${tournament.currentRound}**\n`;
-            description += `Match ${tournament.currentRoundIndex}/${tournament.rounds[tournament.currentRound - 1]?.length || 0}\n\n`;
-            description += `**Scoreboard:**\n`;
-            const sortedScores = Array.from(tournament.scores.entries())
-              .sort((a, b) => b[1] - a[1]);
-            const gamesPlayedMap = getGamesPlayedMap();
-            let rank = 0;
-            let lastPts = null;
-            sortedScores.forEach((entry, idx) => {
-              if (entry[1] !== lastPts) { rank = idx + 1; lastPts = entry[1]; }
-              const gp = gamesPlayedMap[entry[0]] || 0;
-              description += `${rank}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
-            });
-            
-            const embed = message.embeds[0];
-            const updatedEmbed = EmbedBuilder.from(embed)
-              .setDescription(description)
-              .setFields([])
-              .setColor(0x00ff00);
-            const websiteRow = new ActionRowBuilder().addComponents(
-              new ButtonBuilder().setLabel('🌐 Website').setStyle(ButtonStyle.Link).setURL(getWebBaseUrl()),
-              new ButtonBuilder().setCustomId('leave_tournament').setLabel('🚪 Leave Tournament').setStyle(ButtonStyle.Danger),
-            );
-            await message.edit({ embeds: [updatedEmbed], components: [websiteRow] });
-          }
-        }
-      } catch (error) {
-        console.error('Failed to update setup message:', error.message);
-      }
-      
-      await saveTournamentData();
-      await interaction.editReply({ content: `Tournament started with ${tournament.players.size} players! Generated ${tournament.rounds.length} rounds.` });
-    } else if (customId === 'admin_allocate') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const result = await allocateRound(interaction.guild);
-      if (!result.success) {
-        await interaction.editReply({ content: result.message });
-        return;
-      }
-      await interaction.editReply({ content: result.message });
-    } else if (customId === 'admin_scores') {
-      const scoreList = Array.from(tournament.scores.entries()).map(([id, score]) => `<@${id}>: ${score}`).join('\n');
-      const embed = new EmbedBuilder()
-        .setTitle('Current Scores')
-        .setDescription(scoreList || 'No scores yet.')
-        .setColor(0xff9900);
-      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
-    } else if (customId === 'admin_adjust_score') {
-      const modal = new ModalBuilder()
-        .setCustomId('adjust_score_modal')
-        .setTitle('Adjust Player Score');
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('adjust_player_id')
-            .setLabel('Player ID or @mention')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setPlaceholder('e.g. 123456789012345678'),
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('adjust_delta')
-            .setLabel('Points to add (use negative to subtract)')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setPlaceholder('e.g. 3 or -2'),
-        ),
-      );
-      await interaction.showModal(modal);
-    } else if (customId === 'admin_reset') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      // Capture message/channel IDs before wiping them so we can update the embed after reset
-      const prevSetupMessage = tournament.setupMessage;
-      const prevSetupChannelId = tournament.setupChannelId;
-
-      clearRoundTimers();
-      clearRemovalTimer();
-      tournament = {
-        players: new Set(),
-        currentRound: 0,
-        currentRoundIndex: 0,
-        playedGroupings: new Set(),
-        scores: new Map(),
-        currentGrouping: null,
-        activeMatches: [],
-        roundResults: [],
-        roundDeadline: null,
-        setupMessage: prevSetupMessage,
-        setupChannelId: prevSetupChannelId,
-        rounds: [],
-        started: false,
-        history: [],
-        playerNames: {},
-        tournamentStartedAt: null,
-        roundStartedAt: null,
-        leftPlayers: {},
-        pendingRemoval: null,
-        signupsReopened: false,
-        signupReopenMessageId: null,
-      };
-      await saveTournamentData();
-
-      // Update the signup embed to show the cleared player list
-      if (prevSetupMessage && prevSetupChannelId) {
-        try {
-          const channel = await interaction.guild.channels.fetch(prevSetupChannelId).catch(() => null);
-          if (channel) {
-            const message = await channel.messages.fetch(prevSetupMessage).catch(() => null);
-            if (message) {
-              const signupRow = new ActionRowBuilder()
-                .addComponents(
-                  new ButtonBuilder()
-                    .setCustomId('signup')
-                    .setLabel('Sign Up')
-                    .setStyle(ButtonStyle.Primary),
-                  new ButtonBuilder()
-                    .setLabel('🌐 Website')
-                    .setStyle(ButtonStyle.Link)
-                    .setURL(getWebBaseUrl()),
-                );
-              const resetEmbed = new EmbedBuilder()
-                .setTitle('Codenames Tournament')
-                .setDescription(buildSignupDescription())
-                .setColor(0x0099ff);
-              await message.edit({ embeds: [resetEmbed], components: [signupRow] });
-            }
-          }
-        } catch (error) {
-          console.error('[admin_reset] Failed to update signup message:', error.message);
-        }
-      }
-
-      await interaction.editReply({ content: 'Tournament reset.' });
-    } else if (customId === 'debug_seed_players') {
-      if (process.env.DEBUG_MODE !== 'true') {
-        await interaction.reply({ content: 'Debug mode is not enabled.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (tournament.started) {
-        await interaction.reply({ content: 'Cannot seed players after tournament has started.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      const debugPlayerCount = parseInt(process.env.DEBUG_PLAYER_COUNT) || 8;
-      // Use fake snowflake-style IDs for debug players
-      const seedCount = Math.max(0, debugPlayerCount - tournament.players.size);
-      for (let i = 0; i < seedCount; i++) {
-        tournament.players.add(`debug_player_${Date.now()}_${i}`);
-      }
-      await saveTournamentData();
-      updateSignupMessage(interaction.channel); // fire-and-forget
-      await interaction.reply({ content: `[DEBUG] Seeded ${seedCount} fake player(s). Total players: ${tournament.players.size}`, flags: MessageFlags.Ephemeral });
     } else if (customId.startsWith('log_')) {
       const matchData = tournament.activeMatches.find(m => m.threadId === interaction.channelId);
       if (!matchData) {
@@ -886,15 +596,6 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      // Deduplication guard — prevent two simultaneous button clicks for the same game.
-      // JavaScript is single-threaded so has() + add() with no await between is atomic.
-      const submissionKey = `${interaction.channelId}:${expectedPhase}:button`;
-      if (processingThreads.has(submissionKey)) {
-        await interaction.reply({ content: 'A result is already being submitted for this game. Please wait.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      processingThreads.add(submissionKey);
-
       // Show buttons for assassin question instead of modal
       const assassinRow = new ActionRowBuilder()
         .addComponents(
@@ -908,11 +609,7 @@ client.on('interactionCreate', async (interaction) => {
             .setStyle(ButtonStyle.Primary),
         );
 
-      try {
-        await interaction.reply({ content: `Game ${expectedPhase}: Was the winning move an assassin hit?`, components: [assassinRow], flags: MessageFlags.Ephemeral });
-      } finally {
-        processingThreads.delete(submissionKey);
-      }
+      await interaction.reply({ content: `Game ${expectedPhase}: Was the winning move an assassin hit?`, components: [assassinRow], flags: MessageFlags.Ephemeral });
     } else if (customId.startsWith('assassin_')) {
       const parts = customId.split('_');
       const wasAssassin = parts[1] === 'yes';
@@ -993,14 +690,14 @@ client.on('interactionCreate', async (interaction) => {
       if (!accept) {
         delete matchData.pendingBridgeResults[pendingId];
         await saveTournamentData();
-        await interaction.update({ content: `Dismissed by <@${interaction.user.id}>.`, components: [] });
+        await resolveInteractionMessage(interaction, `Dismissed by <@${interaction.user.id}>.`);
         return;
       }
       const currentPhase = matchData.gamePhase ?? 1;
       if (currentPhase !== pending.gamePhase) {
         delete matchData.pendingBridgeResults[pendingId];
         await saveTournamentData();
-        await interaction.update({ content: `Not logged: this match has moved on to Game ${currentPhase}.`, components: [] });
+        await resolveInteractionMessage(interaction, `Not logged: this match has moved on to Game ${currentPhase}.`);
         return;
       }
       const confirmKey = `${interaction.channelId}:${currentPhase}:result`;
@@ -1011,7 +708,7 @@ client.on('interactionCreate', async (interaction) => {
       processingThreads.add(confirmKey);
       try {
         delete matchData.pendingBridgeResults[pendingId];
-        await interaction.update({ content: `Confirmed by <@${interaction.user.id}>.`, components: [] });
+        await resolveInteractionMessage(interaction, `Confirmed by <@${interaction.user.id}>.`);
         await recordGameResult({
           guild: interaction.guild,
           channel: interaction.channel,
@@ -1023,19 +720,13 @@ client.on('interactionCreate', async (interaction) => {
       } finally {
         processingThreads.delete(confirmKey);
       }
-    } else if (customId.startsWith('correct_result_')) {
-      // Result correction has been moved to the tournament website admin panel.
-      await interaction.reply({
-        content: `⚠️ Result corrections can no longer be made from Discord. Please visit the **tournament website** and log in as admin to correct this result.`,
-        flags: MessageFlags.Ephemeral,
-      });
     } else if (customId.startsWith('confirm_remove_')) {
       const userId = customId.split('_')[2];
       if (interaction.user.id === userId) {
         tournament.players.delete(userId);
         await interaction.reply({ content: 'You have been removed from the tournament.', flags: MessageFlags.Ephemeral });
         await saveTournamentData();
-        updateSignupMessage(interaction.channel); // fire-and-forget
+        refreshSetupMessage(interaction.guild); // fire-and-forget
       } else {
         await interaction.reply({ content: 'You cannot confirm removal for another user.', flags: MessageFlags.Ephemeral });
       }
@@ -1128,7 +819,7 @@ client.on('interactionCreate', async (interaction) => {
         const remaining = activePlayers.length;
         await leaveChannel.send(`✅ <@${userId}> has left the tournament. Future rounds have been recalculated with ${remaining} remaining player${remaining !== 1 ? 's' : ''}. ${tournament.rounds.length} total rounds now planned.`);
       }
-      updateScoreboard(interaction.guild).catch(() => null);
+      refreshSetupMessage(interaction.guild).catch(() => null);
       if (tournament.activeMatches.length === 0 && tournament.currentRound <= tournament.rounds.length) {
         allocateRound(interaction.guild).catch(e => console.error('[leave] Auto-allocate failed:', e.message));
       }
@@ -1197,56 +888,6 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await closeSignups(interaction.guild);
       await interaction.editReply({ content: `✅ Signups closed. Future rounds recalculated.` });
-
-    // ── Admin reopen signups (from the Discord admin panel) ──────────────────
-    } else if (customId === 'admin_reopen_signups') {
-      const adminRoleId = process.env.ADMIN_ROLE_ID;
-      if (!interaction.member.roles.cache.has(adminRoleId)) {
-        await interaction.reply({ content: 'You do not have permission.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (!tournament.started) {
-        await interaction.reply({ content: 'The tournament has not started yet.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      if (tournament.signupsReopened) {
-        // Toggle: close signups
-        await closeSignups(interaction.guild);
-        await interaction.editReply({ content: `✅ Signups closed. Future rounds recalculated.` });
-      } else {
-        // Open signups
-        const channel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
-        if (!channel) { await interaction.editReply({ content: 'Could not find the tournament channel.' }); return; }
-        const reopenRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('reopen_signup').setLabel('✅ Join Tournament').setStyle(ButtonStyle.Success),
-          new ButtonBuilder().setCustomId('close_signups').setLabel('🔒 Close Signups (Admin)').setStyle(ButtonStyle.Danger),
-        );
-        const msg = await channel.send({
-          content: '📋 **Signups are reopened!** Click below to join the tournament. New rounds won\'t start until signups are closed by an admin.',
-          components: [reopenRow],
-        });
-        tournament.signupsReopened = true;
-        tournament.signupReopenMessageId = msg.id;
-        await saveTournamentData();
-        updateScoreboard(interaction.guild).catch(() => null);
-        await interaction.editReply({ content: '✅ Signups have been reopened. A message has been posted in the tournament channel.' });
-      }
-
-    // ── Admin fix match-ups ───────────────────────────────────────────────────
-    } else if (customId === 'admin_fix_matchups') {
-      const adminRoleId = process.env.ADMIN_ROLE_ID;
-      if (!interaction.member.roles.cache.has(adminRoleId)) {
-        await interaction.reply({ content: 'You do not have permission.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (!tournament.started) {
-        await interaction.reply({ content: 'The tournament has not started yet.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const result = await fixMatchups(interaction.guild);
-      await interaction.editReply({ content: `✅ ${describeFixMatchups(result)}` });
     }
   } else if (interaction.isModalSubmit()) {
     const { customId } = interaction;
@@ -1293,88 +934,9 @@ client.on('interactionCreate', async (interaction) => {
       } finally {
         processingThreads.delete(modalProcessingKey);
       }
-    } else if (customId === 'adjust_score_modal') {
-      const rawId = interaction.fields.getTextInputValue('adjust_player_id').trim().replace(/[<@!>]/g, '');
-      const delta = parseInt(interaction.fields.getTextInputValue('adjust_delta').trim());
-      if (isNaN(delta)) {
-        await interaction.reply({ content: 'Invalid points value. Please enter a number like `3` or `-2`.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      if (!tournament.scores.has(rawId)) {
-        await interaction.reply({ content: `No score found for player ID \`${rawId}\`. Make sure you used the raw numeric ID.`, flags: MessageFlags.Ephemeral });
-        return;
-      }
-      const oldScore = tournament.scores.get(rawId);
-      tournament.scores.set(rawId, oldScore + delta);
-      await saveTournamentData();
-      updateScoreboard(interaction.guild).catch(() => null);
-      await interaction.reply({ content: `Score adjusted: <@${rawId}> ${oldScore} → **${oldScore + delta} pts** (${delta > 0 ? '+' : ''}${delta})`, flags: MessageFlags.Ephemeral });
     }
   }
 });
-
-async function updateScoreboard(guild) {
-  if (!tournament.setupMessage || !tournament.setupChannelId) return;
-  try {
-    const channel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
-    if (!channel) return;
-    const message = await channel.messages.fetch(tournament.setupMessage).catch(() => null);
-    if (!message) return;
-
-    let description;
-    const fields = [];
-    const gamesPlayedMap = getGamesPlayedMap();
-    if (tournament.currentRound > tournament.rounds.length) {
-      description = `**Tournament Complete!**\n\n**Final Scoreboard:**\n`;
-      let rankF = 0;
-      let lastPtsF = null;
-      Array.from(tournament.scores.entries())
-        .sort((a, b) => b[1] - a[1])
-        .forEach((entry, idx) => {
-          if (entry[1] !== lastPtsF) { rankF = idx + 1; lastPtsF = entry[1]; }
-          const gp = gamesPlayedMap[entry[0]] || 0;
-          description += `${rankF}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
-        });
-    } else {
-      const roundMatches = tournament.rounds[tournament.currentRound - 1] || [];
-      const completedInRound = roundMatches.length - tournament.activeMatches.length;
-      description = `**Tournament Live - Round ${tournament.currentRound}/${tournament.rounds.length}**\n`;
-      description += `${completedInRound}/${roundMatches.length} matches completed\n\n`;
-      if (tournament.activeMatches.length > 0) {
-        description += `**⚔️ Active Matches:**\n`;
-        tournament.activeMatches.forEach(m => {
-          const activePhase = m.gamePhase ?? 1;
-          const gamesPerMatch = getMatchGameCount(m);
-          const activeGrouping = getGroupingForMatchGame(m, activePhase);
-          fields.push({
-            name: `Match ${m.matchNumber} — Game ${activePhase}/${gamesPerMatch}`,
-            value: `🔵 <@${activeGrouping.blue.spymaster}> & <@${activeGrouping.blue.guesser}>\nvs 🔴 <@${activeGrouping.red.spymaster}> & <@${activeGrouping.red.guesser}>`,
-            inline: true,
-          });
-        });
-      }
-      description += `**Scoreboard:**\n`;
-      let rankL = 0;
-      let lastPtsL = null;
-      Array.from(tournament.scores.entries())
-        .sort((a, b) => b[1] - a[1])
-        .forEach((entry, idx) => {
-          if (entry[1] !== lastPtsL) { rankL = idx + 1; lastPtsL = entry[1]; }
-          const gp = gamesPlayedMap[entry[0]] || 0;
-          description += `${rankL}. <@${entry[0]}> - ${entry[1]} pts (${gp} game${gp !== 1 ? 's' : ''})\n`;
-        });
-    }
-
-    const websiteRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setLabel('🌐 Website').setStyle(ButtonStyle.Link).setURL(getWebBaseUrl()),
-      new ButtonBuilder().setCustomId('leave_tournament').setLabel('🚪 Leave Tournament').setStyle(ButtonStyle.Danger),
-    );
-    const updatedEmbed = EmbedBuilder.from(message.embeds[0]).setDescription(description).setFields(fields);
-    await message.edit({ embeds: [updatedEmbed], components: [websiteRow] });
-  } catch (error) {
-    console.error('[updateScoreboard] Failed:', error.message);
-  }
-}
 
 async function allocateRound(guild) {
   if (!tournament.started || tournament.rounds.length === 0) {
@@ -1406,37 +968,23 @@ async function allocateRound(guild) {
   if (tournament.currentRound > 1) {
     try {
       const channel = mainChannel;
+      // Clear out last round's messages (bulk delete only works on messages under 14 days old).
       const messages = await channel.messages.fetch({ limit: 100 });
       const toDelete = messages.filter(msg => msg.id !== tournament.setupMessage);
-      for (const msg of toDelete.values()) await msg.delete().catch(() => null);
-
-      const completedRound = tournament.currentRound - 1;
-      const summaryEmbed = new EmbedBuilder()
-        .setTitle(`📊 Round ${completedRound} Complete!`)
-        .setColor(0x0099ff);
+      const recent = toDelete.filter(msg => Date.now() - msg.createdTimestamp < 13.5 * 864e5);
+      if (recent.size > 0) await channel.bulkDelete(recent, true).catch(e => console.warn('[allocate] Bulk delete failed:', e.message));
+      for (const msg of toDelete.values()) if (!recent.has(msg.id)) await msg.delete().catch(() => null);
 
       const results = tournament.roundResults.slice().sort((a, b) => a.matchNumber - b.matchNumber || (a.gameIndex || 1) - (b.gameIndex || 1));
-      // One field per match (Discord allows 25 fields), one line per game.
       const byMatch = new Map();
       for (const r of results) {
         if (!byMatch.has(r.matchNumber)) byMatch.set(r.matchNumber, []);
         byMatch.get(r.matchNumber).push(r);
       }
-      for (const [matchNumber, games] of Array.from(byMatch).slice(0, 25)) {
-        const blueWins = games.filter(r => r.winner === 'blue').length;
-        const lines = games.map(r => {
-          const howStr = r.assassin ? 'assassin' : `${r.remainingCards} left`;
-          const winners = r.winner === 'blue' ? r.grouping.blue : r.grouping.red;
-          const pts = `+${r.winPoints} / ${r.losePoints > 0 ? '+' : ''}${r.losePoints}`;
-          return `G${r.gameIndex || 1} ${r.winner === 'blue' ? '🔵' : '🔴'} <@${winners.spymaster}> & <@${winners.guesser}> (${howStr}, ${pts})`;
-        });
-        summaryEmbed.addFields({
-          name: `Match ${matchNumber} — 🔵 ${blueWins} · 🔴 ${games.length - blueWins}`,
-          value: lines.join('\n').slice(0, 1024),
-        });
-      }
-      if (results.length === 0) summaryEmbed.setDescription('No match results recorded.');
-      await channel.send({ embeds: [summaryEmbed] });
+      await channel.send(cards.roundSummaryCard({
+        round: tournament.currentRound - 1,
+        byMatch: Array.from(byMatch, ([matchNumber, games]) => ({ matchNumber, games })),
+      }));
 
       // Clear results only after the summary has been successfully posted
       tournament.roundResults = [];
@@ -1452,16 +1000,10 @@ async function allocateRound(guild) {
   // Allocate all matches in this round simultaneously
   const channel = mainChannel;
 
-  // Post round header with deadline (deadline is set just after the loop, so compute it now for display)
-  const timeoutDaysHeader = parseFloat(process.env.ROUND_TIMEOUT_DAYS) || 14;
-  const deadlineMs = Date.now() + timeoutDaysHeader * 24 * 60 * 60 * 1000;
-  const deadlineTs = Math.floor(deadlineMs / 1000);
-  const headerEmbed = new EmbedBuilder()
-    .setTitle(`📋 Round ${tournament.currentRound} — ${currentRoundMatches.length} Match${currentRoundMatches.length !== 1 ? 'es' : ''}`)
-    .setDescription(`Complete all games below before <t:${deadlineTs}:F> (<t:${deadlineTs}:R>).`)
-    .setColor(0x5865f2);
-  await channel.send({ embeds: [headerEmbed] });
+  const timeoutDays = parseFloat(process.env.ROUND_TIMEOUT_DAYS) || 14;
+  const deadlineMs = Date.now() + timeoutDays * 24 * 60 * 60 * 1000;
 
+  // One thread per match, opened with game 1's card (which pings the four players).
   for (let i = 0; i < currentRoundMatches.length; i++) {
     const roundEntry = getRoundMatchEntry(currentRoundMatches[i]);
     const grouping = roundEntry.grouping;
@@ -1469,45 +1011,31 @@ async function allocateRound(guild) {
     const gamesPerMatch = roundEntry.gamesPlanned;
     const phaseSequence = roundEntry.phaseSequence;
     const games = roundEntry.games || getMatchGames(roundEntry);
-    const firstGrouping = games[0];
-
-    const embed = new EmbedBuilder()
-      .setTitle(`Round ${tournament.currentRound} — Match ${matchNumber}`)
-      .setDescription(
-        `${scheduler.playersOf(grouping).map(id => `<@${id}>`).join(' · ')}\n` +
-        `${gamesPerMatch} game${gamesPerMatch !== 1 ? 's' : ''} — line-ups are posted in the thread.`
-      )
-      .setColor(0x0099ff);
 
     try {
-      await channel.send({ embeds: [embed] });
-
       const thread = await channel.threads.create({
         name: `R${tournament.currentRound}M${matchNumber} Game`,
         autoArchiveDuration: 10080,
         reason: 'Tournament game thread',
       });
-
-      const threadEmbed = new EmbedBuilder()
-        .setTitle(`Round ${tournament.currentRound} \u2014 Match ${matchNumber} (Game 1 of ${gamesPerMatch})`)
-        .setDescription(
-          `**Blue Team:**\nSpymaster: <@${firstGrouping.blue.spymaster}>\nGuesser: <@${firstGrouping.blue.guesser}>\n\n` +
-          `**Red Team:**\nSpymaster: <@${firstGrouping.red.spymaster}>\nGuesser: <@${firstGrouping.red.guesser}>\n\nPlay Game 1 then log the result below.${bridgeThreadHint()}`
-        )
-        .setColor(0x00ff00);
-      if (games.length > 1) threadEmbed.addFields({ name: 'Match plan', value: formatMatchPlan(games) });
-
-      const row = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder().setCustomId('log_blue_win').setLabel('Blue Wins').setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId('log_red_win').setLabel('Red Wins').setStyle(ButtonStyle.Danger),
-        );
-
-      await thread.send({ embeds: [threadEmbed], components: [row] });
+      await thread.send(cards.gameCard({
+        round: tournament.currentRound, matchNumber, gameIndex: 1, games, bridgeEnabled: bridgeClient.enabled, intro: true,
+      }));
       tournament.activeMatches.push({ grouping, games: roundEntry.games || undefined, gamesPlanned: gamesPerMatch, phaseSequence: roundEntry.games ? undefined : phaseSequence, threadId: thread.id, matchNumber, gamePhase: 1, game1Result: null, phaseResults: {}, matchCreatedAt: new Date().toISOString() });
     } catch (e) {
       console.error(`Failed to create thread for match ${matchNumber}:`, e.message);
     }
+  }
+
+  // Then one message in the channel listing every match with a link to its thread.
+  if (tournament.activeMatches.length > 0) {
+    await channel.send(cards.roundCard({
+      round: tournament.currentRound,
+      deadlineMs,
+      matches: tournament.activeMatches.map(m => ({
+        matchNumber: m.matchNumber, players: scheduler.playersOf(m.grouping), gamesPlanned: getMatchGameCount(m), threadUrl: getThreadUrl(m.threadId),
+      })),
+    })).catch(e => console.error('[allocate] Failed to post the round card:', e.message));
   }
 
   if (tournament.activeMatches.length === 0) {
@@ -1515,12 +1043,12 @@ async function allocateRound(guild) {
   }
 
   // Set round deadline and schedule warning + expiry timers
-  const timeoutDays = parseFloat(process.env.ROUND_TIMEOUT_DAYS) || 14;
-  tournament.roundDeadline = Date.now() + timeoutDays * 24 * 60 * 60 * 1000;
+  tournament.roundDeadline = deadlineMs;
   tournament.roundStartedAt = new Date().toISOString();
   await saveTournamentData();
   scheduleRoundTimers(guild);
   startThreadKeepAlive(guild);
+  refreshSetupMessage(guild).catch(() => null);
   return { success: true, message: `Round ${tournament.currentRound} allocated with ${tournament.activeMatches.length} match(es).` };
 }
 
@@ -1669,7 +1197,7 @@ async function fixMatchups(guild) {
   const before = tournament.rounds.length;
   recalculateFutureRounds(Array.from(tournament.players));
   await saveTournamentData();
-  if (guild) updateScoreboard(guild).catch(() => null);
+  if (guild) refreshSetupMessage(guild).catch(() => null);
   const keptThrough = tournament.activeMatches.length > 0 ? tournament.currentRound : tournament.currentRound - 1;
   return { before, after: tournament.rounds.length, future: tournament.rounds.length - keptThrough, keptThrough };
 }
@@ -1701,7 +1229,7 @@ async function closeSignups(guild) {
     await channel.send(`✅ Signups closed with ${activePlayers.length} player${activePlayers.length !== 1 ? 's' : ''}. Future rounds have been recalculated — ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned.`);
   }
   if (guild) {
-    updateScoreboard(guild).catch(() => null);
+    refreshSetupMessage(guild).catch(() => null);
     if (tournament.activeMatches.length === 0 && tournament.currentRound <= tournament.rounds.length) {
       allocateRound(guild).catch(e => console.error('[closeSignups] Auto-allocate failed:', e.message));
     }
@@ -1802,40 +1330,21 @@ async function sendRoundExpiry(guild) {
   const mainChannel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
   if (!mainChannel) return;
 
-  const ts = Math.floor(tournament.roundDeadline / 1000);
   const allRoundMatches = tournament.rounds[tournament.currentRound - 1] || [];
   const stillActive = tournament.activeMatches.slice().sort((a, b) => a.matchNumber - b.matchNumber);
   const activeNums = new Set(stillActive.map(m => m.matchNumber));
-  const completedCount = allRoundMatches.length - stillActive.length;
 
-  const expiredEmbed = new EmbedBuilder()
-    .setTitle(`⏰ Round ${tournament.currentRound} Timer Expired`)
-    .setColor(0xff4500)
-    .setDescription(`The round deadline was <t:${ts}:F>.`);
-
-  if (completedCount > 0) {
-    const completedLines = allRoundMatches
-      .map((_, i) => i + 1)
-      .filter(n => !activeNums.has(n))
-      .map(n => {
-        const games = tournament.roundResults.filter(r => r.matchNumber === n);
-        const blue = games.filter(r => r.winner === 'blue').length;
-        return `Match ${n}: ${games.length} game${games.length !== 1 ? 's' : ''} (🔵 ${blue} – 🔴 ${games.length - blue})`;
-      }).join('\n');
-    expiredEmbed.addFields({ name: `✅ Completed (${completedCount}/${allRoundMatches.length})`, value: completedLines.slice(0, 1024) });
-  }
-
-  if (stillActive.length > 0) {
-    const activeLines = stillActive
-      .map(m => `Match ${m.matchNumber} (game ${m.gamePhase ?? 1} of ${getMatchGameCount(m)}): ${scheduler.playersOf(m.grouping).map(id => `<@${id}>`).join(' · ')}`)
-      .join('\n');
-    expiredEmbed.addFields({ name: `⏳ Still Active (${stillActive.length}/${allRoundMatches.length})`, value: activeLines.slice(0, 1024) });
-  }
-
-  const webUrl = getWebBaseUrl();
-  expiredEmbed.addFields({ name: '⚙️ Admin Action Required', value: `Log in to the **[tournament website](${webUrl})** as admin to force-end this round and advance to the next.` });
-
-  await mainChannel.send({ embeds: [expiredEmbed] });
+  await mainChannel.send(cards.roundExpiryCard({
+    round: tournament.currentRound,
+    deadlineMs: tournament.roundDeadline,
+    totalMatches: allRoundMatches.length,
+    completed: allRoundMatches.map((_, i) => i + 1).filter(n => !activeNums.has(n)).map(n => {
+      const games = tournament.roundResults.filter(r => r.matchNumber === n);
+      return { matchNumber: n, played: games.length, blueWins: games.filter(r => r.winner === 'blue').length };
+    }),
+    active: stillActive.map(m => ({ matchNumber: m.matchNumber, game: m.gamePhase ?? 1, gamesPlanned: getMatchGameCount(m), players: scheduler.playersOf(m.grouping) })),
+    webUrl: getWebBaseUrl(),
+  }));
 }
 
 function getSwappedGrouping(grouping) {
@@ -1852,10 +1361,6 @@ function getGroupingForPhase(grouping, phase) {
   if (phase === 3) return { blue: getSwappedGrouping(grouping).blue, red: grouping.red };
   if (phase === 4) return { blue: grouping.blue, red: getSwappedGrouping(grouping).red };
   return grouping;
-}
-
-function getPhaseButtonSuffix(phase) {
-  return phase > 1 ? `_g${phase}` : '';
 }
 
 function hasValidGrouping(grouping) {
@@ -1885,13 +1390,6 @@ function getMatchPhaseSequence(matchLike) {
 function getMatchGames(matchLike) {
   if (Array.isArray(matchLike?.games) && matchLike.games.length > 0) return matchLike.games;
   return getMatchPhaseSequence(matchLike).map(phase => getGroupingForPhase(matchLike.grouping, phase));
-}
-
-// One line per game: "G1 🔵 @a (spy) & @b vs 🔴 @c (spy) & @d".
-function formatMatchPlan(games) {
-  return games.map((g, i) =>
-    `G${i + 1} 🔵 <@${g.blue.spymaster}> (spy) & <@${g.blue.guesser}> vs 🔴 <@${g.red.spymaster}> (spy) & <@${g.red.guesser}>`
-  ).join('\n');
 }
 
 function getMatchGameCount(matchLike) {
@@ -1980,7 +1478,7 @@ async function forceEndRound(guild) {
   tournament.currentRoundIndex = 0;
   await saveTournamentData();
   if (guild) {
-    updateScoreboard(guild).catch(() => null);
+    refreshSetupMessage(guild).catch(() => null);
     if (tournament.currentRound <= tournament.rounds.length) {
       allocateRound(guild).catch(e => console.error('[force-end] Auto-allocate failed:', e.message));
     }
@@ -2042,28 +1540,15 @@ async function recordGameResult(ctx, matchData, winner, assassin, remainingCards
     const nextPhase = gamePhase + 1;
     matchData.gamePhase = nextPhase;
     await saveTournamentData();
-    updateScoreboard(guild).catch(() => null);
+    refreshSetupMessage(guild).catch(() => null);
 
     const replyText = `**Game ${gamePhase}** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**\n\n_Game ${nextPhase} is starting._`;
     await ctx.reply(replyText);
 
-    const nextGrouping = getGroupingForMatchGame(matchData, nextPhase);
-    const nextGameEmbed = new EmbedBuilder()
-      .setTitle(`Match ${matchData.matchNumber} — Game ${nextPhase} of ${gamesPerMatch}`)
-      .setDescription(
-        `**Blue Team:**\nSpymaster: <@${nextGrouping.blue.spymaster}>\nGuesser: <@${nextGrouping.blue.guesser}>\n\n` +
-        `**Red Team:**\nSpymaster: <@${nextGrouping.red.spymaster}>\nGuesser: <@${nextGrouping.red.guesser}>\n\nPlay Game ${nextPhase} then log the result below.` +
-        (bridgeClient.enabled ? '\n\n🕵️ Use **Play next game** in the same codenames.game room — the result is logged automatically.' : '')
-      )
-      .setColor(0xff9900);
-
-    const nextPhaseSuffix = getPhaseButtonSuffix(nextPhase);
-    const nextGameRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`log_blue_win${nextPhaseSuffix}`).setLabel('Blue Wins').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`log_red_win${nextPhaseSuffix}`).setLabel('Red Wins').setStyle(ButtonStyle.Danger),
-    );
-
-    await ctx.channel.send({ embeds: [nextGameEmbed], components: [nextGameRow] });
+    await ctx.channel.send(cards.gameCard({
+      round: tournament.currentRound, matchNumber: matchData.matchNumber, gameIndex: nextPhase,
+      games: getMatchGames(matchData), bridgeEnabled: bridgeClient.enabled,
+    }));
   } else {
     moveMatchResultsToHistory(matchData);
 
@@ -2081,7 +1566,7 @@ async function recordGameResult(ctx, matchData, winner, assassin, remainingCards
     await ctx.reply(replyText);
 
     await saveTournamentData();
-    updateScoreboard(guild).catch(() => null);
+    refreshSetupMessage(guild).catch(() => null);
 
     if (roundComplete) {
       clearRoundTimers();
@@ -2159,23 +1644,11 @@ async function handleBridgeResult(body) {
     };
     await saveTournamentData();
 
-    const expected = getGroupingForMatchGame(matchData, gamePhase);
-    const winnerLabel = winner === 'blue' ? '🔵 Blue' : '🔴 Red';
-    const howStr = assassin ? 'assassin hit' : `${remainingCards} card${remainingCards !== 1 ? 's' : ''} remaining`;
-    const embed = new EmbedBuilder()
-      .setTitle(`🕵️ Game ${gamePhase} result detected — please confirm`)
-      .setDescription(
-        `codenames.game says **${winnerLabel}** won (${howStr})${body.room_url ? ` in ${body.room_url}` : ''}.\n\n` +
-        `The seats in the room didn't match the line-up for Game ${gamePhase} (or some players haven't pressed **I'm playing** on the room card), so it wasn't logged automatically.\n\n` +
-        `**Expected:**\n🔵 Spymaster: <@${expected.blue.spymaster}> · Guesser: <@${expected.blue.guesser}>\n🔴 Spymaster: <@${expected.red.spymaster}> · Guesser: <@${expected.red.guesser}>\n\n` +
-        `**In the room:**\n${codenamesBridge.describeSeats(body.seats)}`
-      )
-      .setColor(0xffcc00);
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`cnb_ok_${pendingId}`).setLabel(`Log as Game ${gamePhase}`).setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`cnb_no_${pendingId}`).setLabel('Dismiss').setStyle(ButtonStyle.Secondary),
-    );
-    await thread.send({ embeds: [embed], components: [row] });
+    await thread.send(cards.bridgeConfirmCard({
+      pendingId, gamePhase, winner, assassin, remainingCards, roomUrl: body.room_url || null,
+      expected: getGroupingForMatchGame(matchData, gamePhase),
+      seatsText: codenamesBridge.describeSeats(body.seats),
+    }));
     return { status: 202, data: { status: 'needs_confirmation', game: gamePhase } };
   } catch (error) {
     // Let the BGA bot retry: the seat check stops a retry from scoring the game twice.
@@ -2598,7 +2071,7 @@ async function handleHttpRequest(req, res) {
         }
 
         await saveTournamentData();
-        if (guild) updateScoreboard(guild).catch(() => null);
+        if (guild) refreshSetupMessage(guild).catch(() => null);
 
         sendJson(res, 200, { ok: true, message: `Tournament started with ${tournament.players.size} players! Generated ${tournament.rounds.length} rounds.` });
         return;
@@ -2655,26 +2128,8 @@ async function handleHttpRequest(req, res) {
         };
         await saveTournamentData();
 
-        // Update the Discord embed to show the cleared state
-        if (prevSetupMessage && prevSetupChannelId && guild) {
-          try {
-            const channel = await guild.channels.fetch(prevSetupChannelId).catch(() => null);
-            if (channel) {
-              const message = await channel.messages.fetch(prevSetupMessage).catch(() => null);
-              if (message) {
-                const signupRow = new ActionRowBuilder().addComponents(
-                  new ButtonBuilder().setCustomId('signup').setLabel('Sign Up').setStyle(ButtonStyle.Primary),
-                  new ButtonBuilder().setLabel('🌐 Website').setStyle(ButtonStyle.Link).setURL(getWebBaseUrl()),
-                );
-                const resetEmbed = new EmbedBuilder()
-                  .setTitle('Codenames Tournament')
-                  .setDescription(buildSignupDescription())
-                  .setColor(0x0099ff);
-                await message.edit({ embeds: [resetEmbed], components: [signupRow] });
-              }
-            }
-          } catch (err) { console.error('[web admin reset] Failed to update Discord embed:', err.message); }
-        }
+        // Show the cleared state (sign-up) on the tournament message.
+        if (guild) await refreshSetupMessage(guild);
 
         sendJson(res, 200, { ok: true, message: 'Tournament has been reset.' });
         return;
@@ -2692,7 +2147,7 @@ async function handleHttpRequest(req, res) {
         tournament.scores.set(userId, oldScore + d);
         await saveTournamentData();
         const guild2 = client.guilds.cache.get(process.env.GUILD_ID);
-        if (guild2) updateScoreboard(guild2).catch(() => null);
+        if (guild2) refreshSetupMessage(guild2).catch(() => null);
         sendJson(res, 200, { ok: true, message: `Score adjusted: ${oldScore} → ${oldScore + d} pts (${d >= 0 ? '+' : ''}${d})` });
         return;
       }
@@ -2838,7 +2293,7 @@ async function handleHttpRequest(req, res) {
 
         await saveTournamentData();
         const guildOverride = client.guilds.cache.get(process.env.GUILD_ID);
-        if (guildOverride) updateScoreboard(guildOverride).catch(() => null);
+        if (guildOverride) refreshSetupMessage(guildOverride).catch(() => null);
 
         // Post a notification to the game thread if it still exists
         const threadId = (histIdx !== -1 ? tournament.history[histIdx].threadId : null)
@@ -2956,7 +2411,7 @@ async function handleHttpRequest(req, res) {
 
         await saveTournamentData();
         const guildOverride = client.guilds.cache.get(process.env.GUILD_ID);
-        if (guildOverride) updateScoreboard(guildOverride).catch(() => null);
+        if (guildOverride) refreshSetupMessage(guildOverride).catch(() => null);
 
         // Notify thread
         if (threadId && guildOverride) {
@@ -2998,7 +2453,7 @@ async function handleHttpRequest(req, res) {
         tournament.signupsReopened = true;
         tournament.signupReopenMessageId = reopenMsg.id;
         await saveTournamentData();
-        if (guildRO) updateScoreboard(guildRO).catch(() => null);
+        if (guildRO) refreshSetupMessage(guildRO).catch(() => null);
         sendJson(res, 200, { ok: true, message: 'Signups reopened. A message has been posted in the tournament channel.' });
         return;
       }
