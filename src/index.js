@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, PermissionsBitField } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
+const codenamesBridge = require('./codenamesBridge');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const TOURNAMENT_FILE = path.join(DATA_DIR, 'tournament.json');
@@ -42,6 +43,19 @@ let tournament = {
   signupsReopened: false, // true while a mid-tournament signup window is open
   signupReopenMessageId: null, // Discord message ID of the active reopen-signups message
 };
+
+// Codenames bridge (BGA bot's codenames.game watcher) — optional, see docs/codenames-bridge.md
+const BRIDGE_TOKEN = (process.env.BRIDGE_TOKEN || '').trim();
+const bridgeClient = codenamesBridge.createBridgeClient({
+  token: BRIDGE_TOKEN,
+  baseUrls: codenamesBridge.parseUrlList(process.env.BRIDGE_URLS),
+});
+// threadId -> signature of the binding the BGA bot last accepted (persisted, survives resets)
+let codenamesBridgeSynced = {};
+let bridgeSyncTimer = null;
+let bridgeSyncRunning = false;
+let bridgeSyncAgain = false;
+const BRIDGE_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
 
 // Round timer handles (in-memory only)
 let roundWarningTimer = null;
@@ -158,6 +172,12 @@ client.once('clientReady', async () => {
 
   // Load tournament data on startup
   await loadTournamentData();
+  if (bridgeClient.enabled) {
+    console.log('[bridge] Codenames bridge enabled');
+    scheduleBridgeSync(0);
+    // Retries bindings the BGA bot couldn't take (e.g. it was restarting).
+    setInterval(() => scheduleBridgeSync(0), BRIDGE_RESYNC_INTERVAL_MS);
+  }
 
   // Register commands
   const guild = client.guilds.cache.get(process.env.GUILD_ID);
@@ -250,6 +270,7 @@ async function loadTournamentData() {
     tournament.pendingRemoval = parsed.pendingRemoval || null;
     tournament.signupsReopened = parsed.signupsReopened || false;
     tournament.signupReopenMessageId = parsed.signupReopenMessageId || null;
+    codenamesBridgeSynced = parsed.codenamesBindings || {};
     console.log('Tournament data loaded from storage');
   } catch (error) {
     console.log('No previous tournament data found, starting fresh');
@@ -280,11 +301,60 @@ async function saveTournamentData() {
       pendingRemoval: tournament.pendingRemoval,
       signupsReopened: tournament.signupsReopened,
       signupReopenMessageId: tournament.signupReopenMessageId,
+      codenamesBindings: codenamesBridgeSynced,
     };
     await fs.writeFile(TOURNAMENT_FILE, JSON.stringify(data, null, 2));
   } catch (error) {
     console.error('Failed to save tournament data:', error);
   }
+  scheduleBridgeSync();
+}
+
+// ── Codenames bridge ───────────────────────────────────────────────────────
+
+function getMatchBridgeRef(match) {
+  return `R${tournament.currentRound}M${match.matchNumber}`;
+}
+
+// Tell the BGA bot which threads are live matches (debounced; runs after every save).
+function scheduleBridgeSync(delayMs = 1000) {
+  if (!bridgeClient.enabled) return;
+  if (bridgeSyncTimer) clearTimeout(bridgeSyncTimer);
+  bridgeSyncTimer = setTimeout(() => {
+    bridgeSyncTimer = null;
+    syncBridgeBindings().catch(e => console.error('[bridge] Sync failed:', e.message));
+  }, delayMs);
+}
+
+async function syncBridgeBindings() {
+  if (bridgeSyncRunning) { bridgeSyncAgain = true; return; }
+  bridgeSyncRunning = true;
+  try {
+    do {
+      bridgeSyncAgain = false;
+      const desired = new Map();
+      for (const match of tournament.activeMatches) {
+        if (!match.threadId) continue;
+        const g = match.grouping;
+        desired.set(match.threadId, {
+          guild_id: process.env.GUILD_ID,
+          external_ref: getMatchBridgeRef(match),
+          players: [g.blue.spymaster, g.blue.guesser, g.red.spymaster, g.red.guesser].filter(id => /^\d+$/.test(id)),
+        });
+      }
+      const changed = await bridgeClient.reconcile(desired, codenamesBridgeSynced);
+      if (changed) await saveTournamentData();
+    } while (bridgeSyncAgain);
+  } finally {
+    bridgeSyncRunning = false;
+  }
+}
+
+function bridgeThreadHint() {
+  return bridgeClient.enabled
+    ? '\n\n🕵️ Post your **codenames.game** room link in this thread and results are logged automatically. ' +
+      'Use the same room for every game in this match (**Play next game**). The buttons below still work if you need them.'
+    : '';
 }
 
 function buildSignupDescription() {
@@ -881,6 +951,53 @@ client.on('interactionCreate', async (interaction) => {
       modal.addComponents(firstActionRow);
 
       await interaction.showModal(modal);
+    } else if (customId.startsWith('cnb_ok_') || customId.startsWith('cnb_no_')) {
+      const accept = customId.startsWith('cnb_ok_');
+      const pendingId = customId.slice('cnb_ok_'.length);
+      const matchData = tournament.activeMatches.find(m => m.threadId === interaction.channelId);
+      const pending = matchData && matchData.pendingBridgeResults && matchData.pendingBridgeResults[pendingId];
+      if (!pending) {
+        await interaction.reply({ content: 'This detected result is no longer pending.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const isAdmin = interaction.member.roles.cache.has(process.env.ADMIN_ROLE_ID);
+      const g = matchData.grouping;
+      if (!isAdmin && ![g.blue.spymaster, g.blue.guesser, g.red.spymaster, g.red.guesser].includes(interaction.user.id)) {
+        await interaction.reply({ content: 'Only the players in this match or an admin can do that.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!accept) {
+        delete matchData.pendingBridgeResults[pendingId];
+        await saveTournamentData();
+        await interaction.update({ content: `Dismissed by <@${interaction.user.id}>.`, components: [] });
+        return;
+      }
+      const currentPhase = matchData.gamePhase ?? 1;
+      if (currentPhase !== pending.gamePhase) {
+        delete matchData.pendingBridgeResults[pendingId];
+        await saveTournamentData();
+        await interaction.update({ content: `Not logged: this match has moved on to Game ${currentPhase}.`, components: [] });
+        return;
+      }
+      const confirmKey = `${interaction.channelId}:${currentPhase}:result`;
+      if (processingThreads.has(confirmKey)) {
+        await interaction.reply({ content: 'A result is already being submitted for this game. Please wait.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      processingThreads.add(confirmKey);
+      try {
+        delete matchData.pendingBridgeResults[pendingId];
+        await interaction.update({ content: `Confirmed by <@${interaction.user.id}>.`, components: [] });
+        await recordGameResult({
+          guild: interaction.guild,
+          channel: interaction.channel,
+          submittedBy: interaction.user.id,
+          source: 'codenames-bridge-confirmed',
+          reply: (content) => interaction.followUp({ content }),
+        }, matchData, pending.winner, pending.assassin, pending.remainingCards);
+      } finally {
+        processingThreads.delete(confirmKey);
+      }
     } else if (customId === 'timeout_force_end') {
       const adminRoleId = process.env.ADMIN_ROLE_ID;
       if (!interaction.member.roles.cache.has(adminRoleId)) {
@@ -1391,7 +1508,7 @@ async function allocateRound(guild) {
         .setTitle(`Round ${tournament.currentRound} \u2014 Match ${matchNumber} (Game 1 of ${gamesPerMatch})`)
         .setDescription(
           `**Blue Team:**\nSpymaster: <@${firstGrouping.blue.spymaster}>\nGuesser: <@${firstGrouping.blue.guesser}>\n\n` +
-          `**Red Team:**\nSpymaster: <@${firstGrouping.red.spymaster}>\nGuesser: <@${firstGrouping.red.guesser}>\n\nPlay Game 1 then log the result below.`
+          `**Red Team:**\nSpymaster: <@${firstGrouping.red.spymaster}>\nGuesser: <@${firstGrouping.red.guesser}>\n\nPlay Game 1 then log the result below.${bridgeThreadHint()}`
         )
         .setColor(0x00ff00);
 
@@ -2231,7 +2348,19 @@ function checkAndMarkConfigs(assignment, playedConfigs, playedLayouts, roleCount
 }
 
 async function processGameResult(interaction, matchData, winner, assassin, remainingCards) {
-  const submittedBy = interaction.user.id;
+  return recordGameResult({
+    guild: interaction.guild,
+    channel: interaction.channel,
+    submittedBy: interaction.user.id,
+    reply: (content) => interaction.reply({ content }),
+  }, matchData, winner, assassin, remainingCards);
+}
+
+// Score one game of a match and move the match on (next game, or match/round complete).
+// `ctx` = { guild, channel (the match thread), submittedBy, reply(content), source? }.
+async function recordGameResult(ctx, matchData, winner, assassin, remainingCards) {
+  const { guild } = ctx;
+  const submittedBy = ctx.submittedBy;
   const submittedAt = new Date().toISOString();
   const gamePhase = matchData.gamePhase ?? 1; // sequential game number (1-based); phaseSequence maps this to actual phase config
   const phaseSequence = getMatchPhaseSequence(matchData);
@@ -2262,6 +2391,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
     phaseResults[1] = matchData.game1Result;
   }
   const currentResult = { winner, assassin, remainingCards, winPoints, losePoints, submittedAt, submittedBy };
+  if (ctx.source) currentResult.source = ctx.source;
   phaseResults[gamePhase] = currentResult;
   if (gamePhase === 1) {
     matchData.game1Result = currentResult; // Backward compatibility for active-match admin tooling
@@ -2271,17 +2401,18 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
     const nextPhase = gamePhase + 1;
     matchData.gamePhase = nextPhase;
     await saveTournamentData();
-    updateScoreboard(interaction.guild).catch(() => null);
+    updateScoreboard(guild).catch(() => null);
 
     const replyText = `**Game ${gamePhase}** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**\n\n_Game ${nextPhase} is starting._`;
-    await interaction.reply({ content: replyText });
+    await ctx.reply(replyText);
 
     const nextGrouping = getGroupingForMatchGame(matchData, nextPhase);
     const nextGameEmbed = new EmbedBuilder()
       .setTitle(`Match ${matchData.matchNumber} — Game ${nextPhase} of ${gamesPerMatch}`)
       .setDescription(
         `**Blue Team:**\nSpymaster: <@${nextGrouping.blue.spymaster}>\nGuesser: <@${nextGrouping.blue.guesser}>\n\n` +
-        `**Red Team:**\nSpymaster: <@${nextGrouping.red.spymaster}>\nGuesser: <@${nextGrouping.red.guesser}>\n\nPlay Game ${nextPhase} then log the result below.`
+        `**Red Team:**\nSpymaster: <@${nextGrouping.red.spymaster}>\nGuesser: <@${nextGrouping.red.guesser}>\n\nPlay Game ${nextPhase} then log the result below.` +
+        (bridgeClient.enabled ? '\n\n🕵️ Use **Play next game** in the same codenames.game room — the result is logged automatically.' : '')
       )
       .setColor(0xff9900);
 
@@ -2291,7 +2422,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
       new ButtonBuilder().setCustomId(`log_red_win${nextPhaseSuffix}`).setLabel('Red Wins').setStyle(ButtonStyle.Danger),
     );
 
-    await interaction.channel.send({ embeds: [nextGameEmbed], components: [nextGameRow] });
+    await ctx.channel.send({ embeds: [nextGameEmbed], components: [nextGameRow] });
   } else {
     for (let idx = 1; idx <= gamesPerMatch; idx++) {
       const g = phaseResults[idx];
@@ -2327,7 +2458,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
       });
     }
 
-    tournament.activeMatches = tournament.activeMatches.filter(m => m.threadId !== interaction.channelId);
+    tournament.activeMatches = tournament.activeMatches.filter(m => m.threadId !== matchData.threadId);
     tournament.currentRoundIndex++;
 
     const remainingActive = tournament.activeMatches.length;
@@ -2338,10 +2469,10 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
     else replyText += `\n${remainingActive} match(es) still active this round.`;
     replyText += `\n\n_Need to correct a result? Visit the tournament website and log in as admin._`;
 
-    await interaction.reply({ content: replyText });
+    await ctx.reply(replyText);
 
     await saveTournamentData();
-    updateScoreboard(interaction.guild).catch(() => null);
+    updateScoreboard(guild).catch(() => null);
 
     if (roundComplete) {
       clearRoundTimers();
@@ -2349,7 +2480,7 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
       tournament.currentRoundIndex = 0;
       await saveTournamentData();
       if (tournament.currentRound <= tournament.rounds.length) {
-        allocateRound(interaction.guild).catch(e => console.error('Auto-allocation failed:', e.message));
+        allocateRound(guild).catch(e => console.error('Auto-allocation failed:', e.message));
       }
     }
   }
@@ -2358,6 +2489,91 @@ async function processGameResult(interaction, matchData, winner, assassin, remai
 client.on('error', (error) => {
   console.error('Client error:', error);
 });
+
+// A finished codenames.game game reported by the BGA bot. Logged straight away
+// when the room's seats match the line-up for the match's current game;
+// otherwise posted in the thread for a player or admin to confirm.
+// Returns { status, data } for the HTTP response (2xx = handled, 503 = retry later).
+async function handleBridgeResult(body) {
+  const invalid = codenamesBridge.validateResultPayload(body);
+  if (invalid) return { status: 400, data: { error: invalid } };
+
+  const guild = client.guilds.cache.get(process.env.GUILD_ID);
+  const thread = guild ? await guild.channels.fetch(body.channel_id).catch(() => null) : null;
+
+  const matchData = tournament.activeMatches.find(m => m.threadId === body.channel_id);
+  if (!matchData) return { status: 200, data: { status: 'ignored', reason: 'no active match for this thread' } };
+  if (body.external_ref && body.external_ref !== getMatchBridgeRef(matchData)) {
+    return { status: 200, data: { status: 'ignored', reason: 'external_ref does not match the current match' } };
+  }
+  matchData.bridgeEvents = matchData.bridgeEvents || [];
+  if (matchData.bridgeEvents.includes(body.event_id)) return { status: 200, data: { status: 'duplicate' } };
+  if (!thread) return { status: 503, data: { error: 'match thread is not reachable right now' } };
+
+  const gamePhase = matchData.gamePhase ?? 1;
+  const processingKey = `${matchData.threadId}:${gamePhase}:result`;
+  if (processingThreads.has(processingKey)) return { status: 503, data: { error: 'a result for this game is being submitted' } };
+  processingThreads.add(processingKey); // synchronous, like the button handlers
+  matchData.bridgeEvents.push(body.event_id);
+
+  try {
+    const { winner } = body;
+    const assassin = Boolean(body.assassin);
+    const remainingCards = codenamesBridge.remainingCardsFromPayload(body);
+    const gamesPlanned = getMatchPhaseSequence(matchData).length;
+    const seatedGame = codenamesBridge.findGameForSeats(body.seats, gamesPlanned, idx => getGroupingForMatchGame(matchData, idx));
+
+    if (seatedGame === gamePhase) {
+      await recordGameResult({
+        guild,
+        channel: thread,
+        submittedBy: 'codenames-bridge',
+        source: 'codenames-bridge',
+        reply: (content) => thread.send({ content: `🕵️ _Logged automatically from codenames.game._\n${content}` }),
+      }, matchData, winner, assassin, remainingCards);
+      return { status: 200, data: { status: 'logged', game: gamePhase } };
+    }
+
+    if (seatedGame !== null && seatedGame < gamePhase) {
+      await saveTournamentData();
+      await thread.send({ content: `🕵️ codenames.game reported a finished game with the **Game ${seatedGame}** line-up, which is already logged — ignoring it.` });
+      return { status: 200, data: { status: 'already_logged', game: seatedGame } };
+    }
+
+    const pendingId = crypto.randomBytes(4).toString('hex');
+    matchData.pendingBridgeResults = matchData.pendingBridgeResults || {};
+    matchData.pendingBridgeResults[pendingId] = {
+      eventId: body.event_id, gamePhase, winner, assassin, remainingCards,
+      roomUrl: body.room_url || null, receivedAt: new Date().toISOString(),
+    };
+    await saveTournamentData();
+
+    const expected = getGroupingForMatchGame(matchData, gamePhase);
+    const winnerLabel = winner === 'blue' ? '🔵 Blue' : '🔴 Red';
+    const howStr = assassin ? 'assassin hit' : `${remainingCards} card${remainingCards !== 1 ? 's' : ''} remaining`;
+    const embed = new EmbedBuilder()
+      .setTitle(`🕵️ Game ${gamePhase} result detected — please confirm`)
+      .setDescription(
+        `codenames.game says **${winnerLabel}** won (${howStr})${body.room_url ? ` in ${body.room_url}` : ''}.\n\n` +
+        `The seats in the room didn't match the line-up for Game ${gamePhase} (or some players haven't pressed **I'm playing** on the room card), so it wasn't logged automatically.\n\n` +
+        `**Expected:**\n🔵 Spymaster: <@${expected.blue.spymaster}> · Guesser: <@${expected.blue.guesser}>\n🔴 Spymaster: <@${expected.red.spymaster}> · Guesser: <@${expected.red.guesser}>\n\n` +
+        `**In the room:**\n${codenamesBridge.describeSeats(body.seats)}`
+      )
+      .setColor(0xffcc00);
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`cnb_ok_${pendingId}`).setLabel(`Log as Game ${gamePhase}`).setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`cnb_no_${pendingId}`).setLabel('Dismiss').setStyle(ButtonStyle.Secondary),
+    );
+    await thread.send({ embeds: [embed], components: [row] });
+    return { status: 202, data: { status: 'needs_confirmation', game: gamePhase } };
+  } catch (error) {
+    // Let the BGA bot retry: the seat check stops a retry from scoring the game twice.
+    matchData.bridgeEvents = matchData.bridgeEvents.filter(id => id !== body.event_id);
+    throw error;
+  } finally {
+    processingThreads.delete(processingKey);
+  }
+}
 
 // ----- Web dashboard & OAuth -----
 
@@ -2559,6 +2775,23 @@ async function handleHttpRequest(req, res) {
     const search = qIdx >= 0 ? rawUrl.slice(qIdx + 1) : '';
     const query = Object.fromEntries(new URLSearchParams(search));
     const method = (req.method || 'GET').toUpperCase();
+
+    // ── Codenames bridge: results from the BGA bot ───────────────────────────
+    if (pathname === '/api/bridge/codenames/result' && method === 'POST') {
+      if (!BRIDGE_TOKEN) return sendJson(res, 404, { error: 'bridge is disabled' });
+      if (!codenamesBridge.isAuthorized(req.headers.authorization, BRIDGE_TOKEN)) {
+        return sendJson(res, 401, { error: 'unauthorized' });
+      }
+      let body;
+      try { body = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: 'body must be JSON' }); }
+      try {
+        const result = await handleBridgeResult(body);
+        return sendJson(res, result.status, result.data);
+      } catch (error) {
+        console.error('[bridge] Failed to handle result:', error);
+        return sendJson(res, 500, { error: 'failed to record the result' });
+      }
+    }
 
     // ── Public tournament data ───────────────────────────────────────────────
     if (pathname === '/api' && method === 'GET') {
