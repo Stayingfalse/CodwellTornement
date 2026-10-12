@@ -156,7 +156,66 @@ function describeSeats(seats) {
   );
 }
 
+// What the BGA bot is told about one active match: who plays, what they're
+// called, and the seats for the game being played now. `lastEventId` is the
+// last result the tournament processed from the thread; the BGA bot only
+// trusts the line-up once it matches the last result it reported.
+function buildBinding({ guildId, externalRef, grouping, currentGrouping, game, lastEventId, playerNames }) {
+  const ids = [grouping.blue.spymaster, grouping.blue.guesser, grouping.red.spymaster, grouping.red.guesser];
+  const players = ids.filter(id => /^\d+$/.test(id));
+  const names = {};
+  for (const id of players) {
+    const name = playerNames && playerNames[id];
+    if (typeof name === 'string' && name.trim()) names[id] = name.trim().slice(0, 100);
+  }
+  let lineup = null;
+  const seats = currentGrouping && [currentGrouping.blue.spymaster, currentGrouping.blue.guesser, currentGrouping.red.spymaster, currentGrouping.red.guesser];
+  if (seats && seats.every(id => /^\d+$/.test(id))) {
+    lineup = {
+      game,
+      last_event_id: lastEventId || null,
+      blue: { spymaster: currentGrouping.blue.spymaster, operative: currentGrouping.blue.guesser },
+      red: { spymaster: currentGrouping.red.spymaster, operative: currentGrouping.red.guesser },
+    };
+  }
+  return { guild_id: guildId, external_ref: externalRef, players, player_names: names, lineup };
+}
+
+const COLORS = new Set(['red', 'blue', 'neutral', 'black']);
+const TEAMS = new Set(['red', 'blue']);
+const str = (v, max = 60) => (typeof v === 'string' ? v.slice(0, max) : null);
+const idOrNull = v => (typeof v === 'string' && /^\d+$/.test(v) ? v : null);
+
+// The parts of a finished-game payload worth keeping for stats: every clue
+// with who gave it, and every guess with who made it and the card it hit.
+function gameDetailFromPayload(body) {
+  const turns = (Array.isArray(body.turns) ? body.turns : []).slice(0, 60).map(t => ({
+    team: TEAMS.has(t && t.team) ? t.team : null,
+    word: str(t && t.word) || '',
+    number: str(t && t.number, 8) || '',
+    giver: idOrNull(t && t.giver && t.giver.discord_user_id),
+    giverName: str(t && t.giver && t.giver.name),
+    guesses: (Array.isArray(t && t.guesses) ? t.guesses : []).slice(0, 25).map(g => ({
+      word: str(g && g.word) || '',
+      color: COLORS.has(g && g.color) ? g.color : null,
+      by: idOrNull(g && g.discord_user_id),
+      byName: str(g && g.name),
+    })),
+  }));
+  const board = (Array.isArray(body.board) ? body.board : []).slice(0, 25).map(c => [
+    str(c && c.word) || '', COLORS.has(c && c.color) ? c.color : null, Boolean(c && c.revealed),
+  ]);
+  return {
+    roomUrl: str(body.room_url, 200),
+    startingTeam: TEAMS.has(body.starting_team) ? body.starting_team : null,
+    turns,
+    board,
+  };
+}
+
 module.exports = {
+  buildBinding,
+  gameDetailFromPayload,
   parseUrlList,
   isAuthorized,
   createBridgeClient,

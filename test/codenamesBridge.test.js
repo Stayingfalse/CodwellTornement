@@ -160,3 +160,64 @@ test('reconcile is a no-op when the bridge is not configured', async () => {
   assert.equal(client.enabled, false);
   assert.equal(await client.reconcile(new Map([['600', {}]]), {}), false);
 });
+
+test('buildBinding sends players, names and the current game line-up', () => {
+  const binding = bridge.buildBinding({
+    guildId: '9', externalRef: 'R1M1', grouping: GROUPING, currentGrouping: SWAPPED, game: 2,
+    lastEventId: 'room:m1', playerNames: { 1: ' Alice ', 2: 'Bob', 5: 'Not playing' },
+  });
+  assert.deepEqual(binding, {
+    guild_id: '9',
+    external_ref: 'R1M1',
+    players: ['1', '2', '3', '4'],
+    player_names: { 1: 'Alice', 2: 'Bob' },
+    lineup: {
+      game: 2,
+      last_event_id: 'room:m1',
+      blue: { spymaster: '2', operative: '1' },
+      red: { spymaster: '4', operative: '3' },
+    },
+  });
+});
+
+test('buildBinding leaves the line-up out when a seat is not a real Discord user', () => {
+  const debug = { blue: { spymaster: 'debug_1', guesser: '2' }, red: GROUPING.red };
+  const binding = bridge.buildBinding({ guildId: '9', externalRef: 'R1M1', grouping: debug, currentGrouping: debug, game: 1 });
+  assert.equal(binding.lineup, null);
+  assert.deepEqual(binding.players, ['2', '3', '4']);
+});
+
+test('gameDetailFromPayload keeps the clue history and drops anything malformed', () => {
+  const detail = bridge.gameDetailFromPayload(payload({
+    room_url: 'https://codenames.game/r/x',
+    starting_team: 'red',
+    turns: [
+      {
+        team: 'red', word: 'ANIMAL', number: '2',
+        giver: { discord_user_id: '3', name: 'Carol' },
+        guesses: [
+          { word: 'DOG', color: 'red', discord_user_id: '4', name: 'Dave' },
+          { word: 'CAT', color: 'purple', discord_user_id: '<@4>', name: 'Dave' },
+        ],
+      },
+      { team: 'green', word: 'X'.repeat(200), number: 3, giver: null, guesses: 'nope' },
+    ],
+    board: [{ word: 'DOG', color: 'red', revealed: true }, { word: 'SUN', color: null, revealed: false }],
+  }));
+  assert.deepEqual(detail.turns[0], {
+    team: 'red', word: 'ANIMAL', number: '2', giver: '3', giverName: 'Carol',
+    guesses: [
+      { word: 'DOG', color: 'red', by: '4', byName: 'Dave' },
+      { word: 'CAT', color: null, by: null, byName: 'Dave' },
+    ],
+  });
+  assert.equal(detail.turns[1].team, null);
+  assert.equal(detail.turns[1].word.length, 60);
+  assert.deepEqual(detail.turns[1].guesses, []);
+  assert.deepEqual(detail.board, [['DOG', 'red', true], ['SUN', null, false]]);
+  assert.equal(detail.startingTeam, 'red');
+});
+
+test('gameDetailFromPayload copes with results that have no history', () => {
+  assert.deepEqual(bridge.gameDetailFromPayload(payload()), { roomUrl: null, startingTeam: null, turns: [], board: [] });
+});

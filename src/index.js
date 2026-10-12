@@ -335,12 +335,17 @@ async function syncBridgeBindings() {
       const desired = new Map();
       for (const match of tournament.activeMatches) {
         if (!match.threadId) continue;
-        const g = match.grouping;
-        desired.set(match.threadId, {
-          guild_id: process.env.GUILD_ID,
-          external_ref: getMatchBridgeRef(match),
-          players: [g.blue.spymaster, g.blue.guesser, g.red.spymaster, g.red.guesser].filter(id => /^\d+$/.test(id)),
-        });
+        const game = match.gamePhase ?? 1;
+        const gamesPlanned = getMatchPhaseSequence(match).length;
+        desired.set(match.threadId, codenamesBridge.buildBinding({
+          guildId: process.env.GUILD_ID,
+          externalRef: getMatchBridgeRef(match),
+          grouping: match.grouping,
+          currentGrouping: game <= gamesPlanned ? getGroupingForMatchGame(match, game) : null,
+          game,
+          lastEventId: (match.bridgeEvents || []).slice(-1)[0] || null,
+          playerNames: tournament.playerNames,
+        }));
       }
       const changed = await bridgeClient.reconcile(desired, codenamesBridgeSynced);
       if (changed) await saveTournamentData();
@@ -993,6 +998,7 @@ client.on('interactionCreate', async (interaction) => {
           channel: interaction.channel,
           submittedBy: interaction.user.id,
           source: 'codenames-bridge-confirmed',
+          detail: pending.detail || null,
           reply: (content) => interaction.followUp({ content }),
         }, matchData, pending.winner, pending.assassin, pending.remainingCards);
       } finally {
@@ -2392,6 +2398,7 @@ async function recordGameResult(ctx, matchData, winner, assassin, remainingCards
   }
   const currentResult = { winner, assassin, remainingCards, winPoints, losePoints, submittedAt, submittedBy };
   if (ctx.source) currentResult.source = ctx.source;
+  if (ctx.detail) currentResult.detail = ctx.detail;
   phaseResults[gamePhase] = currentResult;
   if (gamePhase === 1) {
     matchData.game1Result = currentResult; // Backward compatibility for active-match admin tooling
@@ -2455,6 +2462,8 @@ async function recordGameResult(ctx, matchData, winner, assassin, remainingCards
         matchCreatedAt: matchData.matchCreatedAt || null,
         submittedAt: g.submittedAt || null,
         submittedBy: g.submittedBy || null,
+        source: g.source || 'manual',
+        detail: g.detail || null, // clue-by-clue history when the game came from codenames.game
       });
     }
 
@@ -2529,6 +2538,7 @@ async function handleBridgeResult(body) {
         channel: thread,
         submittedBy: 'codenames-bridge',
         source: 'codenames-bridge',
+        detail: codenamesBridge.gameDetailFromPayload(body),
         reply: (content) => thread.send({ content: `🕵️ _Logged automatically from codenames.game._\n${content}` }),
       }, matchData, winner, assassin, remainingCards);
       return { status: 200, data: { status: 'logged', game: gamePhase } };
@@ -2545,6 +2555,7 @@ async function handleBridgeResult(body) {
     matchData.pendingBridgeResults[pendingId] = {
       eventId: body.event_id, gamePhase, winner, assassin, remainingCards,
       roomUrl: body.room_url || null, receivedAt: new Date().toISOString(),
+      detail: codenamesBridge.gameDetailFromPayload(body),
     };
     await saveTournamentData();
 

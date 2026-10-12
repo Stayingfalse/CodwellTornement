@@ -83,7 +83,7 @@ Follow these steps in order for a smooth first deployment:
 - **Round summaries** — a rich embed summarising every result is posted at the start of each new round
 - **Admin controls** — in Discord (ephemeral) and on the web dashboard
 - **Web dashboard** — public live scoreboard, round browser, match history, and a full admin panel accessible via Discord OAuth2 login
-- **Automatic results (optional)** — with the [Codenames bridge](docs/codenames-bridge.md), players post their codenames.game room link in the match thread and every game is scored automatically
+- **Automatic results (optional)** — with the [Codenames bridge](docs/codenames-bridge.md), players post their codenames.game room link in the match thread, the room card shows who should sit where, and every game is scored automatically. Its clue history powers clue and guess stats on the dashboard.
 - **Persistent state** — all tournament data is saved to disk; the bot safely recovers across restarts
 
 ---
