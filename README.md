@@ -79,11 +79,12 @@ Follow these steps in order for a smooth first deployment:
 - **Result correction** — players (and admins) can undo and re-submit a wrong result at any time before the round ends
 - **Score tracking** — a live scoreboard embed is kept up-to-date in the tournament channel throughout the event
 - **Round deadlines** — configurable deadline per round; a warning fires 2 days before expiry and an expiry notice with a Force End button fires when time runs out
+- **Live match status (with the Codenames bridge)** — the dashboard shows each active match's turn, who it's waiting on and for how long, with a link to the thread. Keep-alive messages chase what's actually holding a match up.
 - **Thread keep-alive messages** — the bot posts a random humorous message every 2–3 days into active match threads to prevent Discord from auto-archiving them and to nudge players to finish
 - **Round summaries** — a rich embed summarising every result is posted at the start of each new round
 - **Admin controls** — in Discord (ephemeral) and on the web dashboard
 - **Web dashboard** — public live scoreboard, round browser, match history, and a full admin panel accessible via Discord OAuth2 login
-- **Automatic results (optional)** — with the [Codenames bridge](docs/codenames-bridge.md), players post their codenames.game room link in the match thread and every game is scored automatically
+- **Automatic results (optional)** — with the [Codenames bridge](docs/codenames-bridge.md), players post their codenames.game room link in the match thread, the room card shows who should sit where, and every game is scored automatically. Its clue history powers clue and guess stats on the dashboard.
 - **Persistent state** — all tournament data is saved to disk; the bot safely recovers across restarts
 
 ---

@@ -56,6 +56,10 @@ let bridgeSyncTimer = null;
 let bridgeSyncRunning = false;
 let bridgeSyncAgain = false;
 const BRIDGE_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
+const BRIDGE_STATUS_INTERVAL_MS = 2 * 60 * 1000;
+// threadId -> live status from the BGA bot (in memory; refreshed every 2 minutes)
+const bridgeStatus = {};
+let bridgeStatusRunning = false;
 
 // Round timer handles (in-memory only)
 let roundWarningTimer = null;
@@ -177,6 +181,8 @@ client.once('clientReady', async () => {
     scheduleBridgeSync(0);
     // Retries bindings the BGA bot couldn't take (e.g. it was restarting).
     setInterval(() => scheduleBridgeSync(0), BRIDGE_RESYNC_INTERVAL_MS);
+    setTimeout(() => pollBridgeStatus().catch(e => console.error('[bridge] Status poll failed:', e.message)), 5000);
+    setInterval(() => pollBridgeStatus().catch(e => console.error('[bridge] Status poll failed:', e.message)), BRIDGE_STATUS_INTERVAL_MS);
   }
 
   // Register commands
@@ -335,12 +341,18 @@ async function syncBridgeBindings() {
       const desired = new Map();
       for (const match of tournament.activeMatches) {
         if (!match.threadId) continue;
-        const g = match.grouping;
-        desired.set(match.threadId, {
-          guild_id: process.env.GUILD_ID,
-          external_ref: getMatchBridgeRef(match),
-          players: [g.blue.spymaster, g.blue.guesser, g.red.spymaster, g.red.guesser].filter(id => /^\d+$/.test(id)),
-        });
+        const game = match.gamePhase ?? 1;
+        const gamesPlanned = getMatchPhaseSequence(match).length;
+        desired.set(match.threadId, codenamesBridge.buildBinding({
+          guildId: process.env.GUILD_ID,
+          externalRef: getMatchBridgeRef(match),
+          grouping: match.grouping,
+          currentGrouping: game <= gamesPlanned ? getGroupingForMatchGame(match, game) : null,
+          game,
+          lastEventId: (match.bridgeEvents || []).slice(-1)[0] || null,
+          playerNames: tournament.playerNames,
+          deadlineMs: tournament.roundDeadline,
+        }));
       }
       const changed = await bridgeClient.reconcile(desired, codenamesBridgeSynced);
       if (changed) await saveTournamentData();
@@ -348,6 +360,57 @@ async function syncBridgeBindings() {
   } finally {
     bridgeSyncRunning = false;
   }
+}
+
+// Ask the BGA bot what is happening in each active match's room.
+async function pollBridgeStatus() {
+  if (!bridgeClient.enabled || bridgeStatusRunning) return;
+  bridgeStatusRunning = true;
+  try {
+    const active = new Set();
+    for (const match of tournament.activeMatches) {
+      if (!match.threadId) continue;
+      active.add(match.threadId);
+      if (!codenamesBridgeSynced[match.threadId]) {
+        bridgeStatus[match.threadId] = { state: 'unbound', checkedAt: new Date().toISOString() };
+        continue;
+      }
+      const res = await bridgeClient.getBinding(match.threadId);
+      if (res.ok) {
+        bridgeStatus[match.threadId] = codenamesBridge.summariseStatus(res.data);
+      } else if (res.status === 404) {
+        // The BGA bot has forgotten this thread (e.g. a fresh database): bind it again.
+        delete codenamesBridgeSynced[match.threadId];
+        bridgeStatus[match.threadId] = { state: 'unbound', checkedAt: new Date().toISOString() };
+        scheduleBridgeSync(0);
+      } else {
+        bridgeStatus[match.threadId] = { state: 'unreachable', checkedAt: new Date().toISOString() };
+      }
+    }
+    for (const threadId of Object.keys(bridgeStatus)) {
+      if (!active.has(threadId)) delete bridgeStatus[threadId];
+    }
+  } finally {
+    bridgeStatusRunning = false;
+  }
+}
+
+function getThreadUrl(threadId) {
+  return process.env.GUILD_ID && threadId ? `https://discord.com/channels/${process.env.GUILD_ID}/${threadId}` : null;
+}
+
+// Live status per active match number, for the dashboard.
+function buildMatchStatus() {
+  const out = {};
+  for (const match of tournament.activeMatches) {
+    out[match.matchNumber] = {
+      threadUrl: getThreadUrl(match.threadId),
+      game: match.gamePhase ?? 1,
+      pendingConfirmations: Object.keys(match.pendingBridgeResults || {}).length,
+      live: bridgeClient.enabled ? (bridgeStatus[match.threadId] || null) : null,
+    };
+  }
+  return out;
 }
 
 function bridgeThreadHint() {
@@ -993,6 +1056,7 @@ client.on('interactionCreate', async (interaction) => {
           channel: interaction.channel,
           submittedBy: interaction.user.id,
           source: 'codenames-bridge-confirmed',
+          detail: pending.detail || null,
           reply: (content) => interaction.followUp({ content }),
         }, matchData, pending.winner, pending.assassin, pending.remainingCards);
       } finally {
@@ -1893,13 +1957,31 @@ async function closeSignups(guild) {
 async function sendThreadKeepAlive(guild) {
   if (!tournament.started || tournament.activeMatches.length === 0) return;
   const msg = KEEPALIVE_MESSAGES[Math.floor(Math.random() * KEEPALIVE_MESSAGES.length)];
+  if (bridgeClient.enabled) await pollBridgeStatus().catch(() => null);
   for (const match of tournament.activeMatches) {
     try {
       const thread = await guild.channels.fetch(match.threadId).catch(() => null);
       if (!thread) continue;
       // Unarchive if Discord auto-archived it
       if (thread.archived) await thread.setArchived(false).catch(() => null);
-      await thread.send(msg);
+      // With live status, nudge about what's actually holding the match up;
+      // games in progress are left to the BGA bot's own turn reminders.
+      const g = match.grouping;
+      const plan = bridgeClient.enabled
+        ? codenamesBridge.planNudge({
+          status: bridgeStatus[match.threadId],
+          players: [g.blue.spymaster, g.blue.guesser, g.red.spymaster, g.red.guesser],
+          game: match.gamePhase ?? 1,
+          deadlineMs: tournament.roundDeadline,
+          pendingConfirmations: Object.keys(match.pendingBridgeResults || {}).length,
+        })
+        : { action: 'fallback' };
+      if (plan.action === 'skip') continue;
+      if (plan.action === 'send') {
+        await thread.send({ content: plan.content, allowedMentions: { users: plan.users } });
+      } else {
+        await thread.send(msg);
+      }
     } catch (e) { console.error(`[keepalive] Thread ${match.threadId} failed:`, e.message); }
   }
   // Schedule next keep-alive in 2–3 days (random to avoid predictability)
@@ -2392,6 +2474,7 @@ async function recordGameResult(ctx, matchData, winner, assassin, remainingCards
   }
   const currentResult = { winner, assassin, remainingCards, winPoints, losePoints, submittedAt, submittedBy };
   if (ctx.source) currentResult.source = ctx.source;
+  if (ctx.detail) currentResult.detail = ctx.detail;
   phaseResults[gamePhase] = currentResult;
   if (gamePhase === 1) {
     matchData.game1Result = currentResult; // Backward compatibility for active-match admin tooling
@@ -2455,6 +2538,8 @@ async function recordGameResult(ctx, matchData, winner, assassin, remainingCards
         matchCreatedAt: matchData.matchCreatedAt || null,
         submittedAt: g.submittedAt || null,
         submittedBy: g.submittedBy || null,
+        source: g.source || 'manual',
+        detail: g.detail || null, // clue-by-clue history when the game came from codenames.game
       });
     }
 
@@ -2529,6 +2614,7 @@ async function handleBridgeResult(body) {
         channel: thread,
         submittedBy: 'codenames-bridge',
         source: 'codenames-bridge',
+        detail: codenamesBridge.gameDetailFromPayload(body),
         reply: (content) => thread.send({ content: `🕵️ _Logged automatically from codenames.game._\n${content}` }),
       }, matchData, winner, assassin, remainingCards);
       return { status: 200, data: { status: 'logged', game: gamePhase } };
@@ -2545,6 +2631,7 @@ async function handleBridgeResult(body) {
     matchData.pendingBridgeResults[pendingId] = {
       eventId: body.event_id, gamePhase, winner, assassin, remainingCards,
       roomUrl: body.room_url || null, receivedAt: new Date().toISOString(),
+      detail: codenamesBridge.gameDetailFromPayload(body),
     };
     await saveTournamentData();
 
@@ -2754,6 +2841,8 @@ function buildWebData() {
     leftPlayers: tournament.leftPlayers,
     pendingRemoval: tournament.pendingRemoval !== null,
     signupsReopened: tournament.signupsReopened,
+    roundDeadline: tournament.roundDeadline,
+    matchStatus: buildMatchStatus(),
   };
 }
 

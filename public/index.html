@@ -325,6 +325,16 @@
     }
 
     .match-label { font-size: 0.8rem; font-weight: 700; }
+    .match-status {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.75rem;
+      font-size: 0.74rem; color: var(--text-dim); padding: 0.5rem 1.1rem; border-bottom: 1px solid var(--border);
+    }
+    .match-status .live { color: #e2e8f0; }
+    .match-status .wait-ok    { color: var(--text-dim); }
+    .match-status .wait-slow  { color: #fcd34d; }
+    .match-status .wait-stuck { color: #fca5a5; font-weight: 600; }
+    .match-status a { color: #93c5fd; text-decoration: none; }
+    .match-status a:hover { text-decoration: underline; }
 
     /* ── Games grid ── */
     .games-grid {
@@ -906,6 +916,9 @@
     .filter-chip.active { background: var(--blue-dim); border-color: var(--blue); color: #93c5fd; }
 
     /* ── Trophies ── */
+    .chart-note { font-weight: 400; color: var(--text-faint); font-size: 0.65rem; text-transform: none; letter-spacing: 0; }
+    .trophy-sub { font-size: 0.72rem; color: var(--text-faint); margin-top: 0.15rem; }
+
     .trophies-row {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -1255,6 +1268,21 @@
         <div class="trophy-label">Best Spymaster</div>
         <div class="trophy-empty">No data yet</div>
       </div>
+      <div class="trophy-card best-guesser" id="trophy-accuracy">
+        <div class="trophy-icon">🔍</div>
+        <div class="trophy-label">Sharpest Guesser</div>
+        <div class="trophy-empty">No data yet</div>
+      </div>
+      <div class="trophy-card best-spymaster" id="trophy-clues">
+        <div class="trophy-icon">💡</div>
+        <div class="trophy-label">Clue Machine</div>
+        <div class="trophy-empty">No data yet</div>
+      </div>
+      <div class="trophy-card best-spymaster" id="trophy-best-clue">
+        <div class="trophy-icon">🏅</div>
+        <div class="trophy-label">Best Clue</div>
+        <div class="trophy-empty">No data yet</div>
+      </div>
     </div>
 
     <!-- Overview stat cards -->
@@ -1278,6 +1306,14 @@
         <div class="chart-title">Assassin Hits by Player</div>
         <div class="chart-canvas-wrap" id="wrap-assassin"><canvas id="chart-assassin"></canvas></div>
       </div>
+      <div class="chart-card">
+        <div class="chart-title">Guess Outcomes by Player <span class="chart-note" id="guess-outcomes-note"></span></div>
+        <div class="chart-canvas-wrap" id="wrap-guess-outcomes"><canvas id="chart-guess-outcomes"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Correct Guesses per Clue by Spymaster</div>
+        <div class="chart-canvas-wrap" id="wrap-clue-hits"><canvas id="chart-clue-hits"></canvas></div>
+      </div>
     </div>
 
     <!-- Player stats table -->
@@ -1300,6 +1336,33 @@
             </tr>
           </thead>
           <tbody id="stats-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Clue & guess table (games played through codenames.game) -->
+    <div class="card">
+      <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem">
+        <span>Clues &amp; Guesses</span>
+        <span id="detail-coverage" style="font-weight:400;color:var(--text-faint);font-size:0.65rem;text-transform:none;letter-spacing:0"></span>
+      </div>
+      <div class="stats-table-wrap">
+        <table class="stats-table" id="detail-table">
+          <thead>
+            <tr>
+              <th onclick="sortDetail('name')">Player <span class="sort-arrow" data-col="name">▾</span></th>
+              <th class="num" onclick="sortDetail('clues')" title="Clues given as spymaster">Clues <span class="sort-arrow" data-col="clues">▾</span></th>
+              <th class="num" onclick="sortDetail('avgClueSize')" title="Average number given with a clue">Avg Clue <span class="sort-arrow" data-col="avgClueSize">▾</span></th>
+              <th class="num" onclick="sortDetail('hitsPerClue')" title="Own-team cards found per clue">Hits/Clue <span class="sort-arrow" data-col="hitsPerClue">▾</span></th>
+              <th class="num" onclick="sortDetail('clueAccuracy')" title="Share of guesses on your clues that found your team's cards">Clue Acc% <span class="sort-arrow" data-col="clueAccuracy">▾</span></th>
+              <th class="num" onclick="sortDetail('guesses')" title="Cards picked as guesser">Guesses <span class="sort-arrow" data-col="guesses">▾</span></th>
+              <th class="num" onclick="sortDetail('guessAccuracy')" title="Share of picks that were your team's cards">Guess Acc% <span class="sort-arrow" data-col="guessAccuracy">▾</span></th>
+              <th class="num" onclick="sortDetail('opponent')" title="Picked the other team's card">Opp. <span class="sort-arrow" data-col="opponent">▾</span></th>
+              <th class="num" onclick="sortDetail('neutral')" title="Picked a bystander">Neutral <span class="sort-arrow" data-col="neutral">▾</span></th>
+              <th class="num" onclick="sortDetail('assassin')" title="Picked the assassin">☠ <span class="sort-arrow" data-col="assassin">▾</span></th>
+            </tr>
+          </thead>
+          <tbody id="detail-table-body"></tbody>
         </table>
       </div>
     </div>
@@ -1732,6 +1795,7 @@
               <span class="match-label">Match ${matchNumber}</span>
               ${isMatchActive ? `<span class="badge badge-amber" style="font-size:0.68rem">⚡ Game ${activePhase} in progress</span>` : ''}
             </div>
+            ${isMatchActive ? matchStatusHtml(matchNumber) : ''}
             <div class="games-grid">
               ${gameCells}
             </div>
@@ -1760,6 +1824,53 @@
     }).join('');
 
     container.innerHTML = html;
+  }
+
+  // ── Live match status (from the BGA bot's codenames.game watcher) ─────────
+  function formatWait(ms) {
+    const mins = Math.max(0, Math.floor(ms / 60000));
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 48) return `${hours}h`;
+    return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  }
+
+  function personName(p) {
+    return p.id && D.playerNames && D.playerNames[p.id] ? D.playerNames[p.id] : (p.name || 'someone');
+  }
+
+  function matchStatusHtml(matchNumber) {
+    const st = D.matchStatus && D.matchStatus[matchNumber];
+    if (!st) return '';
+    const parts = [];
+    const live = st.live;
+    if (live) {
+      const team = live.activeTeam === 'red' ? '🔴 Red' : live.activeTeam === 'blue' ? '🔵 Blue' : '';
+      switch (live.state) {
+        case 'no_room':     parts.push('<span>📎 No room posted yet</span>'); break;
+        case 'lobby':       parts.push(`<span>🛋️ Room ready · Game ${st.game} not started</span>`); break;
+        case 'finished':    parts.push(`<span>🏁 Game over in the room · Game ${st.game} not started yet</span>`); break;
+        case 'unreachable': parts.push('<span>⚠️ Live status unavailable</span>'); break;
+        case 'unbound':     parts.push('<span>⏳ Connecting to the room watcher…</span>'); break;
+        case 'in_progress': {
+          const who = (live.waitingOn || []).map(personName).join(' & ') || team;
+          const doing = live.activeRole === 'spymasters'
+            ? `${team} spymaster ${esc(who)} to give a clue`
+            : `${team} guessing${live.clue ? ` “${esc(live.clue.word)}” · ${esc(live.clue.number)}` : ''} (${esc(who)})`;
+          parts.push(`<span class="live">${doing}</span>`);
+          if (live.turnStartedAt) {
+            const waited = Date.now() - new Date(live.turnStartedAt).getTime();
+            const cls = waited > 72 * 3600e3 ? 'wait-stuck' : waited > 24 * 3600e3 ? 'wait-slow' : 'wait-ok';
+            parts.push(`<span class="${cls}" title="Time since this turn started">⏱ waiting ${formatWait(waited)}</span>`);
+          }
+          if (live.remaining) parts.push(`<span title="Agents left to find">🔴 ${live.remaining.red} · 🔵 ${live.remaining.blue} left</span>`);
+          break;
+        }
+      }
+    }
+    if (st.pendingConfirmations > 0) parts.push('<span class="wait-slow">✋ Result waiting for confirmation</span>');
+    if (st.threadUrl) parts.push(`<a href="${esc(st.threadUrl)}" target="_blank" rel="noopener">💬 Open thread</a>`);
+    return parts.length ? `<div class="match-status">${parts.join('')}</div>` : '';
   }
 
   // ── Toggle ────────────────────────────────────────────────────────────────
@@ -2250,6 +2361,236 @@
     return { pd, cardsDist, avgCards, totalGames, totalAssassinHits, bestGuesser, bestSpymaster };
   }
 
+  // ── Stats: clue-by-clue detail (games played through codenames.game) ───────
+  // Each detailed game stores every clue with who gave it and every guess with
+  // who made it and the card it hit. Seats nobody linked to Discord fall back
+  // to whoever the line-up had in that seat.
+  function computeDetailStats(history) {
+    const dd = {};  // playerId -> clue/guess counters
+    let detailedGames = 0, bestClue = null;
+    let totalClues = 0, totalClueHits = 0, totalGuesses = 0, totalCorrect = 0;
+
+    function ed(id) {
+      if (!dd[id]) dd[id] = { clues: 0, clueNumberSum: 0, clueNumberCount: 0, clueHits: 0, clueGuesses: 0,
+                             guesses: 0, correct: 0, opponent: 0, neutral: 0, assassin: 0 };
+      return dd[id];
+    }
+
+    for (const game of history) {
+      const detail = game.detail;
+      if (!detail || !Array.isArray(detail.turns) || detail.turns.length === 0) continue;
+      detailedGames++;
+      for (const turn of detail.turns) {
+        const team = turn.team;
+        if (team !== 'blue' && team !== 'red') continue;
+        const seats = game.grouping && game.grouping[team];
+        const giver = turn.giver || (seats && seats.spymaster);
+        const hits = (turn.guesses || []).filter(g => g.color === team).length;
+        if (giver) {
+          const s = ed(giver);
+          s.clues++;
+          const n = parseInt(turn.number, 10);
+          if (Number.isFinite(n) && n > 0) { s.clueNumberSum += n; s.clueNumberCount++; }
+          s.clueHits += hits;
+          s.clueGuesses += (turn.guesses || []).length;
+        }
+        totalClues++;
+        totalClueHits += hits;
+        if (!bestClue || hits > bestClue.hits) {
+          bestClue = { hits, word: turn.word, number: turn.number, giver, round: game.roundNumber, match: game.matchNumber };
+        }
+        for (const guess of turn.guesses || []) {
+          const by = guess.by || (seats && seats.guesser);
+          totalGuesses++;
+          if (guess.color === team) totalCorrect++;
+          if (!by) continue;
+          const g = ed(by);
+          g.guesses++;
+          if (guess.color === team) g.correct++;
+          else if (guess.color === 'black') g.assassin++;
+          else if (guess.color === 'neutral') g.neutral++;
+          else if (guess.color) g.opponent++;
+        }
+      }
+    }
+
+    const rows = Object.entries(dd).map(([id, d]) => ({
+      id, name: displayName(id), ...d,
+      avgClueSize: d.clueNumberCount > 0 ? d.clueNumberSum / d.clueNumberCount : null,
+      hitsPerClue: d.clues > 0 ? d.clueHits / d.clues : null,
+      clueAccuracy: d.clueGuesses > 0 ? d.clueHits / d.clueGuesses : null,
+      guessAccuracy: d.guesses > 0 ? d.correct / d.guesses : null,
+    }));
+
+    const ACC_MIN_GUESSES = 10, CLUE_MIN = 5;
+    const pick = (list, key) => list.reduce((best, r) => (!best || r[key] > best[key] ? r : best), null);
+    const sharpest = pick(rows.filter(r => r.guesses >= ACC_MIN_GUESSES), 'guessAccuracy');
+    const clueMachine = pick(rows.filter(r => r.clues >= CLUE_MIN), 'hitsPerClue');
+
+    return {
+      rows, detailedGames, totalGames: history.length,
+      totalClues, totalClueHits, totalGuesses, totalCorrect,
+      sharpest, clueMachine, bestClue: bestClue && bestClue.hits > 0 ? bestClue : null,
+      ACC_MIN_GUESSES, CLUE_MIN,
+    };
+  }
+
+  let lastDetailStats = null;
+  const detailTableSort = { col: 'guessAccuracy', asc: false };
+
+  function pct(v) { return v == null ? '—' : (v * 100).toFixed(1) + '%'; }
+  function dec(v) { return v == null ? '—' : v.toFixed(2); }
+
+  function renderDetailTrophies(ds) {
+    const set = (id, icon, label, body) => {
+      document.getElementById(id).innerHTML =
+        `<div class="trophy-icon">${icon}</div><div class="trophy-label">${label}</div>` + body;
+    };
+    set('trophy-accuracy', '🔍', 'Sharpest Guesser', ds.sharpest
+      ? `<div class="trophy-name">${esc(ds.sharpest.name)}</div>` +
+        `<div class="trophy-rate">${pct(ds.sharpest.guessAccuracy)} of picks correct &middot; ${ds.sharpest.guesses} guesses</div>`
+      : `<div class="trophy-empty">Need ${ds.ACC_MIN_GUESSES}+ tracked guesses</div>`);
+    set('trophy-clues', '💡', 'Clue Machine', ds.clueMachine
+      ? `<div class="trophy-name">${esc(ds.clueMachine.name)}</div>` +
+        `<div class="trophy-rate">${dec(ds.clueMachine.hitsPerClue)} cards found per clue &middot; ${ds.clueMachine.clues} clues</div>`
+      : `<div class="trophy-empty">Need ${ds.CLUE_MIN}+ tracked clues</div>`);
+    const bc = ds.bestClue;
+    set('trophy-best-clue', '🏅', 'Best Clue', bc
+      ? `<div class="trophy-name">“${esc(bc.word)}” · ${esc(String(bc.number))}</div>` +
+        `<div class="trophy-rate">${bc.hits} card${bc.hits !== 1 ? 's' : ''} found` +
+        (bc.giver ? ` &middot; by ${esc(displayName(bc.giver))}` : '') + `</div>` +
+        `<div class="trophy-sub">Round ${bc.round}, match ${bc.match}</div>`
+      : '<div class="trophy-empty">No tracked clues yet</div>');
+  }
+
+  function renderDetailCards(ds) {
+    if (ds.detailedGames === 0) return '';
+    const avgHits = ds.totalClues > 0 ? (ds.totalClueHits / ds.totalClues).toFixed(2) : '—';
+    const acc = ds.totalGuesses > 0 ? ((ds.totalCorrect / ds.totalGuesses) * 100).toFixed(1) + '%' : '—';
+    return `
+      <div class="stat-card">
+        <div class="stat-card-label">Cards per Clue</div>
+        <div class="stat-card-value">${avgHits}</div>
+        <div class="stat-card-sub">${ds.totalClues} clue${ds.totalClues !== 1 ? 's' : ''} tracked</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Guess Accuracy</div>
+        <div class="stat-card-value">${acc}</div>
+        <div class="stat-card-sub">${ds.totalCorrect} of ${ds.totalGuesses} picks were the team's own cards</div>
+      </div>`;
+  }
+
+  function renderDetailCharts(ds) {
+    if (typeof Chart === 'undefined') return;
+    const guessers = ds.rows.filter(r => r.guesses > 0).sort((a, b) => (b.guessAccuracy ?? 0) - (a.guessAccuracy ?? 0));
+    setWrapHeight('wrap-guess-outcomes', guessers.length);
+    document.getElementById('guess-outcomes-note').textContent =
+      ds.detailedGames ? `(${ds.detailedGames} tracked game${ds.detailedGames !== 1 ? 's' : ''})` : '';
+    const stack = (label, key, color) => ({
+      label, data: guessers.map(r => r[key]),
+      backgroundColor: color.bg, borderColor: color.bd, borderWidth: 1, borderRadius: 2,
+    });
+    mkChart('chart-guess-outcomes', {
+      type: 'bar',
+      data: {
+        labels: guessers.map(r => r.name),
+        datasets: [
+          stack('Own team', 'correct', CHART_COLORS.green),
+          stack('Other team', 'opponent', CHART_COLORS.purple),
+          stack('Neutral', 'neutral', CHART_COLORS.amber),
+          stack('Assassin', 'assassin', CHART_COLORS.red),
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+        plugins: {
+          legend: { display: true, labels: { color: '#94a3b8', font: { size: 11 }, boxWidth: 12, padding: 14 } },
+          tooltip: { ...TOOLTIP_STYLE },
+        },
+        scales: {
+          x: { ...AXIS_STYLE, stacked: true, ticks: { ...AXIS_STYLE.ticks, stepSize: 1 } },
+          y: { ...AXIS_STYLE, stacked: true },
+        },
+      },
+    });
+
+    const spies = ds.rows.filter(r => r.clues > 0).sort((a, b) => (b.hitsPerClue ?? 0) - (a.hitsPerClue ?? 0));
+    setWrapHeight('wrap-clue-hits', spies.length);
+    mkChart('chart-clue-hits', {
+      type: 'bar',
+      data: {
+        labels: spies.map(r => r.name),
+        datasets: [
+          {
+            label: 'Cards found per clue', data: spies.map(r => +(r.hitsPerClue ?? 0).toFixed(2)),
+            backgroundColor: CHART_COLORS.blue.bg, borderColor: CHART_COLORS.blue.bd, borderWidth: 1, borderRadius: 3,
+          },
+          {
+            label: 'Average clue number', data: spies.map(r => +(r.avgClueSize ?? 0).toFixed(2)),
+            backgroundColor: CHART_COLORS.purple.bg, borderColor: CHART_COLORS.purple.bd, borderWidth: 1, borderRadius: 3,
+          },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+        plugins: {
+          legend: { display: true, labels: { color: '#94a3b8', font: { size: 11 }, boxWidth: 12, padding: 14 } },
+          tooltip: { ...TOOLTIP_STYLE },
+        },
+        scales: { x: { ...AXIS_STYLE, min: 0 }, y: { ...AXIS_STYLE } },
+      },
+    });
+  }
+
+  function renderDetailTable(ds) {
+    const { col, asc } = detailTableSort;
+    const rows = ds.rows.slice().sort((a, b) => {
+      const av = col === 'name' ? a.name.toLowerCase() : (a[col] ?? -1);
+      const bv = col === 'name' ? b.name.toLowerCase() : (b[col] ?? -1);
+      if (av < bv) return asc ? -1 : 1;
+      if (av > bv) return asc ? 1 : -1;
+      return 0;
+    });
+    document.getElementById('detail-coverage').textContent = ds.detailedGames
+      ? `from ${ds.detailedGames} of ${ds.totalGames} games (the ones played through codenames.game)`
+      : '';
+    const tbody = document.getElementById('detail-table-body');
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:1.5rem;color:var(--text-faint)">' +
+        'Clue and guess stats appear for games played through the codenames.game bridge.</td></tr>';
+    } else {
+      tbody.innerHTML = rows.map(r => `
+        <tr>
+          <td class="hl">${esc(r.name)}</td>
+          <td class="num">${r.clues}</td>
+          <td class="num">${dec(r.avgClueSize)}</td>
+          <td class="num">${dec(r.hitsPerClue)}</td>
+          <td class="num">${pct(r.clueAccuracy)}</td>
+          <td class="num">${r.guesses}</td>
+          <td class="num">${pct(r.guessAccuracy)}
+            <span style="font-size:0.67rem;color:var(--text-faint)">(${r.correct}/${r.guesses})</span></td>
+          <td class="num">${r.opponent}</td>
+          <td class="num">${r.neutral}</td>
+          <td class="num">${r.assassin}</td>
+        </tr>`).join('');
+    }
+    document.querySelectorAll('#detail-table .sort-arrow').forEach(el => {
+      const c = el.dataset.col;
+      el.classList.toggle('on', c === col);
+      el.textContent = (c === col) ? (asc ? '▲' : '▾') : '▾';
+    });
+  }
+
+  function sortDetail(col) {
+    if (detailTableSort.col === col) {
+      detailTableSort.asc = !detailTableSort.asc;
+    } else {
+      detailTableSort.col = col;
+      detailTableSort.asc = col === 'name';
+    }
+    if (lastDetailStats) renderDetailTable(lastDetailStats);
+  }
+
   // ── Stats: chart management ───────────────────────────────────────────────
   const _ch = {};
 
@@ -2288,17 +2629,26 @@
 
     const stats = computeStats(history);
     lastStats = stats;
+    const detailStats = computeDetailStats(history);
+    lastDetailStats = detailStats;
 
     renderTrophies(stats);
+    renderDetailTrophies(detailStats);
     renderStatCards(stats);
+    document.getElementById('stat-cards').insertAdjacentHTML('beforeend', renderDetailCards(detailStats));
     renderStatCharts(stats);
+    renderDetailCharts(detailStats);
     renderStatsTable(stats);
+    renderDetailTable(detailStats);
   }
 
   function showStatsEmpty(msg) {
     lastStats = null;
+    lastDetailStats = null;
     buildRoundFilterChips();
-    ['chart-winrate','chart-spy-vs-guesser','chart-cards','chart-assassin'].forEach(id => {
+    renderDetailTrophies(computeDetailStats([]));
+    renderDetailTable(computeDetailStats([]));
+    ['chart-winrate','chart-spy-vs-guesser','chart-cards','chart-assassin','chart-guess-outcomes','chart-clue-hits'].forEach(id => {
       if (_ch[id]) { _ch[id].destroy(); delete _ch[id]; }
     });
     document.getElementById('stat-cards').innerHTML = '';

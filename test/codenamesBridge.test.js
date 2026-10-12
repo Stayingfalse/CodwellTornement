@@ -160,3 +160,110 @@ test('reconcile is a no-op when the bridge is not configured', async () => {
   assert.equal(client.enabled, false);
   assert.equal(await client.reconcile(new Map([['600', {}]]), {}), false);
 });
+
+test('buildBinding sends players, names and the current game line-up', () => {
+  const binding = bridge.buildBinding({
+    guildId: '9', externalRef: 'R1M1', grouping: GROUPING, currentGrouping: SWAPPED, game: 2,
+    lastEventId: 'room:m1', playerNames: { 1: ' Alice ', 2: 'Bob', 5: 'Not playing' },
+  });
+  assert.deepEqual(binding, {
+    guild_id: '9',
+    external_ref: 'R1M1',
+    players: ['1', '2', '3', '4'],
+    player_names: { 1: 'Alice', 2: 'Bob' },
+    lineup: {
+      game: 2,
+      last_event_id: 'room:m1',
+      blue: { spymaster: '2', operative: '1' },
+      red: { spymaster: '4', operative: '3' },
+    },
+    deadline: null,
+  });
+});
+
+test('buildBinding leaves the line-up out when a seat is not a real Discord user', () => {
+  const debug = { blue: { spymaster: 'debug_1', guesser: '2' }, red: GROUPING.red };
+  const binding = bridge.buildBinding({ guildId: '9', externalRef: 'R1M1', grouping: debug, currentGrouping: debug, game: 1 });
+  assert.equal(binding.lineup, null);
+  assert.deepEqual(binding.players, ['2', '3', '4']);
+});
+
+test('gameDetailFromPayload keeps the clue history and drops anything malformed', () => {
+  const detail = bridge.gameDetailFromPayload(payload({
+    room_url: 'https://codenames.game/r/x',
+    starting_team: 'red',
+    turns: [
+      {
+        team: 'red', word: 'ANIMAL', number: '2',
+        giver: { discord_user_id: '3', name: 'Carol' },
+        guesses: [
+          { word: 'DOG', color: 'red', discord_user_id: '4', name: 'Dave' },
+          { word: 'CAT', color: 'purple', discord_user_id: '<@4>', name: 'Dave' },
+        ],
+      },
+      { team: 'green', word: 'X'.repeat(200), number: 3, giver: null, guesses: 'nope' },
+    ],
+    board: [{ word: 'DOG', color: 'red', revealed: true }, { word: 'SUN', color: null, revealed: false }],
+  }));
+  assert.deepEqual(detail.turns[0], {
+    team: 'red', word: 'ANIMAL', number: '2', giver: '3', giverName: 'Carol',
+    guesses: [
+      { word: 'DOG', color: 'red', by: '4', byName: 'Dave' },
+      { word: 'CAT', color: null, by: null, byName: 'Dave' },
+    ],
+  });
+  assert.equal(detail.turns[1].team, null);
+  assert.equal(detail.turns[1].word.length, 60);
+  assert.deepEqual(detail.turns[1].guesses, []);
+  assert.deepEqual(detail.board, [['DOG', 'red', true], ['SUN', null, false]]);
+  assert.equal(detail.startingTeam, 'red');
+});
+
+test('gameDetailFromPayload copes with results that have no history', () => {
+  assert.deepEqual(bridge.gameDetailFromPayload(payload()), { roomUrl: null, startingTeam: null, turns: [], board: [] });
+});
+
+test('summariseStatus picks the most active room and keeps the turn details', () => {
+  const status = bridge.summariseStatus({
+    rooms: [
+      { phase: 'finished', game_number: 1 },
+      {
+        phase: 'in_progress', game_number: 2, active_team: 'red', active_role: 'operatives',
+        waiting_on: [{ name: 'Alice', discord_user_id: '1' }, { name: 'Guest', discord_user_id: null }],
+        turn_started_at: '2026-10-12T10:00:00+00:00', clue: { word: 'OCEAN', number: '2' },
+        remaining: { red: 3, blue: 5 }, connected: true,
+      },
+    ],
+  }, 'now');
+  assert.deepEqual(status, {
+    state: 'in_progress', roomCount: 2, roomGame: 2, activeTeam: 'red', activeRole: 'operatives',
+    waitingOn: [{ name: 'Alice', id: '1' }, { name: 'Guest', id: null }],
+    turnStartedAt: '2026-10-12T10:00:00+00:00', clue: { word: 'OCEAN', number: '2' },
+    remaining: { red: 3, blue: 5 }, connected: true, checkedAt: 'now',
+  });
+  assert.deepEqual(bridge.summariseStatus({ rooms: [] }, 'now'), { state: 'no_room', roomCount: 0, checkedAt: 'now' });
+});
+
+test('planNudge chases what is actually holding a match up', () => {
+  const base = { players: ['1', '2', '3', 'debug_4'], game: 2, deadlineMs: Date.now() + 86_400_000 };
+  const noRoom = bridge.planNudge({ ...base, status: { state: 'no_room' } });
+  assert.equal(noRoom.action, 'send');
+  assert.deepEqual(noRoom.users, ['1', '2', '3']);
+  assert.match(noRoom.content, /nobody has posted a codenames\.game room/);
+  assert.match(noRoom.content, /<@1> <@2> <@3>/);
+  assert.match(noRoom.content, /The round ends <t:\d+:R>/);
+
+  assert.match(bridge.planNudge({ ...base, status: { state: 'lobby' } }).content, /Game 2 hasn't started/);
+  assert.match(bridge.planNudge({ ...base, status: { state: 'in_progress' }, pendingConfirmations: 1 }).content, /waiting for confirmation/);
+  assert.deepEqual(bridge.planNudge({ ...base, status: { state: 'in_progress' } }), { action: 'skip' });
+  for (const state of ['unreachable', 'unbound']) {
+    assert.deepEqual(bridge.planNudge({ ...base, status: { state } }), { action: 'fallback' });
+  }
+  assert.deepEqual(bridge.planNudge({ ...base, status: undefined }), { action: 'fallback' });
+});
+
+test('buildBinding sends the round deadline in seconds', () => {
+  const binding = bridge.buildBinding({ guildId: '9', externalRef: 'R1M1', grouping: GROUPING, currentGrouping: GROUPING, game: 1, deadlineMs: 1_800_000_000_500 });
+  assert.equal(binding.deadline, 1_800_000_000);
+  assert.equal(bridge.buildBinding({ guildId: '9', externalRef: 'R1M1', grouping: GROUPING, game: 1 }).deadline, null);
+});

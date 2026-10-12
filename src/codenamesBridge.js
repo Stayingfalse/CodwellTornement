@@ -66,6 +66,10 @@ function createBridgeClient({ token, baseUrls, fetchImpl = globalThis.fetch, log
     return request('DELETE', BINDINGS_PATH + encodeURIComponent(channelId));
   }
 
+  function getBinding(channelId) {
+    return request('GET', BINDINGS_PATH + encodeURIComponent(channelId));
+  }
+
   // Make the BGA bot's bindings match `desired` (Map threadId -> binding body).
   // `synced` (threadId -> signature of what the BGA bot last accepted) is
   // updated in place; returns true when it changed and should be persisted.
@@ -96,7 +100,7 @@ function createBridgeClient({ token, baseUrls, fetchImpl = globalThis.fetch, log
     return changed;
   }
 
-  return { enabled, putBinding, deleteBinding, reconcile };
+  return { enabled, putBinding, deleteBinding, getBinding, reconcile };
 }
 
 // Discord user IDs seated in one team/role of a result payload.
@@ -156,7 +160,126 @@ function describeSeats(seats) {
   );
 }
 
+// What the BGA bot is told about one active match: who plays, what they're
+// called, and the seats for the game being played now. `lastEventId` is the
+// last result the tournament processed from the thread; the BGA bot only
+// trusts the line-up once it matches the last result it reported.
+function buildBinding({ guildId, externalRef, grouping, currentGrouping, game, lastEventId, playerNames, deadlineMs }) {
+  const ids = [grouping.blue.spymaster, grouping.blue.guesser, grouping.red.spymaster, grouping.red.guesser];
+  const players = ids.filter(id => /^\d+$/.test(id));
+  const names = {};
+  for (const id of players) {
+    const name = playerNames && playerNames[id];
+    if (typeof name === 'string' && name.trim()) names[id] = name.trim().slice(0, 100);
+  }
+  let lineup = null;
+  const seats = currentGrouping && [currentGrouping.blue.spymaster, currentGrouping.blue.guesser, currentGrouping.red.spymaster, currentGrouping.red.guesser];
+  if (seats && seats.every(id => /^\d+$/.test(id))) {
+    lineup = {
+      game,
+      last_event_id: lastEventId || null,
+      blue: { spymaster: currentGrouping.blue.spymaster, operative: currentGrouping.blue.guesser },
+      red: { spymaster: currentGrouping.red.spymaster, operative: currentGrouping.red.guesser },
+    };
+  }
+  const deadline = Number.isFinite(deadlineMs) && deadlineMs > 0 ? Math.floor(deadlineMs / 1000) : null;
+  return { guild_id: guildId, external_ref: externalRef, players, player_names: names, lineup, deadline };
+}
+
+const COLORS = new Set(['red', 'blue', 'neutral', 'black']);
+const TEAMS = new Set(['red', 'blue']);
+const str = (v, max = 60) => (typeof v === 'string' ? v.slice(0, max) : null);
+const idOrNull = v => (typeof v === 'string' && /^\d+$/.test(v) ? v : null);
+
+// The parts of a finished-game payload worth keeping for stats: every clue
+// with who gave it, and every guess with who made it and the card it hit.
+function gameDetailFromPayload(body) {
+  const turns = (Array.isArray(body.turns) ? body.turns : []).slice(0, 60).map(t => ({
+    team: TEAMS.has(t && t.team) ? t.team : null,
+    word: str(t && t.word) || '',
+    number: str(t && t.number, 8) || '',
+    giver: idOrNull(t && t.giver && t.giver.discord_user_id),
+    giverName: str(t && t.giver && t.giver.name),
+    guesses: (Array.isArray(t && t.guesses) ? t.guesses : []).slice(0, 25).map(g => ({
+      word: str(g && g.word) || '',
+      color: COLORS.has(g && g.color) ? g.color : null,
+      by: idOrNull(g && g.discord_user_id),
+      byName: str(g && g.name),
+    })),
+  }));
+  const board = (Array.isArray(body.board) ? body.board : []).slice(0, 25).map(c => [
+    str(c && c.word) || '', COLORS.has(c && c.color) ? c.color : null, Boolean(c && c.revealed),
+  ]);
+  return {
+    roomUrl: str(body.room_url, 200),
+    startingTeam: TEAMS.has(body.starting_team) ? body.starting_team : null,
+    turns,
+    board,
+  };
+}
+
+// ── Live status ─────────────────────────────────────────────────────────────
+
+const PHASE_RANK = { in_progress: 3, lobby: 2, finished: 1 };
+
+// Boil the BGA bot's binding description down to what the dashboard and the
+// nudges need. A thread can watch several rooms; the most active one wins.
+function summariseStatus(description, checkedAt = new Date().toISOString()) {
+  const rooms = (description && Array.isArray(description.rooms)) ? description.rooms : [];
+  if (rooms.length === 0) return { state: 'no_room', roomCount: 0, checkedAt };
+  const room = rooms.slice().sort((a, b) => (PHASE_RANK[b.phase] || 0) - (PHASE_RANK[a.phase] || 0))[0];
+  return {
+    state: PHASE_RANK[room.phase] ? room.phase : 'lobby',
+    roomCount: rooms.length,
+    roomGame: room.game_number ?? null,
+    activeTeam: TEAMS.has(room.active_team) ? room.active_team : null,
+    activeRole: room.active_role === 'spymasters' || room.active_role === 'operatives' ? room.active_role : null,
+    waitingOn: (room.waiting_on || []).map(w => ({ name: str(w && w.name), id: idOrNull(w && w.discord_user_id) })),
+    turnStartedAt: typeof room.turn_started_at === 'string' ? room.turn_started_at : null,
+    clue: room.clue && typeof room.clue.word === 'string' ? { word: str(room.clue.word), number: str(String(room.clue.number), 8) } : null,
+    remaining: room.remaining && typeof room.remaining === 'object'
+      ? { red: Number(room.remaining.red) || 0, blue: Number(room.remaining.blue) || 0 } : null,
+    connected: Boolean(room.connected),
+    checkedAt,
+  };
+}
+
+// What the periodic nudge should do for one match thread:
+//   { action: 'send', content, users } — a status-aware nudge,
+//   { action: 'skip' } — the BGA bot's own turn reminders cover it,
+//   { action: 'fallback' } — no live status, use the classic keep-alive message.
+function planNudge({ status, players, game, deadlineMs, pendingConfirmations = 0 }) {
+  if (!status || status.state === 'unreachable' || status.state === 'unbound') return { action: 'fallback' };
+  const users = (players || []).filter(id => /^\d+$/.test(id));
+  const mentions = users.map(id => `<@${id}>`).join(' ');
+  const deadline = Number.isFinite(deadlineMs) && deadlineMs > Date.now()
+    ? ` The round ends <t:${Math.floor(deadlineMs / 1000)}:R>.` : '';
+  if (pendingConfirmations > 0) {
+    return {
+      action: 'send', users,
+      content: `✋ ${mentions} a detected result is waiting for confirmation above. Press **Log as Game ${game}** or **Dismiss**.${deadline}`,
+    };
+  }
+  if (status.state === 'no_room') {
+    return {
+      action: 'send', users,
+      content: `📎 ${mentions} nobody has posted a codenames.game room for this match yet. Create one at https://codenames.game and post the link here to start Game ${game}.${deadline}`,
+    };
+  }
+  if (status.state === 'lobby' || status.state === 'finished') {
+    return {
+      action: 'send', users,
+      content: `🕵️ ${mentions} the room is ready but Game ${game} hasn't started yet. Take your seats (see the room card) and start the game.${deadline}`,
+    };
+  }
+  return { action: 'skip' };
+}
+
 module.exports = {
+  summariseStatus,
+  planNudge,
+  buildBinding,
+  gameDetailFromPayload,
   parseUrlList,
   isAuthorized,
   createBridgeClient,

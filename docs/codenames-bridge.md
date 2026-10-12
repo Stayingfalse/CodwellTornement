@@ -11,12 +11,15 @@ The full API contract is in that repo's
 1. A round starts and each match gets its thread as usual. The thread tells
    the players to post their codenames.game room link there.
 2. Someone creates a room and posts the link in the thread. The BGA bot reacts
-   🕵️ and posts a live room card with the four players listed. Each player
-   presses **🙋 I'm playing** and picks their in-room name. This only happens
-   once: the name is remembered for the next match.
-3. Players sit in the seats shown in the thread (blue/red spymaster and
-   guesser) and play. Use **Play next game** in the same room for every game
-   of the match.
+   🕵️ and posts a live room card with the four players listed. Seats are
+   matched to players automatically by the name used last time, their Discord
+   name or their tournament name. Anyone it can't match presses
+   **🙋 I'm playing** once.
+3. The room card shows the **line-up for the current game**: each seat with ✅,
+   "sitting as …" or "hasn't pressed I'm playing". While the room is in the
+   lobby the players get one ping saying where to sit. Use **Play next game**
+   in the same room for every game of the match; the card and ping move on to
+   the next game's line-up once its result is logged.
 4. When a game ends, the result is checked against the line-up for the
    match's current game:
    - **Seats match:** it is logged automatically, the thread shows the result,
@@ -25,6 +28,51 @@ The full API contract is in that repo's
      gets a **"result detected — please confirm"** card. A player in the
      match, or an admin, presses **Log as Game N** or **Dismiss**.
    - **The game's line-up was already logged by hand:** it is ignored.
+
+## Live status and nudges
+
+- **Dashboard:** every 2 minutes the bot asks the BGA bot what's happening in
+  each active match's room. Each match card then shows a live line, e.g.
+  "🔴 Red guessing “OCEAN” · 2 (Dave) · ⏱ waiting 3h · 🔴 4 · 🔵 6 left", or
+  "📎 No room posted yet", "🛋️ Room ready · Game 3 not started", "✋ Result
+  waiting for confirmation". Waits turn amber after 24 hours and red after
+  72, and there's a link to the match thread.
+- **Turn reminders (BGA bot):** a turn that has waited a day is pinged again,
+  then once a day after that. Within 48 hours of the round deadline it's
+  every 6 hours, and the ping says when the round ends. This is set with
+  `CODENAMES_REMINDER_HOURS` on the BGA bot.
+- **Keep-alive messages (this bot, every 2–3 days)** now chase what's holding
+  each match up:
+  - no room posted: the players are asked to create one;
+  - the room is sitting in the lobby: they're asked to take their seats and
+    start;
+  - a detected result needs confirming: they're pointed at it;
+  - a game in progress: nothing is posted, because the BGA bot's reminders
+    cover it.
+
+  If the BGA bot can't be reached, the classic keep-alive messages are used.
+- **Self-repair:** if the BGA bot ever loses a thread's binding (for example a
+  fresh database), the next status check notices and binds it again.
+
+## Stats
+
+Games played through the bridge keep their full clue history (every clue
+with its giver, every guess with who made it and which card it hit) in
+`history[].detail`. The web dashboard's **📊 Stats** tab uses it for:
+
+- **Sharpest Guesser**: highest share of picks that were the team's own
+  cards (10+ guesses).
+- **Clue Machine**: most own-team cards found per clue (5+ clues).
+- **Best Clue**: the single clue that found the most cards.
+- **Cards per clue** and overall **guess accuracy** summary cards.
+- A **guess outcomes** chart (own team, other team, neutral, assassin) and a
+  **cards found per clue** chart for spymasters.
+- A **Clues & Guesses** table: clues, average clue number, hits per clue,
+  clue accuracy, guesses, guess accuracy and bad picks per player.
+
+Manually logged games still count for the win-rate stats; they just have no
+clue detail. If a seat wasn't linked to a Discord user, its clues and guesses
+count for whoever the line-up put in that seat.
 
 The **Blue Wins / Red Wins** buttons still work as a manual fallback, and the
 web admin can override or delete any result, whether it was logged
@@ -59,7 +107,9 @@ Do the same in the BGA bot's repo. The containers then reach each other as
 ## How it stays in sync
 
 - After every save, the bot binds each active match thread on the BGA bot and
-  unbinds threads whose match has ended. Unbinding also stops the BGA bot
+  unbinds threads whose match has ended. A binding names the four players,
+  their tournament names and the current game's line-up, along with the last
+  result processed from the thread. Unbinding also stops the BGA bot
   watching that thread's room.
 - Bindings the BGA bot couldn't accept (for example while it restarts) are
   retried every 5 minutes. What it last accepted is stored in
