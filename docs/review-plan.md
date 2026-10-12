@@ -17,8 +17,9 @@ Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · �
       Games a group already played in the old format are skipped, so some matches are shorter. The same four players never meet as a group twice.
       **How:** a covering design (greedy plus simulated annealing) is packed into rounds, then the rounds are tuned and compressed.
       For 14 players that gives about 34 rounds and ~100 matches; the floor is 31 rounds and 91 matches. 8 and 10 players hit the floor.
-      **Live tournament:** a schedule saved with `scheduleFormat` < 2 is rebuilt automatically when the next round is allocated, and all history counts.
-      A round already in progress finishes as it is. The old 10×players cut-off is gone.
+      **Live tournament:** the switch is the web admin **Fix Matchups** button (`recalculate-rounds` → `fixMatchups()`).
+      It rebuilds all future rounds at once and treats the current round as finishing as scheduled; all history counts.
+      It no longer archives and reposts the current round. The old 10×players cut-off is gone.
 - [x] 🔴 **A corrupt `tournament.json` gets wiped.** In `loadTournamentData` (`src/index.js:281`) any error, a JSON parse error included,
       is treated as "no previous data". The next save then overwrites the file. Fix: only treat `ENOENT` as fresh. On any other error, back up the file and stop.
 - [x] 🔴 **Saves aren't atomic or serialised.** `saveTournamentData` calls `fs.writeFile` straight onto the live file and is fired from many places at once.

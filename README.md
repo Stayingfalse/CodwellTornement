@@ -359,7 +359,7 @@ Each round splits the players into groups of four (⌊N/4⌋ matches run at once
 
 The same four players never meet as a group twice. Games a group already played (for example under the older 2–4 game format) are skipped, so some matches are shorter than 6 games. The scheduler (`src/scheduler.js`) plans the fewest groups it can find that cover every pair-versus-player combination, then packs them into as few rounds as it can. For 14 players that is about 34 rounds (the theoretical minimum is 31).
 
-A schedule made before the 6-game format is rebuilt automatically when the next round is allocated. Everything already played counts towards it.
+To switch a tournament that started on the older format, press **🔄 Fix Matchups** in the web admin panel. It rebuilds every future round straight away, treating the current round as if it finishes as scheduled. Nothing already played is lost. The same button rebuilds the future rounds whenever you need it to.
 
 After each game, the thread automatically posts the next game configuration and result buttons. Once all configured games are logged, the thread is archived and the scoreboard updated. When all threads in a round are complete, the next round is allocated automatically.
 

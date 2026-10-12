@@ -2081,7 +2081,7 @@
   }
 
   function confirmRecalculateRounds() {
-    if (!confirm('Fix matchups?\n\nThis regenerates upcoming rounds from current players and played configurations.\n\nIf the current round is in progress with no completed results yet, active match threads are archived and the current round is reposted fresh.')) return;
+    if (!confirm('Fix matchups?\n\nThis rebuilds every future round with the 6-game format, for the current players.\n\nThe current round is left alone and counted as if it finishes as scheduled. Games already played are kept, so some groups get shorter matches.')) return;
     adminAction('recalculate-rounds');
   }
 
