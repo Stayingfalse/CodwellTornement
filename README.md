@@ -83,6 +83,7 @@ Follow these steps in order for a smooth first deployment:
 - **Round summaries** — a rich embed summarising every result is posted at the start of each new round
 - **Admin controls** — in Discord (ephemeral) and on the web dashboard
 - **Web dashboard** — public live scoreboard, round browser, match history, and a full admin panel accessible via Discord OAuth2 login
+- **Automatic results (optional)** — with the [Codenames bridge](docs/codenames-bridge.md), players post their codenames.game room link in the match thread and every game is scored automatically
 - **Persistent state** — all tournament data is saved to disk; the bot safely recovers across restarts
 
 ---
@@ -151,6 +152,8 @@ Copy `.env.example` to `.env` and fill in the values before starting the bot.
 | `WEB_URL` | ⬜ | auto-detected | Public base URL of the dashboard (e.g. `https://tournament.example.com`). Used for the OAuth2 redirect URI and the 🌐 Website button on the Discord embed. |
 | `WEB_PORT` | ⬜ | `80` | Port the web server listens on |
 | `ROUND_TIMEOUT_DAYS` | ⬜ | `14` | Days before a round deadline fires. Supports decimals — e.g. `0.01` ≈ 15 minutes is useful for a dry run. Minimum practical value for production is `1`. |
+| `BRIDGE_TOKEN` | ⬜ | — | Shared secret with the BGA bot's Codenames watcher. Turns on automatic results; see [Codenames bridge](docs/codenames-bridge.md) |
+| `BRIDGE_URLS` | ⬜ | — | Comma-separated base URLs of the BGA bot's bridge API, tried in order (internal first, public HTTPS fallback) |
 | `DEBUG_MODE` | ⬜ | `false` | Set to `true` to enable the Seed Players debug button in the Discord admin panel |
 | `DEBUG_PLAYER_COUNT` | ⬜ | `8` | How many fake players to seed when Debug Mode is on |
 
@@ -366,6 +369,10 @@ After each game, the thread automatically posts the next game configuration and 
 **Round deadlines** are configurable via `ROUND_TIMEOUT_DAYS` (default 14 days). A warning message is posted to all active threads 2 days before the deadline. When the deadline expires, an expiry embed is posted in the tournament channel with a **Force End** button for admins.
 
 ---
+
+### Automatic results
+
+With the [Codenames bridge](docs/codenames-bridge.md) enabled, players post a codenames.game room link in the match thread and play every game of the match in that one room (**Play next game**). Each finished game is logged automatically when the room's seats match that game's line-up. Otherwise a **Log as Game N / Dismiss** card is posted for the players or an admin to confirm.
 
 ## Scoring
 

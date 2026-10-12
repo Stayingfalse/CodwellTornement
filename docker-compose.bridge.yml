@@ -1,0 +1,15 @@
+# Joins the bot to a Docker network shared with the BGA bot (its Codenames
+# watcher reports results here), so the containers reach each other by service
+# name (codenames-bot, bga-bot). See docs/codenames-bridge.md.
+#
+#   docker network create codenames-bridge
+#   docker compose -f docker-compose.yml -f docker-compose.bridge.yml up -d
+services:
+  codenames-bot:
+    networks:
+      - default
+      - codenames-bridge
+
+networks:
+  codenames-bridge:
+    external: true
