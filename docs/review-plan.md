@@ -11,31 +11,25 @@ Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · �
 
 ## Phase 0 — Fix bugs first (small, high value)
 
-- [ ] 🔴 **Scheduler: rebuild around the agreed format** (decided 2026-10-12).
-      **Rule:** every 4-player group {A,B,C,D} plays all three team splits (AB v CD, AC v BD, AD v BC). Each split is played twice:
-      as drawn, then with both teams swapping roles.
-      **Shape:** each group gets one **4-game match** covering two splits, plus one **2-game match** covering the third split in a later round:
+- [ ] 🔴 **Scheduler: rebuild around the agreed format** (decided 2026-10-12, replacing the earlier "every pair against every pair" plan; for 14 players that needed ~670 rounds).
+      **Match:** one group of 4 plays one **6-game match** covering all 3 team splits, each as drawn and then with both teams swapping roles:
       ```
-      Match (4 games)  G1 A&B v C&D   G2 B&A v D&C   G3 A&C v B&D   G4 C&A v D&B
-      Later (2 games)  G1 A&D v B&C   G2 D&A v C&B
+      G1 1S+2O v 3S+4O   G2 2S+1O v 4S+3O     (1&2 v 3&4)
+      G3 1S+3O v 2S+4O   G4 3S+1O v 4S+2O     (1&3 v 2&4)
+      G5 1S+4O v 2S+3O   G6 4S+1O v 3S+2O     (1&4 v 2&3)
       ```
-      Totals: matches = 2·C(n,4), games = 6·C(n,4).
-      | players | groups | matches | games | rounds (⌊n/4⌋ matches each) |
-      |---|---|---|---|---|
-      | 6 | 15 | 30 | 90 | 30 |
-      | 8 | 70 | 140 | 420 | 70 |
-      | 10 | 210 | 420 | 1,260 | 210 |
-      | 12 | 495 | 990 | 2,970 | 330 |
-      Today's model can't express this: a match is one split plus a `phaseSequence` of role variants (phases 3 and 4 are "only blue swapped" and "only red swapped").
+      **Rounds:** reshuffle the groups every round. **The same 4 players never meet as a group twice.** Prefer groups of players who haven't shared a group yet, and rotate sit-outs fairly.
+      Each player meets 3 new people per round, so "everyone has shared a group with everyone" takes at least ⌈(n−1)/3⌉ rounds:
+      14 players ≥ 5 (a crude prototype needs 8–9; the real search should get ~6–7).
+      **Open:** the end condition (see chat). "No repeated group" alone allows hundreds of rounds.
       Work:
-      - Store an explicit per-game line-up on each match (`games: [grouping, …]`). `getGroupingForMatchGame` reads it; old saved matches fall back to `phaseSequence`.
-      - Replace the config/layout-key search with "groups × splits still owed". Build rounds from disjoint groups. Prefer rounds where every match has the same length (all 4-game or all 2-game), so nobody waits on a longer match.
-        Keep the existing sit-out fairness for n not divisible by 4.
-      - Remove the silent `MAX_GENERATED_ROUNDS` cut-off (the schedule is finite now), and log a warning if any owed split can't be placed.
-      - Make `getTournamentPrediction`, the sign-up embed, the "How it works" modal and the README use the formulas above.
-      - Recalculation after a leave or join: work out the owed splits from `history` plus active matches, using the same rule.
-      - Bridge: `buildBinding`/`findGameForSeats` already take a per-game line-up, so they should work unchanged. Verify this with a test.
-      - `test/scheduler.test.js`: every split appears exactly twice with both role configs, the counts match the formulas, nobody plays twice in a round, and sit-outs are fair.
+      - Store an explicit per-game line-up on each match (`games: [grouping × 6]`). `getGroupingForMatchGame` reads it; old saved matches fall back to `phaseSequence`, so a running tournament keeps working.
+      - Replace the config/layout-key search with: pick disjoint groups that are not in `usedGroups`, minimising repeat pair meetings, with fair sit-outs.
+      - Remove the silent `MAX_GENERATED_ROUNDS` cut-off. Generate rounds up to the chosen end condition, and allow an admin "extend by N rounds".
+      - Make `getTournamentPrediction`, the sign-up embed, the "How it works" modal and the README match.
+      - Recalculation after a leave or join: rebuild `usedGroups` and pair meetings from `history` plus active matches.
+      - Bridge: `buildBinding`/`findGameForSeats` already take a per-game line-up. Verify that a 6-game match works end to end.
+      - `test/scheduler.test.js`: 6 games per match covering 3 splits × 2 role setups, no group repeated, nobody plays twice in a round, fair sit-outs, and the end condition is met.
 - [ ] 🔴 **A corrupt `tournament.json` gets wiped.** In `loadTournamentData` (`src/index.js:281`) any error, a JSON parse error included,
       is treated as "no previous data". The next save then overwrites the file. Fix: only treat `ENOENT` as fresh. On any other error, back up the file and stop.
 - [ ] 🔴 **Saves aren't atomic or serialised.** `saveTournamentData` calls `fs.writeFile` straight onto the live file and is fired from many places at once.
