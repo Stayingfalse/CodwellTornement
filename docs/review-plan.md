@@ -11,18 +11,17 @@ Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · �
 
 ## Phase 0 — Fix bugs first (small, high value)
 
-- [ ] 🔴❓ **The scheduler generates far too many rounds.** Since `1c3fec8` ("pod-local scheduling"), "already played" keys are
-      scoped to the 4-player pod, so the same two people can be teamed again in every other pod.
-      Measured with `generateRounds` as it is now:
-      | players | rounds generated | how often one pair is teamed |
-      |---|---|---|
-      | 4 | 3 | 1 |
-      | 5 | 15 | 3 |
-      | 8 | **80 (hits the safety guard)** | **14** |
-      | 16 | 160 (guard) | — |
-      The sign-up embed promises ~7 rounds for 8 players (`getTournamentPrediction`), and the README says round-robin.
-      **Decision needed:** is "every pair teams up once, in each role" the rule (so pod scoping should go), or is the long schedule intended?
-      Whichever it is, add scheduler tests (`test/scheduler.test.js`) that pin round count, pair coverage and role balance.
+- [ ] 🔴❓ **Scheduler: the rule explodes, and the safety cap silently cuts it short.** The rule as intended:
+      every pair plays in both role configs against every other disjoint pair (A&B v C&D, A&C v B&D, A&D v B&C, across every 4-player group).
+      The scheduler implements that, but it means 3 × C(n,4) match-ups. At 4 games per match (all role combinations, not just "both swapped"):
+      | players | match-ups | games (4/match) | rounds | what actually gets generated |
+      |---|---|---|---|---|
+      | 6 | 45 | 180 | 45 | all 45 rounds |
+      | 8 | 210 | 840 | 105 | **cut to 80 rounds** by `MAX_GENERATED_ROUNDS`, with no notice |
+      | 10 | 630 | 2,520 | 320 | cut to 100 |
+      | 12 | 1,485 | 5,940 | 511 | cut to 120 |
+      The sign-up prediction (`getTournamentPrediction`) uses n(n-1)/4 match-ups, so it says ~7 rounds for 8 players.
+      **Decision needed:** what the format should be (see chat). After that, make the cap, the prediction and the README agree, and add `test/scheduler.test.js`.
 - [ ] 🔴 **A corrupt `tournament.json` gets wiped.** In `loadTournamentData` (`src/index.js:281`) any error, a JSON parse error included,
       is treated as "no previous data". The next save then overwrites the file. Fix: only treat `ENOENT` as fresh. On any other error, back up the file and stop.
 - [ ] 🔴 **Saves aren't atomic or serialised.** `saveTournamentData` calls `fs.writeFile` straight onto the live file and is fired from many places at once.
