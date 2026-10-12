@@ -2370,12 +2370,37 @@ function buildWebData() {
   };
 }
 
+// The dashboard page and its static files, read once at startup. `__V__` in
+// the page becomes a per-start version so browsers fetch new CSS/JS after a deploy.
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const STATIC_TYPES = { '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+const ASSET_VERSION = Date.now().toString(36);
 let cachedDashboardHtml = null;
 try {
-  cachedDashboardHtml = require('fs').readFileSync(path.join(__dirname, '..', 'public', 'index.html'));
+  cachedDashboardHtml = require('fs').readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf-8').replaceAll('__V__', ASSET_VERSION);
 } catch {
   console.warn('[web] public/index.html not found — dashboard will return 404');
 }
+const staticFiles = new Map(); // "/static/app.js" -> { body, type }
+try {
+  for (const name of require('fs').readdirSync(path.join(PUBLIC_DIR, 'static'))) {
+    const type = STATIC_TYPES[path.extname(name)];
+    if (type) staticFiles.set(`/static/${name}`, { body: require('fs').readFileSync(path.join(PUBLIC_DIR, 'static', name)), type });
+  }
+} catch {
+  console.warn('[web] public/static not found — dashboard styles and scripts will be missing');
+}
+// Chart.js is served from the package rather than a CDN.
+try {
+  staticFiles.set('/static/vendor/chart.umd.js', { body: require('fs').readFileSync(path.join(path.dirname(require.resolve('chart.js')), 'chart.umd.js')), type: STATIC_TYPES['.js'] });
+} catch {
+  console.warn('[web] chart.js package not installed — the Stats charts will not render');
+}
+const HTML_SECURITY_HEADERS = {
+  'X-Frame-Options': 'DENY',
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'same-origin',
+};
 
 const WEB_PORT = parseInt(process.env.WEB_PORT) || 80;
 
@@ -2999,13 +3024,23 @@ async function handleHttpRequest(req, res) {
       return;
     }
 
+    // ── Static files ─────────────────────────────────────────────────────────
+    if (pathname.startsWith('/static/')) {
+      const file = staticFiles.get(pathname);
+      if (!file) { res.writeHead(404); res.end('Not found'); return; }
+      // Versioned URLs (?v=) can be cached for long; the page itself is never cached.
+      res.writeHead(200, { 'Content-Type': file.type, 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+      res.end(file.body);
+      return;
+    }
+
     // ── Static dashboard HTML ────────────────────────────────────────────────
     if (!cachedDashboardHtml) {
       res.writeHead(404);
       res.end('Dashboard not available. Ensure public/index.html exists.');
       return;
     }
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...HTML_SECURITY_HEADERS });
     res.end(cachedDashboardHtml);
   } catch (err) {
     console.error('[web] Unhandled request error:', err);
