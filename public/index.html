@@ -1103,14 +1103,14 @@
       <hr class="modal-divider">
 
       <div class="modal-section">
-        <h3>Match Format — 2 to 4 Games Per Match</h3>
-        <p>Each match-up aims for <strong>up to 4 games</strong>. The bot auto-falls back to 3 or 2 if fewer unique role layouts remain for that 4-player setup.</p>
+        <h3>Match Format — 6 Games Per Match</h3>
+        <p>Each round splits the players into groups of four. A group plays every way its players can pair up, and each pairing twice so both teammates take both roles:</p>
         <ul>
-          <li><strong>Game 1</strong> — Blue Spymaster A &amp; Blue Guesser B vs Red Spymaster C &amp; Red Guesser D</li>
-          <li><strong>Game 2</strong> — Both teams swapped: Blue Spymaster B &amp; Blue Guesser A vs Red Spymaster D &amp; Red Guesser C</li>
-          <li><strong>Game 3</strong> — Blue team swapped (if enabled)</li>
-          <li><strong>Game 4</strong> — Red team swapped (if enabled)</li>
+          <li><strong>Games 1–2</strong> — A &amp; B vs C &amp; D, then roles swapped</li>
+          <li><strong>Games 3–4</strong> — A &amp; C vs B &amp; D, then roles swapped</li>
+          <li><strong>Games 5–6</strong> — A &amp; D vs B &amp; C, then roles swapped</li>
         </ul>
+        <p>Games a group already played in an earlier format are skipped, so some matches are shorter. The same four players never meet as a group twice. The tournament ends when every pair has teamed up against every other player.</p>
       </div>
 
       <hr class="modal-divider">
@@ -1431,13 +1431,6 @@
     return g;
   }
 
-  function phaseNote(phase) {
-    if (phase === 2) return ' <span class="swap-note">both teams swapped</span>';
-    if (phase === 3) return ' <span class="swap-note">blue swapped</span>';
-    if (phase === 4) return ' <span class="swap-note">red swapped</span>';
-    return '';
-  }
-
   const MIN_GAMES_PER_MATCH = 2;
   const MAX_GAMES_PER_MATCH = 4;
 
@@ -1447,11 +1440,28 @@
     return Math.max(MIN_GAMES_PER_MATCH, Math.min(MAX_GAMES_PER_MATCH, n));
   }
 
+  // Per-game line-ups: new matches store them (`games`); legacy matches use
+  // one grouping plus phases (2 = both swap, 3 = blue swaps, 4 = red swaps).
   function getRoundMatchEntry(match) {
-    if (match && match.grouping) {
-      return { grouping: match.grouping, gamesPlanned: clampGamesPerMatch(match.gamesPlanned) };
+    if (match && Array.isArray(match.games) && match.games.length) {
+      return { grouping: match.games[0], games: match.games, gamesPlanned: match.games.length };
     }
-    return { grouping: match, gamesPlanned: MIN_GAMES_PER_MATCH };
+    const legacy = match && match.grouping ? match : { grouping: match, gamesPlanned: MIN_GAMES_PER_MATCH };
+    const phases = Array.isArray(legacy.phaseSequence) && legacy.phaseSequence.length
+      ? legacy.phaseSequence
+      : Array.from({ length: clampGamesPerMatch(legacy.gamesPlanned) }, (_, i) => i + 1);
+    const games = phases.map(p => groupingForPhase(legacy.grouping, p));
+    return { grouping: legacy.grouping, games, gamesPlanned: games.length };
+  }
+
+  function teamKey(t) { return [t.spymaster, t.guesser].sort().join('+'); }
+
+  // Short note for a game: same teams as the previous game (roles swapped) or new teams.
+  function gameNote(games, i) {
+    if (i === 0) return '';
+    const prev = games[i - 1], g = games[i];
+    const same = [teamKey(prev.blue), teamKey(prev.red)].sort().join('|') === [teamKey(g.blue), teamKey(g.red)].sort().join('|');
+    return same ? ' <span class="swap-note">roles swapped</span>' : ' <span class="swap-note">new teams</span>';
   }
 
   function fmtDate(iso) {
@@ -1763,24 +1773,22 @@
       const matchesHtml = roundMatches.map((roundMatch, matchIdx) => {
         const matchNumber = matchIdx + 1;
         const roundMatchEntry = getRoundMatchEntry(roundMatch);
-        const g1grouping = roundMatchEntry.grouping;
         const active      = isCurrent ? activeMatch(matchNumber) : null;
         const isMatchActive = !!active;
-        const gamesPerMatch = active
-          ? clampGamesPerMatch(active.gamesPlanned ?? roundMatchEntry.gamesPlanned)
-          : roundMatchEntry.gamesPlanned;
+        const matchGames = active ? getRoundMatchEntry(active).games : roundMatchEntry.games;
+        const gamesPerMatch = matchGames.length;
 
         const activePhase = active ? (active.gamePhase ?? 1) : null;
         const phaseResults = active && active.phaseResults ? active.phaseResults : {};
         const gameCells = Array.from({ length: gamesPerMatch }, (_, i) => {
           const gameIndex = i + 1;
-          const grouping = groupingForPhase(g1grouping, gameIndex);
+          const grouping = matchGames[i];
           const hist = (isCurrent || isPast) ? historyEntry(roundNumber, matchNumber, gameIndex) : null;
           const activeResult = phaseResults[gameIndex] || (gameIndex === 1 ? active?.game1Result : null);
           const displayResult = hist || activeResult || null;
           const isAdmin = currentUser && currentUser.isAdmin;
           const adminMeta = (isAdmin && displayResult) ? { roundNumber, matchNumber, game: gameIndex } : null;
-          const note = phaseNote(gameIndex);
+          const note = gameNote(matchGames, i);
           return `
               <div class="game-cell">
                 <div class="game-num">Game ${gameIndex}${note}</div>

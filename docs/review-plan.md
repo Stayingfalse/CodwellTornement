@@ -1,6 +1,6 @@
 # CodwellTornement — review & improvement plan
 
-Review of `main` at `53b7e8d` (after the BGA bridge work). Status: **plan only, nothing changed yet.**
+Review of `main` at `53b7e8d` (after the BGA bridge work). Status: **Phase 0 done** (scheduler rebuilt plus the bug fixes); later phases are still to do.
 
 Scope: `src/index.js` (3,533 lines), `src/codenamesBridge.js`, `public/index.html` (2,942 lines),
 tests, Docker/CI. The BoardGameArena bot was read for patterns to borrow, not reviewed.
@@ -11,37 +11,26 @@ Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · �
 
 ## Phase 0 — Fix bugs first (small, high value)
 
-- [ ] 🔴 **Scheduler: rebuild around the agreed format** (decided 2026-10-12, replacing the earlier "every pair against every pair" plan; for 14 players that needed ~670 rounds).
-      **Match:** one group of 4 plays one **6-game match** covering all 3 team splits, each as drawn and then with both teams swapping roles:
-      ```
-      G1 1S+2O v 3S+4O   G2 2S+1O v 4S+3O     (1&2 v 3&4)
-      G3 1S+3O v 2S+4O   G4 3S+1O v 4S+2O     (1&3 v 2&4)
-      G5 1S+4O v 2S+3O   G6 4S+1O v 3S+2O     (1&4 v 2&3)
-      ```
-      **Rounds:** reshuffle the groups every round. **The same 4 players never meet as a group twice.** Prefer groups of players who haven't shared a group yet, and rotate sit-outs fairly.
-      Each player meets 3 new people per round, so "everyone has shared a group with everyone" takes at least ⌈(n−1)/3⌉ rounds:
-      14 players ≥ 5 (a crude prototype needs 8–9; the real search should get ~6–7).
-      **Open:** the end condition (see chat). "No repeated group" alone allows hundreds of rounds.
-      Work:
-      - Store an explicit per-game line-up on each match (`games: [grouping × 6]`). `getGroupingForMatchGame` reads it; old saved matches fall back to `phaseSequence`, so a running tournament keeps working.
-      - Replace the config/layout-key search with: pick disjoint groups that are not in `usedGroups`, minimising repeat pair meetings, with fair sit-outs.
-      - Remove the silent `MAX_GENERATED_ROUNDS` cut-off. Generate rounds up to the chosen end condition, and allow an admin "extend by N rounds".
-      - Make `getTournamentPrediction`, the sign-up embed, the "How it works" modal and the README match.
-      - Recalculation after a leave or join: rebuild `usedGroups` and pair meetings from `history` plus active matches.
-      - Bridge: `buildBinding`/`findGameForSeats` already take a per-game line-up. Verify that a 6-game match works end to end.
-      - `test/scheduler.test.js`: 6 games per match covering 3 splits × 2 role setups, no group repeated, nobody plays twice in a round, fair sit-outs, and the end condition is met.
-- [ ] 🔴 **A corrupt `tournament.json` gets wiped.** In `loadTournamentData` (`src/index.js:281`) any error, a JSON parse error included,
+- [x] 🔴 **Scheduler rebuilt** (`src/scheduler.js`, `test/scheduler.test.js`), as agreed on 2026-10-12.
+      **Goal:** every pair teams up against every other player, i.e. every set of three players shares a group at least once.
+      **Match:** a group of 4 plays 6 games, covering all 3 team splits, each as drawn and then with both teams swapping roles.
+      Games a group already played in the old format are skipped, so some matches are shorter. The same four players never meet as a group twice.
+      **How:** a covering design (greedy plus simulated annealing) is packed into rounds, then the rounds are tuned and compressed.
+      For 14 players that gives about 34 rounds and ~100 matches; the floor is 31 rounds and 91 matches. 8 and 10 players hit the floor.
+      **Live tournament:** a schedule saved with `scheduleFormat` < 2 is rebuilt automatically when the next round is allocated, and all history counts.
+      A round already in progress finishes as it is. The old 10×players cut-off is gone.
+- [x] 🔴 **A corrupt `tournament.json` gets wiped.** In `loadTournamentData` (`src/index.js:281`) any error, a JSON parse error included,
       is treated as "no previous data". The next save then overwrites the file. Fix: only treat `ENOENT` as fresh. On any other error, back up the file and stop.
-- [ ] 🔴 **Saves aren't atomic or serialised.** `saveTournamentData` calls `fs.writeFile` straight onto the live file and is fired from many places at once.
+- [x] 🔴 **Saves aren't atomic or serialised.** `saveTournamentData` calls `fs.writeFile` straight onto the live file and is fired from many places at once.
       A crash part-way through, or two overlapping writes, can corrupt it. Fix: write to `tournament.json.tmp`, then `rename`, behind a single save queue.
       (Phase 4 has the bigger fix.)
-- [ ] 🔴 **Force-end loses games that were already played.** Force-end (web `force-end`, plus the three Discord copies) drops `activeMatches`.
+- [x] 🔴 **Force-end loses games that were already played.** Force-end (web `force-end`, plus the three Discord copies) drops `activeMatches`.
       Games already logged in an unfinished match stay in `scores`, but they never reach `history`.
       So scores, games-played counts, stats and the scheduler's "played" set stop agreeing.
       Fix: push the logged `phaseResults` to `history`/`roundResults` before dropping the match.
-- [ ] 🔴 **Force-end on the final round leaves the deadline set.** Web `force-end` and the Discord copies don't clear `roundDeadline`, so the dashboard keeps showing it.
-- [ ] 🔴 Force-end archives threads through `guild.channels.cache.get`, which misses threads that aren't cached. Use `fetch` (the timeout path already does).
-- [ ] 🔴 `sendRoundExpiry` sorts `tournament.roundResults` and `activeMatches` in place, and labels match numbers "Game N".
+- [x] 🔴 **Force-end on the final round leaves the deadline set.** Web `force-end` and the Discord copies don't clear `roundDeadline`, so the dashboard keeps showing it.
+- [x] 🔴 Force-end archives threads through `guild.channels.cache.get`, which misses threads that aren't cached. Use `fetch` (the timeout path already does).
+- [x] 🔴 `sendRoundExpiry` sorts `tournament.roundResults` and `activeMatches` in place, and labels match numbers "Game N".
       For multi-game matches it lists one line per game rather than per match.
 
 ## Phase 1 — Remove dead code (≈700–900 lines out of `index.js`)
@@ -50,10 +39,10 @@ Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · �
       So these handlers are dead: `admin`, `admin_start`, `admin_allocate`, `admin_scores`, `admin_force_end`, `admin_adjust_score`,
       `admin_reset`, `admin_reopen_signups`, `admin_fix_matchups`, `debug_seed_players`, and the `adjust_score_modal` submit.
       None of them re-check the admin role, so they would be a hole if a button ever came back. Delete them, or re-add them properly as slash commands (Phase 3).
-- [ ] 🧹 Buttons that are never created: `force_end_round`, `timeout_force_end` (the expiry embed now points to the website) and `correct_result_` (a legacy stub).
+- [ ] 🧹 Buttons that are never created: ~~`force_end_round`, `timeout_force_end`~~ (removed; all force-ends now go through `forceEndRound()`) (the expiry embed now points to the website) and `correct_result_` (a legacy stub).
 - [ ] 🧹 The `outcome_modal_*_assassin_*` branch: assassin wins skip the modal, so `parts[3] === 'assassin'` never happens.
 - [ ] 🧹 The `log_` handler's `processingThreads` guard only covers showing an ephemeral prompt, so it adds nothing.
-- [ ] 🧹 Unused functions: `markConfigsAsPlayed`, `generateGrouping`, `processGameResult` (a one-line wrapper), `startThreadKeepAlive` (an alias).
+- [ ] 🧹 Unused functions: ~~`markConfigsAsPlayed`, `generateGrouping`~~ (removed with the old scheduler), `processGameResult` (a one-line wrapper), `startThreadKeepAlive` (an alias).
 - [ ] 🧹 Unused or legacy state: `playedGroupings`, `currentGrouping` (only in the reset object), `currentRoundIndex` (only drives a "Match 0/N" label).
       `game1Result` has been superseded by `phaseResults`; load old files through a one-time migration and remove it.
 - [ ] 🧹 Unused vars `autoAllocated` and `autoAllocated2`. A stray `0` after `console.log('Commands registered');`. `buildSignupDescription` logs the player list on every call.
@@ -68,7 +57,7 @@ Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · �
 - [ ] ⚡ **Scoreboard text** (rank, points, games): written 4 times (`/tournament`, `admin_start`, two branches of `updateScoreboard`). → `renderScoreboardLines()`.
 - [ ] ⚡ **Apply or reverse score**: written 4 times (`recordGameResult`, `rollbackSingleGameScore`, `override-result`, `delete-result`). → `applyGameScore(grouping, result, sign)`.
       Put the points rule (`3 / +1 if ≤3 left / −1 assassin`) in one `pointsFor()`.
-- [ ] ⚡ **Force-end**: 4 copies (3 Discord, 1 web). → `forceEndRound(guild)` (it picks up the Phase 0 fixes).
+- [x] ⚡ **Force-end**: 4 copies (3 Discord, 1 web). → `forceEndRound(guild)` (it picks up the Phase 0 fixes).
 - [ ] ⚡ **Reset**: 2 copies, including a hand-written default-state object. → `freshTournament()`, used by the initial state, reset and load.
 - [ ] ⚡ **Start tournament**: 2 copies. **Reopen signups**: 2 copies. **Signup embed and row**: 3 copies.
 - [ ] ⚡ The player list `[g.blue.spymaster, g.blue.guesser, g.red.spymaster, g.red.guesser]` appears more than 20 times. → `playersOf(grouping)`.
@@ -84,7 +73,7 @@ Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · �
       with `setDefaultMemberPermissions` and a server-side role check. Recommendation: web only, plus `/tournament status`.
 - [ ] 🎨 Show the round's deadline and live status (from `bridgeStatus`) on the scoreboard embed, not only on the website.
 - [ ] 🎨 The `admin_start` setup message shows "Match 0/N". Remove the label, or show "0/N matches completed" as `updateScoreboard` does.
-- [ ] 🎨 The round summary embed has one field per game, so a round with more than 25 games (e.g. 7 matches × 4) breaks the 25-field limit. The send then fails and the summary is lost: `roundResults` is cleared in the `catch`. Group the fields by match, or split across embeds.
+- [x] 🎨 The round summary embed has one field per game, so a round with more than 25 games (e.g. 7 matches × 4) breaks the 25-field limit. The send then fails and the summary is lost: `roundResults` is cleared in the `catch`. Group the fields by match, or split across embeds.
 - [ ] 🎨 Ping the four players when their thread is created (a thread mention plus `allowedMentions`), so nobody misses a round. The README already lists this as a roadmap item.
 - [ ] 🎨 Remaining-cards modal: the input accepts 1 character but the label says "0-8". Fine, but say "of the losing team" to make it clear.
 - [ ] 🧠 Optional: move cards to **Components V2** (`ContainerBuilder` / `SectionBuilder` / `TextDisplayBuilder`, discord.js ≥14.19; 14.26 is installed), like the BGA bot's cards.

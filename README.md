@@ -73,8 +73,8 @@ Follow these steps in order for a smooth first deployment:
 
 - **One slash command** — `/tournament` posts the signup embed anywhere in your server
 - **Interactive sign-up** — players join (or withdraw) with a single button click; the embed updates in real time with the current player list and a tournament size prediction
-- **Full round-robin scheduling** — every player plays every other player in all four role configurations (blue spymaster, blue guesser, red spymaster, red guesser)
-- **Adaptive match length (2–4 games)** — each match aims for 4 games and automatically falls back to 3 or 2 when fewer unique role layouts remain
+- **Every pair against every player** — groups of four rotate each round until every pair has teamed up against every other player
+- **6-game matches** — each group plays all three ways of pairing up, each with both role configurations (fewer games when some were already played)
 - **Automatic thread creation** — a dedicated Discord thread is created for each match; players submit results with buttons inside their thread
 - **Result correction** — players (and admins) can undo and re-submit a wrong result at any time before the round ends
 - **Score tracking** — a live scoreboard embed is kept up-to-date in the tournament channel throughout the event
@@ -347,25 +347,21 @@ These appear inside each match thread:
 
 ## Tournament Format
 
-The tournament uses a **full round-robin** schedule where every player is paired with every other player across four distinct role configurations:
+**Goal:** every pair of players teams up against every other player. The tournament ends when that is true for every pair.
 
-1. Player A as Blue Spymaster, Player B as Blue Guesser
-2. Player A as Blue Guesser, Player B as Blue Spymaster
-3. Player A as Red Spymaster, Player B as Red Guesser
-4. Player A as Red Guesser, Player B as Red Spymaster
+Each round splits the players into groups of four (⌊N/4⌋ matches run at once; the rest sit out, rotated fairly). **A match is 6 games**: the group plays every way its four players can pair up, and each pairing twice so both teammates take both roles:
 
-**Rounds** are generated so that as many matches as possible run concurrently (up to ⌊N/4⌋ simultaneous games per round). All matches within a round start at the same time in their own threads.
+| Games | Teams | |
+|---|---|---|
+| 1–2 | A & B vs C & D | as drawn, then roles swapped |
+| 3–4 | A & C vs B & D | as drawn, then roles swapped |
+| 5–6 | A & D vs B & C | as drawn, then roles swapped |
 
-**Each match consists of 2 to 4 games** (auto-managed by the scheduler):
+The same four players never meet as a group twice. Games a group already played (for example under the older 2–4 game format) are skipped, so some matches are shorter than 6 games. The scheduler (`src/scheduler.js`) plans the fewest groups it can find that cover every pair-versus-player combination, then packs them into as few rounds as it can. For 14 players that is about 34 rounds (the theoretical minimum is 31).
 
-- **Game 1** — Blue Spymaster A & Blue Guesser B vs Red Spymaster C & Red Guesser D
-- **Game 2** — Both teams swapped: Blue Spymaster B & Blue Guesser A vs Red Spymaster D & Red Guesser C
-- **Game 3 (optional)** — Blue team swapped only
-- **Game 4 (optional)** — Red team swapped only
+A schedule made before the 6-game format is rebuilt automatically when the next round is allocated. Everything already played counts towards it.
 
 After each game, the thread automatically posts the next game configuration and result buttons. Once all configured games are logged, the thread is archived and the scoreboard updated. When all threads in a round are complete, the next round is allocated automatically.
-
-> **What “unique role layouts” means:** the bot avoids replaying the same exact blue/red role seating for the same 4-player setup. If only 2 or 3 fresh layouts are left, the match ends there instead of forcing duplicates.
 
 **Round deadlines** are configurable via `ROUND_TIMEOUT_DAYS` (default 14 days). A warning message is posted to all active threads 2 days before the deadline. When the deadline expires, an expiry embed is posted in the tournament channel with a **Force End** button for admins.
 
