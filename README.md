@@ -90,7 +90,7 @@ Follow these steps in order for a smooth first deployment:
 
 ## Prerequisites
 
-- **Node.js 18+** (or Docker) — verify with `node --version  # should be v18 or higher`
+- **Node.js 22+** (or Docker) — verify with `node --version  # should be v22 or higher`
 - A **Discord application** with a bot user — create one at <https://discord.com/developers/applications>
 - The bot must be a member of your Discord server
 
@@ -133,6 +133,8 @@ docker run --env-file .env -v $(pwd)/data:/app/data codenames-bot
 ```
 
 The `data/` directory is mounted as a volume so tournament state survives container restarts.
+
+The image is built on Node 22. Your `.env`, `data/` and local `node_modules` are kept out of it by `.dockerignore`; settings are passed in at run time with `--env-file`. The bot runs as the unprivileged `node` user, and the entrypoint first makes the mounted `data/` folder writable for it, so folders created by older root images keep working. Docker checks `GET /healthz`, which reports unhealthy while Discord is disconnected or the last save failed. The bot exits if it can't log in to Discord. On `docker stop` it finishes its last save before exiting.
 
 ---
 
@@ -369,6 +371,16 @@ Points are awarded per game:
 
 The number of "cards remaining" means the opponent's unrevealed cards still on the board when the game ends.
 
+### Ranking: points per game
+
+**Players are ranked by points per game**, not total points. Sit-outs mean some players finish with a few more games than others, so the average is the fair comparison. Ties go to:
+
+1. total points;
+2. wins;
+3. fewest assassins hit as guesser.
+
+Points are always worked out from the logged games, plus any manual adjustments an admin makes on the website. Leaving, re-joining, or correcting or deleting a result can't make them drift. A player who leaves keeps their record, shown under "Left the tournament", and gets it back if they re-join.
+
 ---
 
 ## Web Dashboard
@@ -409,7 +421,7 @@ Changes show up on the website and in the Discord message straight away.
 
 ## Data Persistence
 
-All tournament state is written to `data/tournament.json` after every change. On startup the bot loads this file and resumes where it left off — including active matches, scores, round schedules, and deadline timers.
+All tournament state is written to `data/tournament.json` after every change (to a temporary file that is then renamed into place, so a crash can't leave it half-written). If the file can't be read at startup, the bot saves a copy and stops rather than starting empty. On startup the bot loads this file and resumes where it left off — including active matches, scores, round schedules, and deadline timers.
 
 When running with Docker Compose the `data/` directory is mounted as a host volume (`./data:/app/data`) so data persists across container rebuilds.
 

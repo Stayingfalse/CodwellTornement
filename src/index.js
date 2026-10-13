@@ -9,6 +9,7 @@ const path = require('path');
 const codenamesBridge = require('./codenamesBridge');
 const scheduler = require('./scheduler');
 const cards = require('./cards');
+const scoring = require('./scoring');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const TOURNAMENT_FILE = path.join(DATA_DIR, 'tournament.json');
@@ -27,7 +28,6 @@ let tournament = {
   currentRound: 0,
   currentRoundIndex: 0, // Index of current match within the round
   playedGroupings: new Set(),
-  scores: new Map(),
   activeMatches: [], // [{grouping, threadId, matchNumber, gamePhase, game1Result, phaseResults, matchCreatedAt}]
   roundResults: [], // [{matchNumber, gameIndex, grouping, winner, assassin, remainingCards, winPoints, losePoints}]
   setupMessage: null,
@@ -44,6 +44,7 @@ let tournament = {
   pendingRemoval: null, // {userId, confirmMessageId, requestedAt} — in-flight leave request
   signupsReopened: false, // true while a mid-tournament signup window is open
   signupReopenMessageId: null, // Discord message ID of the active reopen-signups message
+  scoreAdjustments: [], // [{userId, delta, reason, at, by}] — manual changes on top of the points games give
 };
 
 // Codenames bridge (BGA bot's codenames.game watcher) — optional, see docs/codenames-bridge.md
@@ -263,7 +264,6 @@ async function loadTournamentData() {
     process.exit(1);
   }
   tournament.players = new Set(parsed.players);
-  tournament.scores = new Map(parsed.scores);
   tournament.playedGroupings = new Set(parsed.playedGroupings);
   tournament.currentRound = parsed.currentRound;
   tournament.currentRoundIndex = parsed.currentRoundIndex || 0;
@@ -283,12 +283,21 @@ async function loadTournamentData() {
   tournament.signupsReopened = parsed.signupsReopened || false;
   tournament.signupReopenMessageId = parsed.signupReopenMessageId || null;
   codenamesBridgeSynced = parsed.codenamesBindings || {};
+  if (Array.isArray(parsed.scoreAdjustments)) {
+    tournament.scoreAdjustments = parsed.scoreAdjustments;
+  } else {
+    // Older files kept a running total. Keep everyone's current points by
+    // recording anything the games don't explain as an adjustment.
+    tournament.scoreAdjustments = scoring.migrationAdjustments(new Map(parsed.scores || []), playerTotals(), Array.from(tournament.players));
+    if (tournament.scoreAdjustments.length) console.log(`[scores] Migrated to derived scores with ${tournament.scoreAdjustments.length} carried-over adjustment(s).`);
+  }
   console.log('Tournament data loaded from storage');
 }
 
 // Saves run one at a time, and each writes a temp file then renames it over
 // the real one, so a crash mid-write can't leave a half-written file.
 let saveChain = Promise.resolve();
+let lastSaveError = null; // reported by /healthz until a save succeeds
 
 function saveTournamentData() {
   const run = saveChain.then(writeTournamentData);
@@ -301,7 +310,8 @@ async function writeTournamentData() {
     await fs.mkdir(DATA_DIR, { recursive: true });
     const data = {
       players: Array.from(tournament.players),
-      scores: Array.from(tournament.scores),
+      scores: currentStandings().map(r => [r.id, r.points]), // derived; kept for readability
+      scoreAdjustments: tournament.scoreAdjustments,
       playedGroupings: Array.from(tournament.playedGroupings),
       currentRound: tournament.currentRound,
       currentRoundIndex: tournament.currentRoundIndex,
@@ -325,7 +335,9 @@ async function writeTournamentData() {
     const tmp = `${TOURNAMENT_FILE}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(data, null, 2));
     await fs.rename(tmp, TOURNAMENT_FILE);
+    lastSaveError = null;
   } catch (error) {
+    lastSaveError = error.message;
     console.error('Failed to save tournament data:', error);
   }
   scheduleBridgeSync();
@@ -428,15 +440,45 @@ function buildMatchStatus() {
   return out;
 }
 
+// ── Scores (derived; see src/scoring.js) ──────────────────────────────────
+
+// Games already logged in matches that are still being played.
+function activeLoggedGames() {
+  const games = [];
+  for (const match of tournament.activeMatches) {
+    const results = { ...(match.phaseResults || {}) };
+    if (match.game1Result && !results[1]) results[1] = match.game1Result;
+    for (const [idx, r] of Object.entries(results)) {
+      if (r) games.push({ ...r, grouping: getGroupingForMatchGame(match, Number(idx)) });
+    }
+  }
+  return games;
+}
+
+function playerTotals() {
+  return scoring.computePlayerTotals({
+    history: tournament.history,
+    activeGames: activeLoggedGames(),
+    adjustments: tournament.scoreAdjustments || [],
+  });
+}
+
+const playerName = id => tournament.playerNames[id] || (tournament.leftPlayers[id] && tournament.leftPlayers[id].displayName) || id;
+
+// Ranked standings for the current players: points per game, then points, wins, fewest assassins.
+function currentStandings(totals = playerTotals()) {
+  return scoring.rankStandings(Array.from(tournament.players), totals, playerName);
+}
+
 // What the main tournament message shows right now (see cards.tournamentCard).
 function buildTournamentCardState() {
-  const standings = Array.from(tournament.scores.entries()).sort((a, b) => b[1] - a[1]);
+  const standings = currentStandings();
   if (!tournament.started) {
     const players = Array.from(tournament.players);
     return { phase: 'signup', players, prediction: players.length >= 4 ? scheduler.predictSchedule(players.length) : null };
   }
   if (tournament.currentRound > tournament.rounds.length) {
-    return { phase: 'complete', standings, gamesPlayed: getGamesPlayedMap() };
+    return { phase: 'complete', standings };
   }
   const roundMatches = tournament.rounds[tournament.currentRound - 1] || [];
   return {
@@ -455,7 +497,6 @@ function buildTournamentCardState() {
       threadUrl: getThreadUrl(m.threadId),
     })),
     standings,
-    gamesPlayed: getGamesPlayedMap(),
   };
 }
 
@@ -508,7 +549,22 @@ function resolveInteractionMessage(interaction, note) {
     : interaction.update({ content: note, components: [], allowedMentions: { parse: [] } });
 }
 
-client.on('interactionCreate', async (interaction) => {
+// Every interaction goes through here: an error in one handler is logged and
+// reported to whoever clicked, instead of taking the whole bot down.
+client.on('interactionCreate', interaction => {
+  handleInteraction(interaction).catch(error => reportInteractionError(interaction, error));
+});
+
+async function reportInteractionError(interaction, error) {
+  console.error(`[interaction] ${interaction.customId || interaction.commandName || interaction.type} failed:`, error);
+  const message = { content: '⚠️ Something went wrong handling that. Please try again — if it keeps happening, tell an admin.', flags: MessageFlags.Ephemeral };
+  try {
+    if (interaction.deferred || interaction.replied) await interaction.followUp(message);
+    else if (interaction.isRepliable()) await interaction.reply(message);
+  } catch { /* the interaction may have expired; the log above is what matters */ }
+}
+
+async function handleInteraction(interaction) {
   if (interaction.isCommand()) {
     const { commandName } = interaction;
 
@@ -540,7 +596,7 @@ client.on('interactionCreate', async (interaction) => {
     const { customId } = interaction;
 
     if (customId === 'signup') {
-      if (tournament.started) {
+      if (tournament.started || startingTournament) {
         await interaction.reply({ content: 'Tournament has already started! Sign-ups are closed.', flags: MessageFlags.Ephemeral });
         return;
       }
@@ -801,14 +857,12 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const { confirmMessageId } = tournament.pendingRemoval;
       const leaveDisplayName = tournament.playerNames[userId] || userId;
-      const leaveScore = tournament.scores.get(userId) || 0;
-      tournament.leftPlayers[userId] = { displayName: leaveDisplayName, leftAt: new Date().toISOString(), score: leaveScore };
+      tournament.leftPlayers[userId] = { displayName: leaveDisplayName, leftAt: new Date().toISOString() };
       tournament.players.delete(userId);
-      tournament.scores.delete(userId);
       clearRemovalTimer();
       tournament.pendingRemoval = null;
       const activePlayers = Array.from(tournament.players);
-      recalculateFutureRounds(activePlayers);
+      await recalculateFutureRounds(activePlayers);
       await saveTournamentData();
       const leaveChannel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
       if (leaveChannel) {
@@ -861,8 +915,7 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: 'You are already in the tournament!', flags: MessageFlags.Ephemeral });
         return;
       }
-      tournament.players.add(userId);
-      tournament.scores.set(userId, 0);
+      tournament.players.add(userId); // their earlier games still count
       try {
         const member = await interaction.guild.members.fetch(userId).catch(() => null);
         tournament.playerNames[userId] = member ? member.displayName : userId;
@@ -927,16 +980,13 @@ client.on('interactionCreate', async (interaction) => {
 
         await processGameResult(interaction, matchData, winner, assassin, remainingCards);
       } catch (error) {
-        console.error('Error processing outcome:', error);
-        try {
-          await interaction.reply({ content: 'An error occurred while processing the outcome. Please try again.', flags: MessageFlags.Ephemeral });
-        } catch {}
+        await reportInteractionError(interaction, error);
       } finally {
         processingThreads.delete(modalProcessingKey);
       }
     }
   }
-});
+}
 
 async function allocateRound(guild) {
   if (!tournament.started || tournament.rounds.length === 0) {
@@ -1054,8 +1104,8 @@ async function allocateRound(guild) {
 
 
 function clearRoundTimers() {
-  if (roundWarningTimer)   { clearTimeout(roundWarningTimer);   roundWarningTimer   = null; }
-  if (roundExpiryTimer)    { clearTimeout(roundExpiryTimer);    roundExpiryTimer    = null; }
+  if (roundWarningTimer)   { clearLongTimeout(roundWarningTimer); roundWarningTimer = null; }
+  if (roundExpiryTimer)    { clearLongTimeout(roundExpiryTimer);  roundExpiryTimer  = null; }
   if (threadKeepAliveTimer){ clearTimeout(threadKeepAliveTimer); threadKeepAliveTimer = null; }
 }
 
@@ -1161,33 +1211,50 @@ function getSitOutCounts(activePlayers) {
 // using the 6-game format (src/scheduler.js). Everything already played
 // (history) or in progress (active matches) counts, so groups only get the
 // games they still owe. Completed rounds and any in-progress round are kept.
+//
+// Planning runs on a worker thread and takes a few seconds, so recalculations
+// queue up one at a time, and the plan is redone if a round started or ended,
+// or the players changed, while it was being made.
+let recalcChain = Promise.resolve();
 function recalculateFutureRounds(activePlayers) {
-  const keepUntilIndex = tournament.activeMatches.length > 0
-    ? tournament.currentRound   // rounds[0..currentRound-1] inclusive
-    : tournament.currentRound - 1;
-  if (activePlayers.length < 4) {
-    // Not enough players for any new matches — trim future rounds so tournament ends naturally
-    tournament.rounds = tournament.rounds.slice(0, keepUntilIndex);
+  const run = recalcChain.then(() => planFutureRounds(activePlayers));
+  recalcChain = run.catch(() => null);
+  return run;
+}
+
+function scheduleInputsKey() {
+  return `${tournament.currentRound}|${tournament.activeMatches.length > 0}|${Array.from(tournament.players).sort().join(',')}`;
+}
+
+async function planFutureRounds(requestedPlayers) {
+  for (let attempt = 1; ; attempt++) {
+    const key = scheduleInputsKey();
+    // The requested list matters only on the first try; after that, plan for whoever is in now.
+    const activePlayers = attempt === 1 ? requestedPlayers : Array.from(tournament.players);
+    let futureRounds = [];
+    if (activePlayers.length >= 4) {
+      const normalizedHistory = normalizeHistoryForScheduling(new Set(activePlayers));
+      if (normalizedHistory.reconstructionTriggered) {
+        const skippedLabel = normalizedHistory.skippedEntries === 1 ? 'entry' : 'entries';
+        console.warn(`[scheduler] History reconstruction/audit applied for recalculation (skipped ${normalizedHistory.skippedEntries} invalid ${skippedLabel}).`);
+      }
+      const playedGroupings = normalizedHistory.normalized.map(entry => entry.grouping);
+      for (const match of tournament.activeMatches) playedGroupings.push(...getMatchGames(match));
+      futureRounds = await scheduler.generateScheduleAsync(activePlayers, {
+        playedGroupings,
+        sitOutCounts: getSitOutCounts(activePlayers),
+      });
+    }
+    if (scheduleInputsKey() !== key && attempt < 3) {
+      console.log('[scheduler] The tournament moved on while planning; planning again.');
+      continue;
+    }
+    // Keep completed rounds and the one in progress (rounds[0..currentRound-1]).
+    const keep = tournament.activeMatches.length > 0 ? tournament.currentRound : tournament.currentRound - 1;
+    tournament.rounds = [...tournament.rounds.slice(0, keep), ...futureRounds];
+    console.log(`[scheduler] ${futureRounds.length} future round(s) planned for ${activePlayers.length} players.`);
     return;
   }
-
-  const normalizedHistory = normalizeHistoryForScheduling(new Set(activePlayers));
-  if (normalizedHistory.reconstructionTriggered) {
-    const skippedLabel = normalizedHistory.skippedEntries === 1 ? 'entry' : 'entries';
-    console.warn(`[scheduler] History reconstruction/audit applied for recalculation (skipped ${normalizedHistory.skippedEntries} invalid ${skippedLabel}).`);
-  }
-  const playedGroupings = normalizedHistory.normalized.map(entry => entry.grouping);
-  for (const match of tournament.activeMatches) playedGroupings.push(...getMatchGames(match));
-
-  const futureRounds = scheduler.generateSchedule(activePlayers, {
-    playedGroupings,
-    sitOutCounts: getSitOutCounts(activePlayers),
-  });
-  tournament.rounds = [
-    ...tournament.rounds.slice(0, keepUntilIndex),
-    ...futureRounds,
-  ];
-  console.log(`[scheduler] ${futureRounds.length} future round(s) planned for ${activePlayers.length} players.`);
 }
 
 // "Fix Matchups": rebuild every future round with the current scheduler,
@@ -1195,7 +1262,7 @@ function recalculateFutureRounds(activePlayers) {
 // played). Also how a schedule from an older format is switched over.
 async function fixMatchups(guild) {
   const before = tournament.rounds.length;
-  recalculateFutureRounds(Array.from(tournament.players));
+  await recalculateFutureRounds(Array.from(tournament.players));
   await saveTournamentData();
   if (guild) refreshSetupMessage(guild).catch(() => null);
   const keptThrough = tournament.activeMatches.length > 0 ? tournament.currentRound : tournament.currentRound - 1;
@@ -1223,7 +1290,7 @@ async function closeSignups(guild) {
   const activePlayers = Array.from(tournament.players);
   tournament.signupsReopened = false;
   tournament.signupReopenMessageId = null;
-  recalculateFutureRounds(activePlayers);
+  await recalculateFutureRounds(activePlayers);
   await saveTournamentData();
   if (channel) {
     await channel.send(`✅ Signups closed with ${activePlayers.length} player${activePlayers.length !== 1 ? 's' : ''}. Future rounds have been recalculated — ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned.`);
@@ -1286,6 +1353,24 @@ function startThreadKeepAlive(guild) {
   scheduleNextKeepAlive(guild);
 }
 
+// setTimeout can't wait longer than ~24.8 days (it fires at once instead), so
+// long waits are re-armed in steps. Returns a handle clearTimeout accepts.
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+function setLongTimeout(fn, delayMs) {
+  const handle = { timer: null };
+  const arm = remaining => {
+    handle.timer = setTimeout(() => {
+      if (remaining > MAX_TIMEOUT_MS) arm(remaining - MAX_TIMEOUT_MS);
+      else fn();
+    }, Math.min(remaining, MAX_TIMEOUT_MS));
+  };
+  arm(Math.max(0, delayMs));
+  return handle;
+}
+function clearLongTimeout(handle) {
+  if (handle) clearTimeout(handle.timer);
+}
+
 function scheduleRoundTimers(guild) {
   clearRoundTimers();
   if (!tournament.roundDeadline) return;
@@ -1301,12 +1386,12 @@ function scheduleRoundTimers(guild) {
   }
 
   if (warnAt > now) {
-    roundWarningTimer = setTimeout(() => {
+    roundWarningTimer = setLongTimeout(() => {
       sendRoundWarning(guild).catch(e => console.error('[timer] Warning failed:', e.message));
     }, warnAt - now);
   }
 
-  roundExpiryTimer = setTimeout(() => {
+  roundExpiryTimer = setLongTimeout(() => {
     sendRoundExpiry(guild).catch(e => console.error('[timer] Expiry failed:', e.message));
   }, expireAt - now);
 }
@@ -1486,12 +1571,15 @@ async function forceEndRound(guild) {
   return { ended, gamesKept };
 }
 
+// A result submitted with the thread's buttons. The interaction is acknowledged
+// straight away so saving can never run past Discord's 3-second limit.
 async function processGameResult(interaction, matchData, winner, assassin, remainingCards) {
+  await interaction.deferReply();
   return recordGameResult({
     guild: interaction.guild,
     channel: interaction.channel,
     submittedBy: interaction.user.id,
-    reply: (content) => interaction.reply({ content }),
+    reply: (content) => interaction.editReply({ content }),
   }, matchData, winner, assassin, remainingCards);
 }
 
@@ -1503,21 +1591,7 @@ async function recordGameResult(ctx, matchData, winner, assassin, remainingCards
   const submittedAt = new Date().toISOString();
   const gamePhase = matchData.gamePhase ?? 1; // sequential game number (1-based)
   const gamesPerMatch = getMatchGameCount(matchData);
-  const currentGrouping = getGroupingForMatchGame(matchData, gamePhase);
-
-  const winPoints = 3;
-  const losePoints = assassin ? -1 : (remainingCards <= 3 ? 1 : 0);
-
-  const bluePlayers = [currentGrouping.blue.spymaster, currentGrouping.blue.guesser];
-  const redPlayers  = [currentGrouping.red.spymaster,  currentGrouping.red.guesser];
-
-  if (winner === 'blue') {
-    bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + winPoints));
-    redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) + losePoints));
-  } else {
-    redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) + winPoints));
-    bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + losePoints));
-  }
+  const { winPoints, losePoints } = scoring.pointsFor({ assassin, remainingCards });
 
   const winnerLabel = winner === 'blue' ? '🔵 Blue' : '🔴 Red';
   const howStr = assassin ? 'assassin hit' : `${remainingCards} card${remainingCards !== 1 ? 's' : ''} remaining`;
@@ -1536,52 +1610,66 @@ async function recordGameResult(ctx, matchData, winner, assassin, remainingCards
     matchData.game1Result = currentResult; // Backward compatibility for active-match admin tooling
   }
 
+  // State changes are saved (and the round advanced) before anything is said
+  // in Discord, so a failed message can't leave the tournament half-updated.
+  const resultLine = `**Game ${gamePhase}** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**`;
+
   if (gamePhase < gamesPerMatch) {
     const nextPhase = gamePhase + 1;
     matchData.gamePhase = nextPhase;
     await saveTournamentData();
     refreshSetupMessage(guild).catch(() => null);
 
-    const replyText = `**Game ${gamePhase}** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**\n\n_Game ${nextPhase} is starting._`;
-    await ctx.reply(replyText);
-
-    await ctx.channel.send(cards.gameCard({
+    await safely('reply with the result', () => ctx.reply(`${resultLine}\n\n_Game ${nextPhase} is starting._`));
+    await safely('post the next game card', () => ctx.channel.send(cards.gameCard({
       round: tournament.currentRound, matchNumber: matchData.matchNumber, gameIndex: nextPhase,
       games: getMatchGames(matchData), bridgeEnabled: bridgeClient.enabled,
-    }));
-  } else {
-    moveMatchResultsToHistory(matchData);
+    })));
+    return;
+  }
 
-    tournament.activeMatches = tournament.activeMatches.filter(m => m.threadId !== matchData.threadId);
-    tournament.currentRoundIndex++;
+  moveMatchResultsToHistory(matchData);
+  tournament.activeMatches = tournament.activeMatches.filter(m => m.threadId !== matchData.threadId);
+  tournament.currentRoundIndex++;
+  const remainingActive = tournament.activeMatches.length;
+  const roundComplete = remainingActive === 0;
+  if (roundComplete) {
+    clearRoundTimers();
+    tournament.currentRound++;
+    tournament.currentRoundIndex = 0;
+  }
+  await saveTournamentData();
+  refreshSetupMessage(guild).catch(() => null);
 
-    const remainingActive = tournament.activeMatches.length;
-    const roundComplete = remainingActive === 0;
+  const status = roundComplete ? 'All matches complete — round advancing.' : `${remainingActive} match(es) still active this round.`;
+  await safely('reply with the result', () => ctx.reply(`${resultLine}\n${status}\n\n_Need to correct a result? Visit the tournament website and log in as admin._`));
 
-    let replyText = `**Game ${gamePhase}** result logged: **${winnerLabel}** won (${howStr}).\nWin: **+${winPoints} pts** · Lose: **${losePoints > 0 ? '+' : ''}${losePoints} pts**`;
-    if (roundComplete) replyText += '\nAll matches complete — round advancing.';
-    else replyText += `\n${remainingActive} match(es) still active this round.`;
-    replyText += `\n\n_Need to correct a result? Visit the tournament website and log in as admin._`;
+  if (roundComplete && tournament.currentRound <= tournament.rounds.length) {
+    allocateRound(guild).catch(e => console.error('Auto-allocation failed:', e.message));
+  }
+}
 
-    await ctx.reply(replyText);
-
-    await saveTournamentData();
-    refreshSetupMessage(guild).catch(() => null);
-
-    if (roundComplete) {
-      clearRoundTimers();
-      tournament.currentRound++;
-      tournament.currentRoundIndex = 0;
-      await saveTournamentData();
-      if (tournament.currentRound <= tournament.rounds.length) {
-        allocateRound(guild).catch(e => console.error('Auto-allocation failed:', e.message));
-      }
-    }
+// Run a Discord call whose failure shouldn't stop what comes after it.
+async function safely(what, fn) {
+  try {
+    return await fn();
+  } catch (error) {
+    console.error(`[discord] Could not ${what}:`, error.message);
+    return null;
   }
 }
 
 client.on('error', (error) => {
   console.error('Client error:', error);
+});
+
+// Last line of defence: log and carry on rather than let one stray promise
+// stop the bot. Every state change is saved as it happens, so nothing is lost.
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (error) => {
+  console.error('[process] Uncaught exception:', error);
 });
 
 // A finished codenames.game game reported by the BGA bot. Logged straight away
@@ -1715,10 +1803,21 @@ function getSession(req) {
   return { sid, ...sess };
 }
 
+// Request bodies are small JSON; anything over 64 KB is refused.
+const MAX_BODY_BYTES = 64 * 1024;
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on('data', c => chunks.push(c));
+    let size = 0;
+    req.on('data', c => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        reject(Object.assign(new Error('request body too large'), { tooLarge: true }));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
     req.on('end', () => resolve(Buffer.concat(chunks).toString()));
     req.on('error', reject);
   });
@@ -1823,6 +1922,13 @@ function getGamesPlayedMap() {
 }
 
 function buildWebData() {
+  const totals = playerTotals();
+  const standings = currentStandings(totals);
+  const left = {};
+  for (const [id, info] of Object.entries(tournament.leftPlayers)) {
+    const t = totals.get(id) || { points: 0, games: 0 };
+    left[id] = { ...info, score: t.points, games: t.games, ppg: t.games ? t.points / t.games : 0 };
+  }
   return {
     started: tournament.started,
     currentRound: tournament.currentRound,
@@ -1830,12 +1936,15 @@ function buildWebData() {
     tournamentStartedAt: tournament.tournamentStartedAt,
     roundStartedAt: tournament.roundStartedAt,
     playerNames: tournament.playerNames,
-    scores: Array.from(tournament.scores.entries()).sort((a, b) => b[1] - a[1]),
+    playerCount: tournament.players.size,
+    // Ranked by points per game (see src/scoring.js).
+    standings,
+    scores: standings.map(r => [r.id, r.points]), // older shape, kept for anything still reading it
     gamesPlayed: getGamesPlayedMap(),
     rounds: tournament.rounds,
     history: tournament.history,
     activeMatches: tournament.activeMatches,
-    leftPlayers: tournament.leftPlayers,
+    leftPlayers: left,
     pendingRemoval: tournament.pendingRemoval !== null,
     signupsReopened: tournament.signupsReopened,
     roundDeadline: tournament.roundDeadline,
@@ -1876,6 +1985,7 @@ const HTML_SECURITY_HEADERS = {
 };
 
 const WEB_PORT = parseInt(process.env.WEB_PORT) || 80;
+let startingTournament = false; // set while the start button's schedule is being planned
 
 // ── HTTP request handler ───────────────────────────────────────────────────
 async function handleHttpRequest(req, res) {
@@ -1894,7 +2004,7 @@ async function handleHttpRequest(req, res) {
         return sendJson(res, 401, { error: 'unauthorized' });
       }
       let body;
-      try { body = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: 'body must be JSON' }); }
+      try { body = JSON.parse(await readBody(req)); } catch (e) { return sendJson(res, e.tooLarge ? 413 : 400, { error: e.tooLarge ? 'body too large' : 'body must be JSON' }); }
       try {
         const result = await handleBridgeResult(body);
         return sendJson(res, result.status, result.data);
@@ -1902,6 +2012,13 @@ async function handleHttpRequest(req, res) {
         console.error('[bridge] Failed to handle result:', error);
         return sendJson(res, 500, { error: 'failed to record the result' });
       }
+    }
+
+    // ── Health check (Docker HEALTHCHECK) ────────────────────────────────────
+    if (pathname === '/healthz' && method === 'GET') {
+      const discordReady = client.isReady();
+      const ok = discordReady && !lastSaveError;
+      return sendJson(res, ok ? 200 : 503, { ok, discord: discordReady ? 'ready' : 'connecting', saveError: lastSaveError, uptimeSeconds: Math.round(process.uptime()) });
     }
 
     // ── Public tournament data ───────────────────────────────────────────────
@@ -2046,15 +2163,23 @@ async function handleHttpRequest(req, res) {
 
       // ── start ──────────────────────────────────────────────────────────────
       if (action === 'start') {
-        if (tournament.started) { sendJson(res, 400, { error: 'Tournament has already started.' }); return; }
+        if (tournament.started || startingTournament) { sendJson(res, 400, { error: 'Tournament has already started.' }); return; }
         if (tournament.players.size < 4) { sendJson(res, 400, { error: 'Need at least 4 players to start.' }); return; }
 
+        // Plan first (a few seconds, off the main thread), then switch over in one go.
+        startingTournament = true;
+        let rounds;
+        try {
+          rounds = await scheduler.generateScheduleAsync(Array.from(tournament.players));
+        } finally {
+          startingTournament = false;
+        }
         tournament.currentRound = 1;
         tournament.currentRoundIndex = 0;
         tournament.started = true;
         tournament.tournamentStartedAt = new Date().toISOString();
-        tournament.scores = new Map([...tournament.players].map(id => [id, 0]));
-        tournament.rounds = scheduler.generateSchedule(Array.from(tournament.players));
+        tournament.scoreAdjustments = [];
+        tournament.rounds = rounds;
 
         // Snapshot display names
         tournament.playerNames = {};
@@ -2108,8 +2233,7 @@ async function handleHttpRequest(req, res) {
           currentRound: 0,
           currentRoundIndex: 0,
           playedGroupings: new Set(),
-          scores: new Map(),
-          currentGrouping: null,
+          scoreAdjustments: [],
           activeMatches: [],
           roundResults: [],
           roundDeadline: null,
@@ -2142,9 +2266,9 @@ async function handleHttpRequest(req, res) {
         const { userId, delta } = data || {};
         const d = parseInt(delta);
         if (!userId || isNaN(d)) { sendJson(res, 400, { error: 'Provide userId (string) and delta (integer).' }); return; }
-        if (!tournament.scores.has(userId)) { sendJson(res, 404, { error: `No score found for player ID "${userId}".` }); return; }
-        const oldScore = tournament.scores.get(userId);
-        tournament.scores.set(userId, oldScore + d);
+        if (!tournament.players.has(userId) && !tournament.leftPlayers[userId]) { sendJson(res, 404, { error: `No player with ID "${userId}".` }); return; }
+        const oldScore = (playerTotals().get(userId) || { points: 0 }).points;
+        tournament.scoreAdjustments.push({ userId, delta: d, reason: 'Admin adjustment', at: new Date().toISOString(), by: session.globalName || session.username });
         await saveTournamentData();
         const guild2 = client.guilds.cache.get(process.env.GUILD_ID);
         if (guild2) refreshSetupMessage(guild2).catch(() => null);
@@ -2222,30 +2346,8 @@ async function handleHttpRequest(req, res) {
           grouping = getGroupingForMatchGame(activeMatchForGame, gNum);
         }
 
-        const bluePlayers = [grouping.blue.spymaster, grouping.blue.guesser];
-        const redPlayers  = [grouping.red.spymaster,  grouping.red.guesser];
-
-        // Reverse old score impact
-        if (oldWinner === 'blue') {
-          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldWinPoints));
-          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldLosePoints));
-        } else {
-          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldWinPoints));
-          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldLosePoints));
-        }
-
-        // Compute new points using same formula as processGameResult
-        const newWinPoints = 3;
-        const newLosePoints = isAssassin ? -1 : (rCards <= 3 ? 1 : 0);
-
-        // Apply new score impact
-        if (winner === 'blue') {
-          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + newWinPoints));
-          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) + newLosePoints));
-        } else {
-          redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) + newWinPoints));
-          bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) + newLosePoints));
-        }
+        // Scores are worked out from the stored results, so updating them is enough.
+        const { winPoints: newWinPoints, losePoints: newLosePoints } = scoring.pointsFor({ assassin: isAssassin, remainingCards: rCards });
 
         // Update history entry if present
         if (histIdx !== -1) {
@@ -2378,18 +2480,14 @@ async function handleHttpRequest(req, res) {
           grouping = getGroupingForMatchGame(activeMatchForGame, gNum); threadId = activeMatchForGame.threadId;
         }
 
-        const bluePlayers = [grouping.blue.spymaster, grouping.blue.guesser];
-        const redPlayers  = [grouping.red.spymaster,  grouping.red.guesser];
-
-        // Optionally reverse score impact
-        if (shouldAdjustScore) {
-          if (oldWinner === 'blue') {
-            bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldWinPoints));
-            redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldLosePoints));
-          } else {
-            redPlayers.forEach(id =>  tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldWinPoints));
-            bluePlayers.forEach(id => tournament.scores.set(id, (tournament.scores.get(id) || 0) - oldLosePoints));
-          }
+        // Scores come from the stored results, so removing the game reverses its
+        // points. To keep them instead, record them as adjustments.
+        if (!shouldAdjustScore) {
+          const at = new Date().toISOString();
+          const by = session.globalName || session.username;
+          const loser = oldWinner === 'blue' ? 'red' : 'blue';
+          for (const id of [grouping[oldWinner].spymaster, grouping[oldWinner].guesser]) tournament.scoreAdjustments.push({ userId: id, delta: oldWinPoints, reason: `Kept points from deleted R${rNum}M${mNum}G${gNum}`, at, by });
+          for (const id of [grouping[loser].spymaster, grouping[loser].guesser]) tournament.scoreAdjustments.push({ userId: id, delta: oldLosePoints, reason: `Kept points from deleted R${rNum}M${mNum}G${gNum}`, at, by });
         }
 
         // Remove from history or reset active match in-progress result
@@ -2508,4 +2606,16 @@ http.createServer((req, res) => {
 }).listen(WEB_PORT, () => console.log(`[web] Dashboard running on port ${WEB_PORT}`));
 
 console.log('Attempting to login with token:', process.env.BOT_TOKEN ? 'Token found' : 'Token missing');
-client.login(process.env.BOT_TOKEN);
+client.login(process.env.BOT_TOKEN).catch(error => {
+  // Without Discord the bot can't do anything useful: exit so the restart policy (or a person) sees it.
+  console.error('[startup] Could not log in to Discord:', error.message);
+  process.exit(1);
+});
+
+// `docker stop` sends SIGTERM: let the last save finish, then exit.
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    console.log(`[shutdown] ${signal} received, saving and exiting…`);
+    Promise.race([saveChain, new Promise(r => setTimeout(r, 5000))]).finally(() => process.exit(0));
+  });
+}

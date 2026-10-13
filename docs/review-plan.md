@@ -14,28 +14,28 @@ Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · �
 Read fresh: `src/index.js` (2,511 lines), `scheduler.js`, `cards.js`, `codenamesBridge.js`, the dashboard and Docker. The phases further down are the first review, kept for history.
 
 ### A. Reliability: fix first
-- [ ] 🔴 **One failed Discord call crashes the whole bot.** The `interactionCreate` handler is an `async` listener with no try/catch.
+- [x] 🔴 **One failed Discord call crashes the whole bot.** The `interactionCreate` handler is an `async` listener with no try/catch.
       There is no `unhandledRejection` handler either, so any rejection kills Node 22 (checked).
       A common trigger is "Unknown interaction", from a reply sent after Discord's 3-second window.
       Fix: wrap every handler (log it, plus an ephemeral "something went wrong"), and add process-level handlers that log rather than exit.
-- [ ] 🔴 **On a match's last game the bot replies before it saves.** `recordGameResult` removes the match and writes history, *then* replies, and only then saves and advances the round.
+- [x] 🔴 **On a match's last game the bot replies before it saves.** `recordGameResult` removes the match and writes history, *then* replies, and only then saves and advances the round.
       If the reply throws, nothing is saved and the round never advances. After a restart, `allocateRound` can even start the same round again.
       Fix: change state, save and advance first, then reply. A failed reply should only be logged.
       The same applies to the next-game card: a failed reply currently stops it being posted.
-- [ ] 🔴 **The scheduler freezes the bot for 1.7–4 s** (14 players: 1.7 s measured; the time budget allows 4 s).
+- [x] 🔴 **The scheduler freezes the bot for 1.7–4 s** (14 players: 1.7 s measured; the time budget allows 4 s).
       It runs on start, Fix Matchups, a player leaving and signups closing. Clicks from other players in that window can miss the 3-second limit and then hit the crash above.
       Fix: run `generateSchedule` in a `worker_thread`.
-- [ ] 🔴 **A player who leaves mid-round is put back into the standings.** Their match continues, and `recordGameResult` adds their points back into `scores`. They then appear both in the standings and under "Left".
+- [x] 🔴 **A player who leaves mid-round is put back into the standings.** Their match continues, and `recordGameResult` adds their points back into `scores`. They then appear both in the standings and under "Left".
       **Re-joining** through reopened signups resets their points to 0, while their games stay in history.
       An admin override or delete on their games does the same thing.
       Root fix: work scores out from history, plus the games logged in active matches, plus a log of manual adjustments, instead of keeping a separate running total. This also gives a free "recompute / audit" check.
-- [ ] 🔴 **The Docker image includes `.env`.** There is no `.dockerignore`, so `COPY . .` copies `.env` (bot token, OAuth secret), `data/` and the host's `node_modules` (overwriting the image's own) into the image.
+- [x] 🔴 **The Docker image includes `.env`.** There is no `.dockerignore`, so `COPY . .` copies `.env` (bot token, OAuth secret), `data/` and the host's `node_modules` (overwriting the image's own) into the image.
       Fix: add `.dockerignore`, move to `node:22-alpine`, use `npm ci --omit=dev`, run as a non-root user, and add a `HEALTHCHECK`.
-- [ ] 🔴 `readBody` has no size limit (bridge and admin endpoints). Cap it at 64 KB.
-- [ ] 🔴 A `ROUND_TIMEOUT_DAYS` above ~24.8 overflows `setTimeout`, so the expiry notice fires straight away. Clamp it, or re-arm the timer in steps.
+- [x] 🔴 `readBody` has no size limit (bridge and admin endpoints). Cap it at 64 KB.
+- [x] 🔴 A `ROUND_TIMEOUT_DAYS` above ~24.8 overflows `setTimeout`, so the expiry notice fires straight away. Clamp it, or re-arm the timer in steps.
 
-### B. Deciding a real winner ❓
-- [ ] ❓ **Ranking rule.** With sit-outs, final game counts differ between players, so total points alone isn't fair.
+### B. Deciding a real winner — decided: **points per game** (ties: total points, wins, fewest assassins)
+- [x] ❓ **Ranking rule.** With sit-outs, final game counts differ between players, so total points alone isn't fair.
       Decide: rank by points per game, total points, or total points with equal games guaranteed; and the tie-breakers (head-to-head, wins, fewer assassins).
       Then show the same rule on the final Discord card, the dashboard and the README.
 - [ ] The scheduler could guarantee everyone ends on the same number of matches: let the last few rounds fill gaps for players behind, even when that adds no new combinations.
@@ -49,7 +49,7 @@ Read fresh: `src/index.js` (2,511 lines), `scheduler.js`, `cards.js`, `codenames
 ### D. Security and ops (still open from the first review)
 - [ ] 🧠 A CSRF token on admin POSTs (an HMAC of the session, as the BGA bot does). Today it relies on SameSite=Lax plus an Origin check that only runs when `WEB_URL` is set.
 - [ ] 🧠 Persist dashboard sessions, so a restart doesn't log admins out.
-- [ ] 🧠 `GET /healthz`, plus a `LOG_LEVEL` setting.
+- [x] 🧠 `GET /healthz`, plus a `LOG_LEVEL` setting.
 - [ ] 🧠 **CI:** there is still no workflow. Add `.github/workflows/ci.yml` (Node 22, `npm ci`, `npm test`, ESLint).
 
 ### E. Structure and leftovers

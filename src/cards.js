@@ -72,18 +72,16 @@ function lineup(grouping) {
 
 // ── Tournament (sign-up / live scoreboard / final) ─────────────────────────
 
-function standingsText(standings, gamesPlayed, budget) {
-  let rank = 0;
-  let lastPts = null;
+// standings: ranked rows [{ id, rank, points, games, ppg }] (see src/scoring.js).
+function standingsText(standings, budget) {
   const lines = [];
   let used = 0;
   for (let i = 0; i < standings.length; i++) {
-    const [id, pts] = standings[i];
-    if (pts !== lastPts) { rank = i + 1; lastPts = pts; }
-    const games = gamesPlayed[id] || 0;
-    const badge = pts > 0 && MEDALS[rank - 1] ? MEDALS[rank - 1] : `\`${String(rank).padStart(2)}\``;
-    const avg = games ? ` · ${(pts / games).toFixed(2)}/game` : '';
-    const line = `${badge} ${mention(id)} **${pts}** pts · ${plural(games, 'game')}${avg}`;
+    const r = standings[i];
+    const badge = r.games > 0 && MEDALS[r.rank - 1] ? MEDALS[r.rank - 1] : `\`${String(r.rank).padStart(2)}\``;
+    const line = r.games > 0
+      ? `${badge} ${mention(r.id)} **${r.ppg.toFixed(2)}**/game · ${r.points} pts in ${plural(r.games, 'game')}`
+      : `${badge} ${mention(r.id)} · no games yet`;
     if (used + line.length + 1 > budget) {
       lines.push(`-# …and ${standings.length - i} more on the website`);
       break;
@@ -96,7 +94,7 @@ function standingsText(standings, gamesPlayed, budget) {
 
 // state: { phase: 'signup'|'live'|'complete', players, prediction, round, totalRounds,
 //          matchesDone, matchesInRound, deadlineMs, signupsOpen, activeMatches:
-//          [{ matchNumber, game, gamesPlanned, players, threadUrl }], standings, gamesPlayed }
+//          [{ matchNumber, game, gamesPlanned, players, threadUrl }], standings }
 function tournamentCard(state, { webUrl }) {
   const c = new ContainerBuilder();
   const website = linkButton('Website', webUrl);
@@ -120,9 +118,9 @@ function tournamentCard(state, { webUrl }) {
 
   if (state.phase === 'complete') {
     c.setAccentColor(COLORS.complete);
-    text(c, '## 🏆 Tournament complete!\nEvery pair has teamed up against every other player. Final standings:');
+    text(c, '## 🏆 Tournament complete!\nEvery pair has teamed up against every other player. Final standings, ranked by points per game:');
     divider(c);
-    text(c, standingsText(state.standings, state.gamesPlayed, TEXT_BUDGET - 300));
+    text(c, standingsText(state.standings, TEXT_BUDGET - 300));
     c.addActionRowComponents(new ActionRowBuilder().addComponents(website));
     return payload([c]);
   }
@@ -152,7 +150,7 @@ function tournamentCard(state, { webUrl }) {
     }
   }
   divider(c);
-  text(c, `### 🏅 Standings\n${standingsText(state.standings, state.gamesPlayed, Math.max(500, budget))}`);
+  text(c, `### 🏅 Standings\n-# Ranked by points per game\n${standingsText(state.standings, Math.max(500, budget))}`);
   c.addActionRowComponents(new ActionRowBuilder().addComponents(
     website,
     new ButtonBuilder().setCustomId('leave_tournament').setLabel('Leave tournament').setStyle(ButtonStyle.Danger),
