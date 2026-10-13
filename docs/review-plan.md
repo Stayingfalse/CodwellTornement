@@ -1,11 +1,67 @@
 # CodwellTornement — review & improvement plan
 
-Review of `main` at `53b7e8d` (after the BGA bridge work). Status: **Phase 0 done**; Discord admin dead code removed; Components V2 and the dashboard rebuild done. The rest is still to do.
+First review: `main` at `53b7e8d`. Second review: `main` at `e32e80a` — see **Review 2** below for what's next.
 
 Scope: `src/index.js` (3,533 lines), `src/codenamesBridge.js`, `public/index.html` (2,942 lines),
 tests, Docker/CI. The BoardGameArena bot was read for patterns to borrow, not reviewed.
 
 Legend: 🔴 bug / risk · 🧹 dead code · ⚡ efficiency · 🎨 UI/UX · 🧠 BGA-bot learning · ❓ needs a decision
+
+---
+
+## Review 2 — `main` at `e32e80a` (after the scheduler, dashboard and Components V2 work)
+
+Read fresh: `src/index.js` (2,511 lines), `scheduler.js`, `cards.js`, `codenamesBridge.js`, the dashboard and Docker. The phases further down are the first review, kept for history.
+
+### A. Reliability: fix first
+- [ ] 🔴 **One failed Discord call crashes the whole bot.** The `interactionCreate` handler is an `async` listener with no try/catch.
+      There is no `unhandledRejection` handler either, so any rejection kills Node 22 (checked).
+      A common trigger is "Unknown interaction", from a reply sent after Discord's 3-second window.
+      Fix: wrap every handler (log it, plus an ephemeral "something went wrong"), and add process-level handlers that log rather than exit.
+- [ ] 🔴 **On a match's last game the bot replies before it saves.** `recordGameResult` removes the match and writes history, *then* replies, and only then saves and advances the round.
+      If the reply throws, nothing is saved and the round never advances. After a restart, `allocateRound` can even start the same round again.
+      Fix: change state, save and advance first, then reply. A failed reply should only be logged.
+      The same applies to the next-game card: a failed reply currently stops it being posted.
+- [ ] 🔴 **The scheduler freezes the bot for 1.7–4 s** (14 players: 1.7 s measured; the time budget allows 4 s).
+      It runs on start, Fix Matchups, a player leaving and signups closing. Clicks from other players in that window can miss the 3-second limit and then hit the crash above.
+      Fix: run `generateSchedule` in a `worker_thread`.
+- [ ] 🔴 **A player who leaves mid-round is put back into the standings.** Their match continues, and `recordGameResult` adds their points back into `scores`. They then appear both in the standings and under "Left".
+      **Re-joining** through reopened signups resets their points to 0, while their games stay in history.
+      An admin override or delete on their games does the same thing.
+      Root fix: work scores out from history, plus the games logged in active matches, plus a log of manual adjustments, instead of keeping a separate running total. This also gives a free "recompute / audit" check.
+- [ ] 🔴 **The Docker image includes `.env`.** There is no `.dockerignore`, so `COPY . .` copies `.env` (bot token, OAuth secret), `data/` and the host's `node_modules` (overwriting the image's own) into the image.
+      Fix: add `.dockerignore`, move to `node:22-alpine`, use `npm ci --omit=dev`, run as a non-root user, and add a `HEALTHCHECK`.
+- [ ] 🔴 `readBody` has no size limit (bridge and admin endpoints). Cap it at 64 KB.
+- [ ] 🔴 A `ROUND_TIMEOUT_DAYS` above ~24.8 overflows `setTimeout`, so the expiry notice fires straight away. Clamp it, or re-arm the timer in steps.
+
+### B. Deciding a real winner ❓
+- [ ] ❓ **Ranking rule.** With sit-outs, final game counts differ between players, so total points alone isn't fair.
+      Decide: rank by points per game, total points, or total points with equal games guaranteed; and the tie-breakers (head-to-head, wins, fewer assassins).
+      Then show the same rule on the final Discord card, the dashboard and the README.
+- [ ] The scheduler could guarantee everyone ends on the same number of matches: let the last few rounds fill gaps for players behind, even when that adds no new combinations.
+
+### C. Efficiency
+- [ ] ⚡ **`/api` sends everything on every refresh, and the dashboard now refreshes every minute.** That includes all of history with the clue-by-clue `detail` for each bridged game (~3–5 KB per game), so roughly 2–3 MB per open tab per minute once a few hundred games are played.
+      Fix: an `ETag`, so unchanged refreshes return 304; gzip; move `detail` to `/api/stats`, loaded only on the Stats tab; and stop sending `activeMatches` internals (`bridgeEvents`, `pendingBridgeResults`).
+- [ ] ⚡ The bot still asks for the privileged **MessageContent** intent and `GuildMessages`, but there is no message handler. Drop both.
+- [ ] ⚡ Starting a round deletes up to 100 recent messages in the tournament channel, people's chat included. Track the bot's own message IDs and delete only those.
+
+### D. Security and ops (still open from the first review)
+- [ ] 🧠 A CSRF token on admin POSTs (an HMAC of the session, as the BGA bot does). Today it relies on SameSite=Lax plus an Origin check that only runs when `WEB_URL` is set.
+- [ ] 🧠 Persist dashboard sessions, so a restart doesn't log admins out.
+- [ ] 🧠 `GET /healthz`, plus a `LOG_LEVEL` setting.
+- [ ] 🧠 **CI:** there is still no workflow. Add `.github/workflows/ci.yml` (Node 22, `npm ci`, `npm test`, ESLint).
+
+### E. Structure and leftovers
+- [ ] 🧹 `index.js` is still 2.5k lines. Next split: `state.js` (load/save/migrate plus derived scores from A4), `discord/handlers.js`, `web/server.js`.
+      Once state is a module, add tests for leaving, re-joining, overrides and force-end.
+- [ ] 🧹 Legacy fields and wrappers: `currentRoundIndex`, `playedGroupings`, `currentGrouping`, `game1Result` (migrate once), `startThreadKeepAlive`, `processGameResult`. The reset object is still written out by hand.
+- [ ] 🧹 `.github/copilot-instructions.md` is scaffold boilerplate.
+
+### F. Ideas (product)
+- [ ] 🎨 `/tournament me`: an ephemeral "your current match, game N, thread link, your rank".
+- [ ] 🎨 A per-player page on the dashboard: partners and opponents covered so far and still to come, plus their results.
+- [ ] 🎨 Estimated finish date from the average round length (rounds × days per round).
 
 ---
 
