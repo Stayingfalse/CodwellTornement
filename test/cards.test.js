@@ -31,8 +31,8 @@ function render(p) {
 
 const live = (players, active) => ({
   phase: 'live', round: 3, totalRounds: 34, matchesInRound: active, matchesDone: 0, deadlineMs: Date.now() + 864e5,
-  signupsOpen: false, gamesPlayed: Object.fromEntries(players.map(p => [p, 8])),
-  standings: players.map((p, i) => [p, 40 - i]),
+  signupsOpen: false,
+  standings: players.map((p, i) => ({ id: p, rank: i + 1, points: 40 - i, games: 8, ppg: (40 - i) / 8 })),
   activeMatches: Array.from({ length: active }, (_, i) => ({ matchNumber: i + 1, game: 2, gamesPlanned: 6, players: players.slice(i * 4, i * 4 + 4), threadUrl: `https://discord.com/channels/1/${i}` })),
 });
 
@@ -53,7 +53,7 @@ test('live card fits Discord limits with a large tournament', () => {
 
 test('complete card', () => {
   const players = ids(14);
-  const r = render(cards.tournamentCard({ phase: 'complete', standings: players.map((p, i) => [p, 50 - i]), gamesPlayed: {} }, { webUrl: 'https://x.test' }));
+  const r = render(cards.tournamentCard({ phase: 'complete', standings: players.map((p, i) => ({ id: p, rank: i + 1, points: 50 - i, games: i ? 10 : 0, ppg: i ? (50 - i) / 10 : 0 })) }, { webUrl: 'https://x.test' }));
   assert.match(r.text, /Tournament complete/);
 });
 

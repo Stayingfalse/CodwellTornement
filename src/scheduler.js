@@ -444,6 +444,29 @@ function generateSchedule(players, { playedGroupings = [], sitOutCounts = null, 
   return rounds;
 }
 
+// generateSchedule on a worker thread, so the bot keeps answering Discord
+// while it runs. Falls back to running here if a worker can't be started.
+function generateScheduleAsync(players, options = {}) {
+  const { Worker } = require('worker_threads');
+  return new Promise((resolve, reject) => {
+    let worker;
+    try {
+      worker = new Worker(require('path').join(__dirname, 'scheduleWorker.js'), { workerData: { players, options } });
+    } catch (error) {
+      console.warn('[scheduler] Worker unavailable, planning on the main thread:', error.message);
+      try { resolve(generateSchedule(players, options)); } catch (e) { reject(e); }
+      return;
+    }
+    let settled = false;
+    worker.once('message', msg => {
+      settled = true;
+      if (msg.ok) resolve(msg.rounds); else reject(new Error(msg.error));
+    });
+    worker.once('error', error => { if (!settled) { settled = true; reject(error); } });
+    worker.once('exit', code => { if (!settled) { settled = true; reject(new Error(`scheduler worker exited with code ${code}`)); } });
+  });
+}
+
 // Size of a fresh schedule at best, for the sign-up embed: every set of three
 // players must share a group, a group holds 4 such sets, and a round holds
 // floor(n/4) groups. Real schedules come out somewhat longer.
@@ -457,6 +480,7 @@ function predictSchedule(playerCount) {
 
 module.exports = {
   generateSchedule,
+  generateScheduleAsync,
   predictSchedule,
   buildPlayedState,
   recordGame,

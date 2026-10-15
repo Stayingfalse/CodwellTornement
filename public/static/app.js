@@ -91,7 +91,7 @@ function renderBrandSub() {
 function renderStatusStrip() {
   const el = document.getElementById('status-strip');
   if (!D || !D.started) {
-    el.innerHTML = D ? `<div class="stat"><span class="stat-label">Status</span><span class="stat-value">Waiting to start</span><span class="stat-sub">${plural((D.scores || []).length, 'player')} signed up</span></div>` : '';
+    el.innerHTML = D ? `<div class="stat"><span class="stat-label">Status</span><span class="stat-value">Waiting to start</span><span class="stat-sub">${plural(D.playerCount || 0, 'player')} signed up</span></div>` : '';
     return;
   }
   const plannedGames = D.rounds.reduce((sum, round) => sum + round.reduce((s, m) => s + matchGames(m).length, 0), 0);
@@ -112,47 +112,41 @@ function renderStatusStrip() {
     const cls = ms < 0 ? 'is-bad' : ms < 2 * 864e5 ? 'is-warn' : '';
     stats.push(`<div class="stat ${cls}"><span class="stat-label">Round deadline</span><span class="stat-value">${ms < 0 ? 'Passed' : fmtDuration(ms)}</span><span class="stat-sub">${fmtDate(new Date(D.roundDeadline).toISOString(), true)}</span></div>`);
   }
-  stats.push(`<div class="stat"><span class="stat-label">Players</span><span class="stat-value">${D.scores.length}</span><span class="stat-sub">${left ? `${left} left` : '&nbsp;'}</span></div>`);
+  stats.push(`<div class="stat"><span class="stat-label">Players</span><span class="stat-value">${D.playerCount}</span><span class="stat-sub">${left ? `${left} left` : '&nbsp;'}</span></div>`);
   if (D.signupsReopened) stats.push('<div class="stat is-info"><span class="stat-label">Signups</span><span class="stat-value">Open</span><span class="stat-sub">rounds paused</span></div>');
   if (D.pendingRemoval) stats.push('<div class="stat is-warn"><span class="stat-label">Leave request</span><span class="stat-value">Pending</span><span class="stat-sub">rounds paused</span></div>');
   el.innerHTML = stats.join('');
 }
 
 // ── Standings ──────────────────────────────────────────────────────────────
+// Ranked by the server: points per game, then points, wins, fewest assassins.
 function renderScoreboard() {
   const el = document.getElementById('scoreboard');
-  if (!D || !D.started || D.scores.length === 0) {
+  const rows = (D && D.standings) || [];
+  if (!D || !D.started || rows.length === 0) {
     el.innerHTML = '<li class="empty-row">No scores yet</li>';
     return;
   }
   const me = myId();
   const medals = { 1: '🥇', 2: '🥈', 3: '🥉' };
-  let rank = 0;
-  let lastPts = null;
-  let html = D.scores.map(([id, pts], i) => {
-    if (pts !== lastPts) { rank = i + 1; lastPts = pts; }
-    const games = (D.gamesPlayed && D.gamesPlayed[id]) || 0;
-    const avg = games ? (pts / games).toFixed(2) : '—';
+  let html = rows.map(r => {
     const ptsCell = isAdmin()
-      ? `<button class="pts editable" data-userid="${esc(id)}" data-pts="${pts}" title="Edit score">${pts}</button>`
-      : `<span class="pts">${pts}</span>`;
-    return `<li class="standing${id === me ? ' is-me' : ''}">
-        <span class="rank">${(pts > 0 && medals[rank]) || rank}</span>
-        <span class="name" title="${esc(displayName(id))}">${esc(displayName(id))}</span>
-        ${ptsCell}<span class="games">${games}</span><span class="avg">${avg}</span>
+      ? `<button class="pts editable" data-userid="${esc(r.id)}" data-pts="${r.points}" title="Edit points">${r.points}</button>`
+      : `<span class="pts">${r.points}</span>`;
+    return `<li class="standing${r.id === me ? ' is-me' : ''}">
+        <span class="rank">${(r.games > 0 && medals[r.rank]) || r.rank}</span>
+        <span class="name" title="${esc(displayName(r.id))}">${esc(displayName(r.id))}</span>
+        <span class="avg">${r.games ? r.ppg.toFixed(2) : '—'}</span>${ptsCell}<span class="games">${r.games}</span>
       </li>`;
   }).join('');
 
   const leftEntries = D.leftPlayers ? Object.entries(D.leftPlayers) : [];
   if (leftEntries.length) {
     html += '<li class="standings-divider">Left the tournament</li>';
-    html += leftEntries.map(([id, info]) => {
-      const games = (D.gamesPlayed && D.gamesPlayed[id]) || 0;
-      return `<li class="standing is-left">
+    html += leftEntries.map(([id, info]) => `<li class="standing is-left">
           <span class="rank">—</span><span class="name">${esc(info.displayName || displayName(id))}</span>
-          <span class="pts">${info.score || 0}</span><span class="games">${games}</span><span class="avg">${games ? ((info.score || 0) / games).toFixed(2) : '—'}</span>
-        </li>`;
-    }).join('');
+          <span class="avg">${info.games ? info.ppg.toFixed(2) : '—'}</span><span class="pts">${info.score || 0}</span><span class="games">${info.games || 0}</span>
+        </li>`).join('');
   }
   el.innerHTML = html;
   el.querySelectorAll('.pts.editable').forEach(btn => btn.addEventListener('click', () => startScoreEdit(btn)));
@@ -305,12 +299,12 @@ function renderCurrentRound() {
   const el = document.getElementById('current-round');
   if (!D) { el.innerHTML = '<div class="empty"><p>Loading…</p></div>'; return; }
   if (!D.started || D.rounds.length === 0) {
-    el.innerHTML = `<div class="empty"><span aria-hidden="true">🕵️</span><h2>Not started yet</h2><p>${plural(D.scores.length, 'player')} signed up. Sign up with the button in Discord.</p></div>`;
+    el.innerHTML = `<div class="empty"><span aria-hidden="true">🕵️</span><h2>Not started yet</h2><p>${plural(D.playerCount || 0, 'player')} signed up. Sign up with the button in Discord.</p></div>`;
     return;
   }
   if (D.currentRound > D.totalRounds) {
-    const top = D.scores[0];
-    el.innerHTML = `<div class="empty"><span aria-hidden="true">🏆</span><h2>Tournament complete</h2><p>${top ? `${esc(displayName(top[0]))} finished top with ${top[1]} points.` : ''}</p></div>`;
+    const top = (D.standings || [])[0];
+    el.innerHTML = `<div class="empty"><span aria-hidden="true">🏆</span><h2>Tournament complete</h2><p>${top ? `${esc(displayName(top.id))} wins with ${top.ppg.toFixed(2)} points per game (${top.points} points in ${plural(top.games, 'game')}).` : ''}</p></div>`;
     return;
   }
   const n = D.currentRound;

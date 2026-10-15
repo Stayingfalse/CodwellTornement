@@ -282,7 +282,7 @@ small { font-size: 0.8em; color: var(--text-faint); font-weight: 500; }
 
 /* ── Standings ────────────────────────────────────────────────────────── */
 .standings-head, .standing {
-  display: grid; grid-template-columns: 26px minmax(0, 1fr) 40px 44px 40px; align-items: center; gap: 6px;
+  display: grid; grid-template-columns: 26px minmax(0, 1fr) 54px 36px 40px; align-items: center; gap: 6px;
 }
 .standings-head { padding: 6px 12px 4px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); font-weight: 600; }
 .standings-head span:nth-child(n+3) { text-align: right; }
@@ -294,8 +294,9 @@ small { font-size: 0.8em; color: var(--text-faint); font-weight: 500; }
 .standing.is-left { opacity: 0.55; }
 .rank { font-size: 12px; color: var(--text-faint); font-weight: 600; text-align: center; }
 .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pts { font-weight: 700; text-align: right; }
-.games, .avg { text-align: right; color: var(--text-dim); font-size: 12px; }
+.pts { text-align: right; color: var(--text-dim); font-size: 12px; }
+.avg { text-align: right; font-weight: 700; }
+.games { text-align: right; color: var(--text-dim); font-size: 12px; }
 button.pts { background: none; border: 0; padding: 0; cursor: pointer; border-bottom: 1px dashed var(--text-faint); justify-self: end; }
 .pts-input { width: 52px; height: 24px; padding: 0 4px; font: inherit; font-size: 12px; text-align: right; background: var(--surface-2); color: var(--text); border: 1px solid var(--accent); border-radius: 4px; }
 .standings-divider { padding: 8px 12px 2px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); border-top: 1px solid var(--border); margin-top: 6px; }

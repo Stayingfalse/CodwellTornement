@@ -1,0 +1,13 @@
+# Never bake secrets, local data or the host's node_modules into the image.
+.env
+.env.*
+!.env.example
+data/
+node_modules/
+npm-debug.log*
+.git/
+.github/
+.vscode/
+test/
+docs/
+*.md
