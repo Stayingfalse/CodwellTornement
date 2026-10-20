@@ -1719,16 +1719,17 @@ async function handleBridgeResult(body) {
 
     // A result held up on the way here (e.g. the BGA bot couldn't reach us) that
     // finished before the previous game was logged belongs to a game already played.
+    // Results for games already played are only logged here: players don't need to hear about them.
     const previous = gamePhase > 1 ? (matchData.phaseResults || {})[gamePhase - 1] : null;
     if (seatedGame === null && previous && codenamesBridge.finishedBefore(body.finished_at, previous.submittedAt)) {
       await saveTournamentData();
-      await thread.send({ content: `🕵️ codenames.game reported a game that finished before **Game ${gamePhase - 1}** was logged — ignoring it.` });
+      console.log(`[bridge] Ignoring ${body.event_id} in match ${matchData.matchNumber}: it finished before Game ${gamePhase - 1} was logged`);
       return { status: 200, data: { status: 'already_logged', game: gamePhase - 1 } };
     }
 
     if (seatedGame !== null && seatedGame < gamePhase) {
       await saveTournamentData();
-      await thread.send({ content: `🕵️ codenames.game reported a finished game with the **Game ${seatedGame}** line-up, which is already logged — ignoring it.` });
+      console.log(`[bridge] Ignoring ${body.event_id} in match ${matchData.matchNumber}: Game ${seatedGame} is already logged`);
       return { status: 200, data: { status: 'already_logged', game: seatedGame } };
     }
 
