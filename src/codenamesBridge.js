@@ -103,9 +103,10 @@ function createBridgeClient({ token, baseUrls, fetchImpl = globalThis.fetch, log
   return { enabled, putBinding, deleteBinding, getBinding, reconcile };
 }
 
-// Discord user IDs seated in one team/role of a result payload.
+// Discord user IDs seated in one team/role of a result payload. A player on two
+// devices fills two seats with the same ID; they count once.
 function seatedUsers(seats, team, role) {
-  return ((seats && seats[team] && seats[team][role]) || []).map(s => s && s.discord_user_id);
+  return [...new Set(((seats && seats[team] && seats[team][role]) || []).map(s => s && s.discord_user_id))];
 }
 
 // Did the room's seats exactly match this grouping (one spymaster and one

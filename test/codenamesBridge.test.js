@@ -73,6 +73,14 @@ test('finishedBefore compares a finished game with when the previous game was lo
   assert.equal(bridge.finishedBefore('2026-10-12T20:15:00+00:00', undefined), false);
 });
 
+test('seatsMatchGrouping counts a player on two devices once', () => {
+  const seats = seatsFor(GROUPING);
+  seats.blue.operatives.push(seat('2', 'p2 phone'));
+  assert.equal(bridge.seatsMatchGrouping(seats, GROUPING), true);
+  seats.blue.operatives.push({ player_id: '9', name: 'stranger', discord_user_id: null });
+  assert.equal(bridge.seatsMatchGrouping(seats, GROUPING), false);
+});
+
 test('findGameForSeats picks the game whose line-up the room used', () => {
   const groupingFor = idx => (idx === 1 ? GROUPING : SWAPPED);
   assert.equal(bridge.findGameForSeats(seatsFor(SWAPPED), 2, groupingFor), 2);
