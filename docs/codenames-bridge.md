@@ -116,4 +116,5 @@ Do the same in the BGA bot's repo. The containers then reach each other as
   `data/tournament.json` as `codenamesBindings`.
 - The BGA bot keeps each result until this bot answers with a 2xx, and resends
   after an outage. Each game has an `event_id`, so a result is never scored
-  twice.
+  twice. A result that turns up late, after the game was logged by hand, is
+  ignored rather than offered for the next game.

@@ -66,6 +66,13 @@ test('seats must match the grouping exactly', () => {
   assert.equal(bridge.seatsMatchGrouping(extra, GROUPING), false);
 });
 
+test('finishedBefore compares a finished game with when the previous game was logged', () => {
+  assert.equal(bridge.finishedBefore('2026-10-12T20:15:00+00:00', '2026-10-13T09:00:00.000Z'), true);
+  assert.equal(bridge.finishedBefore('2026-10-13T10:00:00+00:00', '2026-10-13T09:00:00.000Z'), false);
+  assert.equal(bridge.finishedBefore(undefined, '2026-10-13T09:00:00.000Z'), false);
+  assert.equal(bridge.finishedBefore('2026-10-12T20:15:00+00:00', undefined), false);
+});
+
 test('findGameForSeats picks the game whose line-up the room used', () => {
   const groupingFor = idx => (idx === 1 ? GROUPING : SWAPPED);
   assert.equal(bridge.findGameForSeats(seatsFor(SWAPPED), 2, groupingFor), 2);

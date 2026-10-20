@@ -129,6 +129,14 @@ function findGameForSeats(seats, gamesPlanned, groupingForGame) {
   return null;
 }
 
+// Did a game that finished at `finishedAt` end before `loggedAt`? Both are ISO
+// timestamps; false when either is missing or unreadable.
+function finishedBefore(finishedAt, loggedAt) {
+  const finished = Date.parse(finishedAt);
+  const logged = Date.parse(loggedAt);
+  return Number.isFinite(finished) && Number.isFinite(logged) && finished < logged;
+}
+
 // Validate a result callback body; returns an error message or null.
 function validateResultPayload(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return 'body must be a JSON object';
@@ -285,6 +293,7 @@ module.exports = {
   createBridgeClient,
   seatsMatchGrouping,
   findGameForSeats,
+  finishedBefore,
   validateResultPayload,
   remainingCardsFromPayload,
   describeSeats,
