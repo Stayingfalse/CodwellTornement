@@ -27,7 +27,8 @@ The full API contract is in that repo's
    - **Seats don't match, or someone hasn't claimed their seat:** the thread
      gets a **"result detected — please confirm"** card. A player in the
      match, or an admin, presses **Log as Game N** or **Dismiss**.
-   - **The game's line-up was already logged by hand:** it is ignored.
+   - **The game's line-up was already logged by hand:** it is ignored
+     quietly (nothing is posted in the thread).
 
 ## Live status and nudges
 
@@ -117,4 +118,4 @@ Do the same in the BGA bot's repo. The containers then reach each other as
 - The BGA bot keeps each result until this bot answers with a 2xx, and resends
   after an outage. Each game has an `event_id`, so a result is never scored
   twice. A result that turns up late, after the game was logged by hand, is
-  ignored rather than offered for the next game.
+  quietly ignored rather than offered for the next game.
