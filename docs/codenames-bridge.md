@@ -14,7 +14,8 @@ The full API contract is in that repo's
    🕵️ and posts a live room card with the four players listed. Seats are
    matched to players automatically by the name used last time, their Discord
    name or their tournament name. Anyone it can't match presses
-   **🙋 I'm playing** once.
+   **🙋 I'm playing** once. A player who joins on a second device under a
+   similar name ("Alliee" and "Alliee - PC") counts as one person.
 3. The room card shows the **line-up for the current game**: each seat with ✅,
    "sitting as …" or "hasn't pressed I'm playing". While the room is in the
    lobby the players get one ping saying where to sit. Use **Play next game**
