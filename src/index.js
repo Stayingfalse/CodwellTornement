@@ -1498,34 +1498,22 @@ function getRoundMatchEntry(match) {
 
 // Copy a match's logged games into history and this round's results.
 // Returns how many games were copied.
-function moveMatchResultsToHistory(matchData) {
-  const phaseResults = matchData.phaseResults || {};
+// One history entry per logged game of a match, as it is stored once the match ends.
+function matchHistoryEntries(matchData) {
+  const phaseResults = { ...(matchData.phaseResults || {}) };
   if (matchData.game1Result && !phaseResults[1]) phaseResults[1] = matchData.game1Result;
   const phaseSequence = Array.isArray(matchData.games) ? null : getMatchPhaseSequence(matchData);
   const gamesPerMatch = getMatchGameCount(matchData);
-  let moved = 0;
+  const entries = [];
   for (let idx = 1; idx <= gamesPerMatch; idx++) {
     const g = phaseResults[idx];
     if (!g) continue;
-    const groupingForGame = getGroupingForMatchGame(matchData, idx);
-    const actualGamePhase = phaseSequence ? (phaseSequence[idx - 1] || idx) : idx;
-    tournament.roundResults.push({
-      matchNumber: matchData.matchNumber,
-      gameIndex: idx,
-      grouping: groupingForGame,
-      winner: g.winner,
-      assassin: g.assassin,
-      remainingCards: g.remainingCards,
-      winPoints: g.winPoints,
-      losePoints: g.losePoints,
-      threadId: matchData.threadId,
-    });
-    tournament.history.push({
+    entries.push({
       roundNumber: tournament.currentRound,
       matchNumber: matchData.matchNumber,
       game: idx,
-      gamePhase: actualGamePhase,
-      grouping: groupingForGame,
+      gamePhase: phaseSequence ? (phaseSequence[idx - 1] || idx) : idx,
+      grouping: getGroupingForMatchGame(matchData, idx),
       winner: g.winner,
       assassin: g.assassin,
       remainingCards: g.remainingCards,
@@ -1538,9 +1526,27 @@ function moveMatchResultsToHistory(matchData) {
       source: g.source || 'manual',
       detail: g.detail || null, // clue-by-clue history when the game came from codenames.game
     });
-    moved++;
   }
-  return moved;
+  return entries;
+}
+
+function moveMatchResultsToHistory(matchData) {
+  const entries = matchHistoryEntries(matchData);
+  for (const entry of entries) {
+    tournament.roundResults.push({
+      matchNumber: entry.matchNumber,
+      gameIndex: entry.game,
+      grouping: entry.grouping,
+      winner: entry.winner,
+      assassin: entry.assassin,
+      remainingCards: entry.remainingCards,
+      winPoints: entry.winPoints,
+      losePoints: entry.losePoints,
+      threadId: entry.threadId,
+    });
+    tournament.history.push(entry);
+  }
+  return entries.length;
 }
 
 // End the current round now: logged games are kept (scores already include
@@ -1689,7 +1695,14 @@ async function handleBridgeResult(body) {
     return { status: 200, data: { status: 'ignored', reason: 'external_ref does not match the current match' } };
   }
   matchData.bridgeEvents = matchData.bridgeEvents || [];
-  if (matchData.bridgeEvents.includes(body.event_id)) return { status: 200, data: { status: 'duplicate' } };
+  if (matchData.bridgeEvents.includes(body.event_id)) {
+    // Sent again (e.g. to backfill clue history): fill in a game logged without it.
+    const game = codenamesBridge.loggedGameForResult(
+      body, matchData.phaseResults, matchData.gamePhase ?? 1, getMatchGameCount(matchData), idx => getGroupingForMatchGame(matchData, idx),
+    );
+    if (game !== null && attachLateDetail(matchData, game, body)) await saveTournamentData();
+    return { status: 200, data: { status: 'duplicate' } };
+  }
   if (!thread) return { status: 503, data: { error: 'match thread is not reachable right now' } };
 
   const gamePhase = matchData.gamePhase ?? 1;
@@ -1717,20 +1730,16 @@ async function handleBridgeResult(body) {
       return { status: 200, data: { status: 'logged', game: gamePhase } };
     }
 
-    // A result held up on the way here (e.g. the BGA bot couldn't reach us) that
-    // finished before the previous game was logged belongs to a game already played.
-    // Results for games already played are only logged here: players don't need to hear about them.
-    const previous = gamePhase > 1 ? (matchData.phaseResults || {})[gamePhase - 1] : null;
-    if (seatedGame === null && previous && codenamesBridge.finishedBefore(body.finished_at, previous.submittedAt)) {
+    // A result for a game already played: held up on the way here (e.g. the BGA
+    // bot couldn't reach us) or played with an earlier line-up. It's skipped quietly
+    // (players don't need to hear about it), but its clue history is kept when the
+    // game was logged by hand without one.
+    const lateGame = codenamesBridge.loggedGameForResult(body, matchData.phaseResults, gamePhase, gamesPlanned, idx => getGroupingForMatchGame(matchData, idx));
+    if (lateGame !== null) {
+      const backfilled = attachLateDetail(matchData, lateGame, body);
       await saveTournamentData();
-      console.log(`[bridge] Ignoring ${body.event_id} in match ${matchData.matchNumber}: it finished before Game ${gamePhase - 1} was logged`);
-      return { status: 200, data: { status: 'already_logged', game: gamePhase - 1 } };
-    }
-
-    if (seatedGame !== null && seatedGame < gamePhase) {
-      await saveTournamentData();
-      console.log(`[bridge] Ignoring ${body.event_id} in match ${matchData.matchNumber}: Game ${seatedGame} is already logged`);
-      return { status: 200, data: { status: 'already_logged', game: seatedGame } };
+      console.log(`[bridge] Ignoring ${body.event_id} in match ${matchData.matchNumber}: Game ${lateGame} is already logged${backfilled ? ' (clue history added)' : ''}`);
+      return { status: 200, data: { status: 'already_logged', game: lateGame } };
     }
 
     const pendingId = crypto.randomBytes(4).toString('hex');
@@ -1755,6 +1764,16 @@ async function handleBridgeResult(body) {
   } finally {
     processingThreads.delete(processingKey);
   }
+}
+
+// Give an already-logged game the clue history from a late bridge result, if it
+// has none and the result agrees on who won. Returns true when it changed.
+function attachLateDetail(matchData, game, body) {
+  const logged = (matchData.phaseResults || {})[game];
+  if (!logged || logged.detail || logged.winner !== body.winner) return false;
+  logged.detail = codenamesBridge.gameDetailFromPayload(body);
+  if (game === 1 && matchData.game1Result && !matchData.game1Result.detail) matchData.game1Result.detail = logged.detail;
+  return true;
 }
 
 // ----- Web dashboard & OAuth -----
@@ -1953,6 +1972,8 @@ function buildWebData() {
     gamesPlayed: getGamesPlayedMap(),
     rounds: tournament.rounds,
     history: tournament.history,
+    // Games already logged in matches still being played, shaped like history entries.
+    liveHistory: tournament.activeMatches.flatMap(matchHistoryEntries),
     activeMatches: tournament.activeMatches,
     leftPlayers: left,
     pendingRemoval: tournament.pendingRemoval !== null,

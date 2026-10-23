@@ -138,6 +138,25 @@ function finishedBefore(finishedAt, loggedAt) {
   return Number.isFinite(finished) && Number.isFinite(logged) && finished < logged;
 }
 
+// The already-logged game (1-based) a late result belongs to, or null: the
+// earlier game whose line-up the room used, otherwise the game that was logged
+// next after the result finished (it can't be an earlier one: that was
+// logged before this game ended).
+function loggedGameForResult(body, phaseResults, gamePhase, gamesPlanned, groupingForGame) {
+  const results = phaseResults || {};
+  const seated = findGameForSeats(body.seats, gamesPlanned, groupingForGame);
+  if (seated !== null && seated < gamePhase && results[seated]) return seated;
+  for (let game = 1; game < gamePhase; game++) {
+    const logged = results[game];
+    const before = game > 1 ? results[game - 1] : null;
+    if (!logged) continue;
+    if (finishedBefore(body.finished_at, logged.submittedAt) && !(before && finishedBefore(body.finished_at, before.submittedAt))) {
+      return game;
+    }
+  }
+  return null;
+}
+
 // Validate a result callback body; returns an error message or null.
 function validateResultPayload(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return 'body must be a JSON object';
@@ -295,6 +314,7 @@ module.exports = {
   seatsMatchGrouping,
   findGameForSeats,
   finishedBefore,
+  loggedGameForResult,
   validateResultPayload,
   remainingCardsFromPayload,
   describeSeats,

@@ -21,18 +21,22 @@ function filterRound(round) {
   renderStats();
 }
 
-function getFilteredHistory() {
+// Finished matches plus the games already logged in matches still being played.
+function getStatsHistory() {
   if (!D || !D.history) return [];
-  if (statsFilterRounds.has('all')) return D.history;
-  return D.history.filter(h => statsFilterRounds.has(h.roundNumber));
+  return D.history.concat(D.liveHistory || []);
+}
+
+function getFilteredHistory() {
+  const history = getStatsHistory();
+  if (statsFilterRounds.has('all')) return history;
+  return history.filter(h => statsFilterRounds.has(h.roundNumber));
 }
 
 // ── Stats: build round filter chips ───────────────────────────────────────
 function buildRoundFilterChips() {
   const container = document.getElementById('filter-rounds');
-  const rounds = D && D.history
-    ? [...new Set(D.history.map(h => h.roundNumber))].sort((a, b) => a - b)
-    : [];
+  const rounds = [...new Set(getStatsHistory().map(h => h.roundNumber))].sort((a, b) => a - b);
 
   const allActive = statsFilterRounds.has('all');
   let html = `<button class="filter-chip ${allActive ? 'active' : ''}" onclick="filterRound('all')">All</button>`;

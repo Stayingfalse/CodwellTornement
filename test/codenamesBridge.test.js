@@ -81,6 +81,22 @@ test('seatsMatchGrouping counts a player on two devices once', () => {
   assert.equal(bridge.seatsMatchGrouping(seats, GROUPING), false);
 });
 
+test('loggedGameForResult finds the already-logged game a late result belongs to', () => {
+  const groupingFor = idx => (idx === 1 ? GROUPING : SWAPPED);
+  const results = {
+    1: { winner: 'blue', submittedAt: '2026-10-18T16:36:05Z' },
+    2: { winner: 'red', submittedAt: '2026-10-18T17:04:51Z' },
+  };
+  const late = (finished, seats = {}) => ({ finished_at: finished, seats });
+  // By seats: the room used Game 1's line-up.
+  assert.equal(bridge.loggedGameForResult(late('2026-10-20T10:00:00Z', seatsFor(GROUPING)), results, 3, 3, groupingFor), 1);
+  // By time: finished between Game 1 and Game 2 being logged.
+  assert.equal(bridge.loggedGameForResult(late('2026-10-18T16:50:00Z'), results, 3, 3, groupingFor), 2);
+  assert.equal(bridge.loggedGameForResult(late('2026-10-18T16:00:00Z'), results, 3, 3, groupingFor), 1);
+  // Finished after the last logged game: it's the current game, not a late one.
+  assert.equal(bridge.loggedGameForResult(late('2026-10-18T18:00:00Z'), results, 3, 3, groupingFor), null);
+});
+
 test('findGameForSeats picks the game whose line-up the room used', () => {
   const groupingFor = idx => (idx === 1 ? GROUPING : SWAPPED);
   assert.equal(bridge.findGameForSeats(seatsFor(SWAPPED), 2, groupingFor), 2);
