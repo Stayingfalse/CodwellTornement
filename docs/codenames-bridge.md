@@ -72,8 +72,11 @@ with its giver, every guess with who made it and which card it hit) in
 - A **Clues & Guesses** table: clues, average clue number, hits per clue,
   clue accuracy, guesses, guess accuracy and bad picks per player.
 
-Manually logged games still count for the win-rate stats; they just have no
-clue detail. If a seat wasn't linked to a Discord user, its clues and guesses
+Games count as soon as they're logged, including in matches still being
+played. Manually logged games still count for the win-rate stats; they just
+have no clue detail, unless the BGA bot's result for that game arrives
+later (it was held up, or is sent again with the BGA bot's `redeliver`
+endpoint), in which case its clue history is added to the logged game. If a seat wasn't linked to a Discord user, its clues and guesses
 count for whoever the line-up put in that seat.
 
 The **Blue Wins / Red Wins** buttons still work as a manual fallback, and the
