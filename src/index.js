@@ -10,6 +10,7 @@ const codenamesBridge = require('./codenamesBridge');
 const scheduler = require('./scheduler');
 const cards = require('./cards');
 const scoring = require('./scoring');
+const resultGuard = require('./resultGuard');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const TOURNAMENT_FILE = path.join(DATA_DIR, 'tournament.json');
@@ -652,20 +653,34 @@ async function handleInteraction(interaction) {
         return;
       }
 
-      // Show buttons for assassin question instead of modal
-      const assassinRow = new ActionRowBuilder()
-        .addComponents(
-          new ButtonBuilder()
-            .setCustomId(`assassin_yes_${winner}_${expectedPhase}`)
-            .setLabel('Yes, Assassin Hit')
-            .setStyle(ButtonStyle.Danger),
-          new ButtonBuilder()
-            .setCustomId(`assassin_no_${winner}_${expectedPhase}`)
-            .setLabel('No, Not Assassin')
-            .setStyle(ButtonStyle.Primary),
+      // Too soon after the previous game was logged: probably that game again.
+      const check = resultGuard.checkManualResult({ phaseResults: matchData.phaseResults, gamePhase: expectedPhase });
+      if (check.action === 'block') {
+        await interaction.reply({ content: resultGuard.guardMessage(check, expectedPhase), flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (check.action === 'warn') {
+        const confirmRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`logok_${winner}_${expectedPhase}`).setLabel(`Yes, log Game ${expectedPhase}`).setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId('logcancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary),
         );
+        await interaction.reply({ content: resultGuard.guardMessage(check, expectedPhase), components: [confirmRow], flags: MessageFlags.Ephemeral });
+        return;
+      }
 
-      await interaction.reply({ content: `Game ${expectedPhase}: Was the winning move an assassin hit?`, components: [assassinRow], flags: MessageFlags.Ephemeral });
+      await interaction.reply({ ...assassinQuestion(winner, expectedPhase), flags: MessageFlags.Ephemeral });
+    } else if (customId.startsWith('logok_')) {
+      // Confirmed a result the time guard warned about: carry on to the assassin question.
+      const [, winner, phase] = customId.split('_');
+      const expectedPhase = parseInt(phase, 10);
+      const matchData = tournament.activeMatches.find(m => m.threadId === interaction.channelId);
+      if (!['blue', 'red'].includes(winner) || !matchData || (matchData.gamePhase ?? 1) !== expectedPhase) {
+        await interaction.update({ content: `Not logged: this match is no longer on Game ${expectedPhase}.`, components: [] });
+        return;
+      }
+      await interaction.update(assassinQuestion(winner, expectedPhase));
+    } else if (customId === 'logcancel') {
+      await interaction.update({ content: 'Cancelled — nothing was logged.', components: [] });
     } else if (customId.startsWith('assassin_')) {
       const parts = customId.split('_');
       const wasAssassin = parts[1] === 'yes';
@@ -986,6 +1001,21 @@ async function handleInteraction(interaction) {
       }
     }
   }
+}
+
+// The first question when logging a result by hand.
+function assassinQuestion(winner, gamePhase) {
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`assassin_yes_${winner}_${gamePhase}`)
+      .setLabel('Yes, Assassin Hit')
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`assassin_no_${winner}_${gamePhase}`)
+      .setLabel('No, Not Assassin')
+      .setStyle(ButtonStyle.Primary),
+  );
+  return { content: `Game ${gamePhase}: Was the winning move an assassin hit?`, components: [row] };
 }
 
 async function allocateRound(guild) {

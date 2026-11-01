@@ -154,6 +154,8 @@ Copy `.env.example` to `.env` and fill in the values before starting the bot.
 | `WEB_URL` | ⬜ | auto-detected | Public base URL of the dashboard (e.g. `https://tournament.example.com`). Used for the OAuth2 redirect URI and the Website button on the Discord message. |
 | `WEB_PORT` | ⬜ | `80` | Port the web server listens on |
 | `ROUND_TIMEOUT_DAYS` | ⬜ | `14` | Days before a round deadline fires. Supports decimals — e.g. `0.01` ≈ 15 minutes is useful for a dry run. Minimum practical value for production is `1`. |
+| `RESULT_BLOCK_MINUTES` | ⬜ | `3` | A result logged with the buttons this soon after the previous game was logged is refused (it's almost always that game again). `0` turns it off. |
+| `RESULT_WARN_MINUTES` | ⬜ | `15` | Within this many minutes of the previous game being logged, the buttons ask "Has Game N really been played and finished?" before going on. |
 | `BRIDGE_TOKEN` | ⬜ | — | Shared secret with the BGA bot's Codenames watcher. Turns on automatic results; see [Codenames bridge](docs/codenames-bridge.md) |
 | `BRIDGE_URLS` | ⬜ | — | Comma-separated base URLs of the BGA bot's bridge API, tried in order (internal first, public HTTPS fallback) |
 
@@ -325,7 +327,7 @@ When a round starts, each match gets a thread. The first card in the thread ping
 
 | Button | What it does |
 |---|---|
-| **🔵 Blue won** / **🔴 Red won** | Starts logging the current game's result. Only the four players or an admin can press it. |
+| **🔵 Blue won** / **🔴 Red won** | Starts logging the current game's result. Only the four players or an admin can press it. Within 3 minutes of the previous game being logged it's refused, and within 15 minutes it asks for confirmation first, so a game logged automatically isn't logged again as the next one. |
 | **Yes, Assassin Hit** / **No, Not Assassin** | Follows the win button. If it wasn't the assassin, a form asks how many cards the losing team had left (0–8). |
 | **Log as game N** / **Dismiss** | Shown when codenames.game reports a result whose seats didn't match the line-up. |
 
