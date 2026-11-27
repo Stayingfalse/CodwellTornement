@@ -311,7 +311,7 @@ function renderCurrentRound() {
   const roundMatches = D.rounds[n - 1] || [];
   const { planned, played } = roundSummaryCounts(n, roundMatches);
   const forceEnd = isAdmin() && D.activeMatches.length
-    ? '<button class="btn btn-sm btn-warn" onclick="confirmForceEnd()">Force end round</button>' : '';
+    ? `${D.roundDeadline ? '<button class="btn btn-sm" onclick="openDeadlineDialog()">Change deadline</button>' : ''}<button class="btn btn-sm btn-warn" onclick="confirmForceEnd()">Force end round</button>` : '';
   const waiting = D.activeMatches.length === 0
     ? '<p class="muted">Waiting for this round to be allocated.</p>' : '';
   el.innerHTML = `<div class="section-head">
@@ -564,6 +564,7 @@ function renderAdminPanel() {
   if (started) btns.push('<button class="btn" onclick="confirmRecalculateRounds()">Fix matchups</button>');
   btns.push('<button class="btn btn-danger-ghost" onclick="confirmReset()">Reset…</button>');
   let note = '';
+  if (D && D.roundDecision) note += roundDecisionHtml(D.roundDecision);
   if (D && D.pendingRemoval) note = '<p class="note is-warn">A leave request is waiting for confirmation. New rounds are paused until it resolves.</p>';
   if (D && D.signupsReopened) note += '<p class="note is-info">Signups are open. New rounds are paused until they close.</p>';
   document.getElementById('admin-actions').innerHTML = btns.join('') + note;
@@ -581,6 +582,87 @@ async function adminAction(action, body) {
     setAdminFeedback('✗ Network error — try again', true);
   }
   fetchData();
+}
+
+// The players changed mid-round after games were logged: the admin decides what happens to the round.
+function roundDecisionHtml({ round, loggedGames }) {
+  const games = plural(loggedGames, 'game');
+  return `<div class="decision" role="alert">
+      <span><b>Round ${round} needs a decision.</b> The players changed after ${games} had been logged in it. Later rounds are already replanned.</span>
+      <div class="decision-actions">
+        <button class="btn btn-sm" onclick="decideRound('keep', ${round})">Keep round ${round}</button>
+        <button class="btn btn-sm btn-warn" onclick="decideRound('end', ${round})">End it now</button>
+        <button class="btn btn-sm btn-danger-ghost" onclick="decideRound('restart', ${round})">Restart it…</button>
+      </div>
+    </div>`;
+}
+
+async function decideRound(choice, round) {
+  const games = plural((D.roundDecision && D.roundDecision.loggedGames) || 0, 'game');
+  const dialogs = {
+    keep: { title: `Keep round ${round}?`, body: '<p>Its matches carry on as planned. Anyone who left still finishes their match.</p>', confirmLabel: 'Keep round' },
+    end: { title: `End round ${round} now?`, body: `<p>The ${games} logged are kept. Unplayed games score nothing, threads are archived and round ${round + 1} starts with the new plan.</p>`, confirmLabel: 'End round' },
+    restart: { title: `Restart round ${round}?`, body: `<p>This <b>deletes the ${games} logged</b> in round ${round} (their points go too), cancels its threads and replans the round for the current players. The deadline stays the same.</p>`, confirmLabel: 'Delete and restart', danger: true },
+  };
+  if (await confirmDialog(dialogs[choice])) adminAction('round-decision', { choice, round });
+}
+
+// ── Round deadline (admin) ─────────────────────────────────────────────────
+const DELAY_DAYS = [1, 3, 7, 14];
+
+// A Date as the value a datetime-local input takes (local time).
+function toLocalInputValue(ms) {
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function openDeadlineDialog() {
+  if (!D || !D.roundDeadline) return;
+  const current = D.roundDeadline;
+  const passed = current < Date.now();
+  document.getElementById('deadline-current').textContent =
+    `Round ${D.currentRound} ${passed ? 'ended' : 'ends'} ${fmtDate(new Date(current).toISOString(), true)}${passed ? ' (passed: delays count from now)' : ''}.`;
+  const base = Math.max(current, Date.now());
+  document.getElementById('deadline-delays').innerHTML = DELAY_DAYS.map(days =>
+    `<button class="btn" onclick="submitDeadline({ delayDays: ${days} })">+${plural(days, 'day')}<small>${esc(fmtDate(new Date(base + days * 864e5).toISOString()))}</small></button>`).join('');
+  const input = document.getElementById('deadline-input');
+  input.value = toLocalInputValue(current);
+  input.min = toLocalInputValue(Date.now());
+  const fb = document.getElementById('deadline-feedback');
+  fb.textContent = '';
+  fb.className = 'feedback';
+  openDialog('deadline-modal');
+}
+
+function submitDeadlineDate() {
+  const value = document.getElementById('deadline-input').value;
+  const ms = value ? new Date(value).getTime() : NaN;
+  const fb = document.getElementById('deadline-feedback');
+  if (!Number.isFinite(ms)) { fb.textContent = '✗ Pick a date and time.'; fb.className = 'feedback is-bad'; return; }
+  if (ms <= Date.now()) { fb.textContent = '✗ The new deadline must be in the future.'; fb.className = 'feedback is-bad'; return; }
+  submitDeadline({ deadline: ms });
+}
+
+async function submitDeadline(body) {
+  const fb = document.getElementById('deadline-feedback');
+  fb.textContent = 'Saving…';
+  fb.className = 'feedback';
+  try {
+    const res = await fetch('/api/admin/set-deadline', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      closeDialog('deadline-modal');
+      setAdminFeedback(`✓ Round ${D.currentRound} now ends ${fmtDate(new Date(data.deadline).toISOString(), true)}`, false);
+      fetchData();
+    } else {
+      fb.textContent = '✗ ' + (data.error || `Error ${res.status}`);
+      fb.className = 'feedback is-bad';
+    }
+  } catch {
+    fb.textContent = '✗ Network error — try again';
+    fb.className = 'feedback is-bad';
+  }
 }
 
 async function confirmCloseSignups() {

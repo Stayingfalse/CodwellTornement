@@ -212,6 +212,30 @@
   </div>
 </dialog>
 
+<!-- ── Round deadline (admin) ───────────────────────────────────────────── -->
+<dialog id="deadline-modal" class="dialog dialog-sm" aria-labelledby="deadline-title">
+  <div class="dialog-head">
+    <h2 id="deadline-title">Change round deadline</h2>
+    <button class="icon-btn" onclick="closeDialog('deadline-modal')" aria-label="Close">✕</button>
+  </div>
+  <div class="dialog-body">
+    <p id="deadline-current" class="muted"></p>
+    <div class="field">
+      <span class="field-label">Delay by</span>
+      <div class="delay-grid" id="deadline-delays"></div>
+    </div>
+    <label class="field">
+      <span class="field-label">Or pick a date and time</span>
+      <span class="date-row">
+        <input id="deadline-input" type="datetime-local">
+        <button class="btn btn-primary" onclick="submitDeadlineDate()">Set</button>
+      </span>
+    </label>
+    <p class="muted small-note">Players are told in their match threads, and the round card and warning timer are updated.</p>
+    <p id="deadline-feedback" class="feedback" role="status"></p>
+  </div>
+</dialog>
+
 <!-- ── Generic confirm ──────────────────────────────────────────────────── -->
 <dialog id="confirm-modal" class="dialog dialog-sm" aria-labelledby="confirm-title">
   <form method="dialog">
