@@ -11,6 +11,7 @@ const scheduler = require('./scheduler');
 const cards = require('./cards');
 const scoring = require('./scoring');
 const resultGuard = require('./resultGuard');
+const roundAdmin = require('./roundAdmin');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const TOURNAMENT_FILE = path.join(DATA_DIR, 'tournament.json');
@@ -46,6 +47,9 @@ let tournament = {
   signupsReopened: false, // true while a mid-tournament signup window is open
   signupReopenMessageId: null, // Discord message ID of the active reopen-signups message
   scoreAdjustments: [], // [{userId, delta, reason, at, by}] — manual changes on top of the points games give
+  roundRoster: null, // player IDs the current round was planned for (to spot joins and leaves)
+  roundCard: null, // {messageId, matches} — the current round's card in the channel, edited when the deadline moves
+  roundDecision: null, // {round, reason, loggedGames, messageId, createdAt} — players changed mid-round, waiting for an admin
 };
 
 // Codenames bridge (BGA bot's codenames.game watcher) — optional, see docs/codenames-bridge.md
@@ -283,6 +287,10 @@ async function loadTournamentData() {
   tournament.pendingRemoval = parsed.pendingRemoval || null;
   tournament.signupsReopened = parsed.signupsReopened || false;
   tournament.signupReopenMessageId = parsed.signupReopenMessageId || null;
+  // Older saves didn't record who the round was planned for: take the players at upgrade time.
+  tournament.roundRoster = parsed.roundRoster || (tournament.activeMatches.length > 0 ? Array.from(tournament.players) : null);
+  tournament.roundCard = parsed.roundCard || null;
+  tournament.roundDecision = parsed.roundDecision || null;
   codenamesBridgeSynced = parsed.codenamesBindings || {};
   if (Array.isArray(parsed.scoreAdjustments)) {
     tournament.scoreAdjustments = parsed.scoreAdjustments;
@@ -331,6 +339,9 @@ async function writeTournamentData() {
       pendingRemoval: tournament.pendingRemoval,
       signupsReopened: tournament.signupsReopened,
       signupReopenMessageId: tournament.signupReopenMessageId,
+      roundRoster: tournament.roundRoster,
+      roundCard: tournament.roundCard,
+      roundDecision: tournament.roundDecision,
       codenamesBindings: codenamesBridgeSynced,
     };
     const tmp = `${TOURNAMENT_FILE}.tmp`;
@@ -833,7 +844,7 @@ async function handleInteraction(interaction) {
         [m.grouping.blue.spymaster, m.grouping.blue.guesser, m.grouping.red.spymaster, m.grouping.red.guesser].includes(interaction.user.id)
       );
       const activeMatchNote = hasActiveMatch
-        ? '\n\n⚠️ You have an active match in progress — if you leave, that match will continue and count toward scores. Future rounds will not include you.'
+        ? '\n\n⚠️ You have a match in progress. If no games have been logged this round yet, the round is replanned without you; otherwise an admin decides whether your match carries on. Games already logged still count. Future rounds will not include you.'
         : '';
       const confirmRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -876,22 +887,15 @@ async function handleInteraction(interaction) {
       tournament.players.delete(userId);
       clearRemovalTimer();
       tournament.pendingRemoval = null;
-      const activePlayers = Array.from(tournament.players);
-      await recalculateFutureRounds(activePlayers);
       await saveTournamentData();
+      await deleteChannelMessage(interaction.guild, confirmMessageId);
+      const remaining = tournament.players.size;
+      const plan = await applyRosterChange(interaction.guild, `<@${userId}> has left the tournament.`);
       const leaveChannel = await interaction.guild.channels.fetch(tournament.setupChannelId).catch(() => null);
       if (leaveChannel) {
-        try {
-          const prevMsg = await leaveChannel.messages.fetch(confirmMessageId).catch(() => null);
-          if (prevMsg) await prevMsg.delete().catch(() => null);
-        } catch {}
-        const remaining = activePlayers.length;
-        await leaveChannel.send(`✅ <@${userId}> has left the tournament. Future rounds have been recalculated with ${remaining} remaining player${remaining !== 1 ? 's' : ''}. ${tournament.rounds.length} total rounds now planned.`);
+        await leaveChannel.send(`✅ <@${userId}> has left the tournament (${remaining} player${remaining !== 1 ? 's' : ''} remaining). ${plan} ${tournament.rounds.length} total rounds now planned.`);
       }
       refreshSetupMessage(interaction.guild).catch(() => null);
-      if (tournament.activeMatches.length === 0 && tournament.currentRound <= tournament.rounds.length) {
-        allocateRound(interaction.guild).catch(e => console.error('[leave] Auto-allocate failed:', e.message));
-      }
       await interaction.editReply({ content: '✅ You have left the tournament. Goodbye!' });
 
     // ── Cancel leave ─────────────────────────────────────────────────────────
@@ -917,6 +921,7 @@ async function handleInteraction(interaction) {
         } catch {}
         await cancelChannel.send(`❌ <@${userId}> has chosen to stay in the tournament.`);
       }
+      startNextRoundIfIdle(interaction.guild, 'cancel-leave');
       await interaction.reply({ content: '❌ Your leave request has been cancelled. You remain in the tournament.', flags: MessageFlags.Ephemeral });
 
     // ── Reopen signup (player joins during mid-tournament signup window) ──────
@@ -941,6 +946,19 @@ async function handleInteraction(interaction) {
       }
       await saveTournamentData();
       await interaction.reply({ content: `✅ You have joined the tournament! You'll be included in future rounds once signups close.`, flags: MessageFlags.Ephemeral });
+
+    // ── Round decision (admin, after the players changed mid-round) ──────────
+    } else if (/^rd_(keep|end|restart)_\d+$/.test(customId)) {
+      if (!interaction.member.roles.cache.has(process.env.ADMIN_ROLE_ID)) {
+        await interaction.reply({ content: 'Only admins can decide what happens to the round.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const [, choice, roundStr] = customId.split('_');
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const by = interaction.member.displayName || interaction.user.username;
+      const outcome = await resolveRoundDecision(interaction.guild, choice, parseInt(roundStr, 10), by);
+      if (outcome.stale) await interaction.message.delete().catch(() => null);
+      await interaction.editReply({ content: `${outcome.ok ? '✅' : '⚠️'} ${outcome.message}` });
 
     // ── Close signups (admin, from the channel message button) ───────────────
     } else if (customId === 'close_signups') {
@@ -1018,7 +1036,13 @@ function assassinQuestion(winner, gamePhase) {
   return { content: `Game ${gamePhase}: Was the winning move an assassin hit?`, components: [row] };
 }
 
-async function allocateRound(guild) {
+// `restart`: the same round is started again after being replanned
+// (restartCurrentRound), so last round's summary isn't posted again and the
+// round keeps `deadlineMs` if that is still ahead.
+async function allocateRound(guild, { restart = false, deadlineMs: keepDeadlineMs = null } = {}) {
+  if (restartingRound && !restart) {
+    return { success: false, message: `Round ${tournament.currentRound} is being replanned. Try again in a moment.` };
+  }
   if (!tournament.started || tournament.rounds.length === 0) {
     return { success: false, message: 'Tournament has not been started. Use the Start button first.' };
   }
@@ -1045,7 +1069,7 @@ async function allocateRound(guild) {
   if (!mainChannel) return { success: false, message: 'Could not find the tournament channel.' };
 
   // Clean up channel and post round summary when starting a subsequent round
-  if (tournament.currentRound > 1) {
+  if (tournament.currentRound > 1 && !restart) {
     try {
       const channel = mainChannel;
       // Clear out last round's messages (bulk delete only works on messages under 14 days old).
@@ -1081,7 +1105,9 @@ async function allocateRound(guild) {
   const channel = mainChannel;
 
   const timeoutDays = parseFloat(process.env.ROUND_TIMEOUT_DAYS) || 14;
-  const deadlineMs = Date.now() + timeoutDays * 24 * 60 * 60 * 1000;
+  const deadlineMs = keepDeadlineMs && keepDeadlineMs > Date.now() + 60 * 1000
+    ? keepDeadlineMs
+    : Date.now() + timeoutDays * 24 * 60 * 60 * 1000;
 
   // One thread per match, opened with game 1's card (which pings the four players).
   for (let i = 0; i < currentRoundMatches.length; i++) {
@@ -1108,14 +1134,14 @@ async function allocateRound(guild) {
   }
 
   // Then one message in the channel listing every match with a link to its thread.
+  tournament.roundCard = null;
   if (tournament.activeMatches.length > 0) {
-    await channel.send(cards.roundCard({
-      round: tournament.currentRound,
-      deadlineMs,
-      matches: tournament.activeMatches.map(m => ({
-        matchNumber: m.matchNumber, players: scheduler.playersOf(m.grouping), gamesPlanned: getMatchGameCount(m), threadUrl: getThreadUrl(m.threadId),
-      })),
-    })).catch(e => console.error('[allocate] Failed to post the round card:', e.message));
+    const cardMatches = tournament.activeMatches.map(m => ({
+      matchNumber: m.matchNumber, players: scheduler.playersOf(m.grouping), gamesPlanned: getMatchGameCount(m), threadUrl: getThreadUrl(m.threadId),
+    }));
+    const cardMessage = await channel.send(cards.roundCard({ round: tournament.currentRound, deadlineMs, matches: cardMatches }))
+      .catch(e => { console.error('[allocate] Failed to post the round card:', e.message); return null; });
+    if (cardMessage) tournament.roundCard = { messageId: cardMessage.id, matches: cardMatches };
   }
 
   if (tournament.activeMatches.length === 0) {
@@ -1125,6 +1151,8 @@ async function allocateRound(guild) {
   // Set round deadline and schedule warning + expiry timers
   tournament.roundDeadline = deadlineMs;
   tournament.roundStartedAt = new Date().toISOString();
+  tournament.roundRoster = Array.from(tournament.players);
+  clearRoundDecision(guild);
   await saveTournamentData();
   scheduleRoundTimers(guild);
   startThreadKeepAlive(guild);
@@ -1172,6 +1200,24 @@ async function cancelPendingRemoval(guild, reason) {
       }
     } catch (e) { console.error('[cancelPendingRemoval]', e.message); }
   }
+  startNextRoundIfIdle(guild, 'removal-cancelled');
+}
+
+// Once a leave request is cancelled: a round that couldn't start meanwhile
+// starts, and a running round whose players changed meanwhile is dealt with.
+function startNextRoundIfIdle(guild, what) {
+  if (!guild || !tournament.started) return;
+  if (tournament.activeMatches.length > 0) {
+    if (!tournament.signupsReopened && roundAdmin.rosterChanged(tournament.roundRoster, Array.from(tournament.players))) {
+      applyRosterChange(guild, 'The players changed while a leave request was pending.')
+        .then(plan => console.log(`[${what}] ${plan}`))
+        .catch(e => console.error(`[${what}] Roster change failed:`, e.message));
+    }
+    return;
+  }
+  if (tournament.currentRound > tournament.rounds.length) return;
+  allocateRound(guild).then(r => { if (!r.success) console.log(`[${what}] Round not started: ${r.message}`); })
+    .catch(e => console.error(`[${what}] Auto-allocate failed:`, e.message));
 }
 
 function deriveGroupingFromStoredRounds(entry) {
@@ -1307,6 +1353,226 @@ function describeFixMatchups({ before, after, future, keptThrough }) {
     `${future} round${future !== 1 ? 's' : ''} still to play (${before} → ${after} rounds in total).`;
 }
 
+// ── Players changing mid-round ─────────────────────────────────────────────
+// When someone joins (signups close) or leaves, the round in progress is
+// replanned too if nothing has been logged in it yet. Once games are logged
+// it is left alone and an admin decides (keep it, end it now, or restart it).
+// See src/roundAdmin.js for the rules.
+
+let restartingRound = false; // set while the current round is being replanned and restarted
+
+// Games logged in the current round: finished matches plus games in matches still going.
+function currentRoundLoggedGames() {
+  if (tournament.activeMatches.length === 0) return 0;
+  return tournament.roundResults.length + tournament.activeMatches.reduce((n, m) => n + matchHistoryEntries(m).length, 0);
+}
+
+async function deleteChannelMessage(guild, messageId) {
+  if (!guild || !messageId || !tournament.setupChannelId) return;
+  const channel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+  const msg = channel ? await channel.messages.fetch(messageId).catch(() => null) : null;
+  if (msg) await msg.delete().catch(() => null);
+}
+
+// Forget a pending round decision (the caller saves); its Discord message is removed in the background.
+function clearRoundDecision(guild) {
+  const decision = tournament.roundDecision;
+  if (!decision) return;
+  tournament.roundDecision = null;
+  if (decision.messageId) deleteChannelMessage(guild, decision.messageId).catch(() => null);
+}
+
+// Roster changes are handled one at a time, in order.
+let rosterChain = Promise.resolve();
+function serialRoundChange(fn) {
+  const run = rosterChain.then(fn);
+  rosterChain = run.catch(() => null);
+  return run;
+}
+
+// Call after tournament.players has changed. Replans what needs replanning,
+// starts a round if none is running, and returns a sentence for the channel.
+function applyRosterChange(guild, reason) {
+  return serialRoundChange(async () => {
+    const players = Array.from(tournament.players);
+    const round = tournament.currentRound;
+    let action = roundAdmin.rosterChangeAction({
+      roundRunning: tournament.activeMatches.length > 0,
+      rosterChanged: roundAdmin.rosterChanged(tournament.roundRoster, players),
+      loggedGames: currentRoundLoggedGames(),
+      paused: tournament.signupsReopened || !!tournament.pendingRemoval,
+    });
+    if (action === 'restart' && !guild) action = 'wait'; // can't open new threads without Discord
+
+    if (action === 'restart') {
+      const { result } = await restartCurrentRound(guild);
+      if (!result.success) return `Round ${round} had no games logged, so it was replanned, but it couldn't be restarted: ${result.message}`;
+      return `Round ${round} had no games logged yet, so it has been replanned for the current players and restarted in new threads.`;
+    }
+
+    await recalculateFutureRounds(players);
+    await saveTournamentData();
+    if (guild) refreshSetupMessage(guild).catch(() => null);
+
+    if (action === 'ask') {
+      await askRoundDecision(guild, reason);
+      return `The rounds after round ${round} have been recalculated. Round ${round} already has games logged, so an admin needs to decide what happens to it.`;
+    }
+    if (action === 'wait') {
+      return `Future rounds have been recalculated. Round ${round} will be looked at again once ${tournament.signupsReopened ? 'signups close' : 'the pending leave request is resolved'}.`;
+    }
+    if (guild && tournament.activeMatches.length === 0 && tournament.currentRound <= tournament.rounds.length) {
+      allocateRound(guild).catch(e => console.error('[roster] Auto-allocate failed:', e.message));
+    }
+    return 'Future rounds have been recalculated.';
+  });
+}
+
+// Replan the current round for the current players and start it again in new
+// threads, keeping its deadline. With `dropLogged`, games already logged in
+// it are deleted first (their points go with them). The old threads are told
+// and locked.
+async function restartCurrentRound(guild, { dropLogged = false } = {}) {
+  restartingRound = true;
+  try {
+    const round = tournament.currentRound;
+    const oldMatches = tournament.activeMatches;
+    const keepDeadline = tournament.roundDeadline;
+    const oldCard = tournament.roundCard;
+    let dropped = 0;
+    if (dropLogged) {
+      const before = tournament.history.length;
+      tournament.history = tournament.history.filter(e => e.roundNumber !== round);
+      dropped = before - tournament.history.length + oldMatches.reduce((n, m) => n + matchHistoryEntries(m).length, 0);
+      tournament.roundResults = [];
+    }
+    tournament.activeMatches = [];
+    tournament.currentRoundIndex = 0;
+    tournament.roundCard = null;
+    tournament.roundDeadline = null;
+    clearRoundTimers();
+    clearRoundDecision(guild);
+    await recalculateFutureRounds(Array.from(tournament.players));
+    await saveTournamentData();
+
+    if (guild) {
+      for (const match of oldMatches) {
+        const thread = await guild.channels.fetch(match.threadId).catch(() => null);
+        if (!thread) continue;
+        if (thread.archived) await thread.setArchived(false).catch(() => null);
+        await thread.send(`🔄 **This match has been cancelled:** the tournament's players changed, so round ${round} has been replanned. Check the tournament channel for the new matches.`).catch(() => null);
+        await thread.setLocked(true).catch(() => null);
+        await thread.setArchived(true).catch(() => null);
+      }
+      if (oldCard) await deleteChannelMessage(guild, oldCard.messageId);
+    }
+
+    let result;
+    if (!guild) result = { success: false, message: 'Discord is not available.' };
+    else if (tournament.currentRound > tournament.rounds.length) {
+      result = { success: false, message: 'No matches are left to play for the current players.' };
+      refreshSetupMessage(guild).catch(() => null);
+    } else result = await allocateRound(guild, { restart: true, deadlineMs: keepDeadline });
+    return { dropped, result };
+  } finally {
+    restartingRound = false;
+  }
+}
+
+function roundDecisionRow(round) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`rd_keep_${round}`).setLabel(`Keep round ${round}`).setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`rd_end_${round}`).setLabel('End it now').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`rd_restart_${round}`).setLabel('Restart it').setStyle(ButtonStyle.Danger),
+  );
+}
+
+// Post (or re-post) the question to admins in the tournament channel.
+async function askRoundDecision(guild, reason) {
+  const round = tournament.currentRound;
+  const logged = currentRoundLoggedGames();
+  clearRoundDecision(guild);
+  const games = `${logged} game${logged !== 1 ? 's' : ''}`;
+  const adminRoleId = process.env.ADMIN_ROLE_ID;
+  const content = [
+    `⚠️ ${adminRoleId ? `<@&${adminRoleId}> ` : ''}**Round ${round} needs an admin decision.** ${reason}`,
+    `The rounds after it have been recalculated for the ${tournament.players.size} current players, but round ${round} already has ${games} logged, so it hasn't been changed.`,
+    `• **Keep round ${round}**: its matches carry on as planned (anyone who left still finishes their match).`,
+    `• **End it now**: keeps the ${games} logged, scores nothing for the rest, and starts round ${round + 1} with the new plan.`,
+    `• **Restart it**: deletes the ${games} logged this round and replans round ${round} for the current players.`,
+    '-# You can also decide in the admin panel on the website.',
+  ].join('\n');
+  let messageId = null;
+  const channel = guild && tournament.setupChannelId ? await guild.channels.fetch(tournament.setupChannelId).catch(() => null) : null;
+  if (channel) {
+    const msg = await channel.send({ content, components: [roundDecisionRow(round)], allowedMentions: { roles: adminRoleId ? [adminRoleId] : [] } })
+      .catch(e => { console.error('[round-decision] Could not post the question:', e.message); return null; });
+    if (msg) messageId = msg.id;
+  }
+  tournament.roundDecision = { round, reason, loggedGames: logged, messageId, createdAt: new Date().toISOString() };
+  await saveTournamentData();
+}
+
+// An admin's answer, from the Discord buttons or the website.
+// choice: 'keep' | 'end' | 'restart'. Returns { ok, message }.
+function resolveRoundDecision(guild, choice, round, by) {
+  return serialRoundChange(async () => {
+    const decision = tournament.roundDecision;
+    if (!decision || decision.round !== round || decision.round !== tournament.currentRound || tournament.activeMatches.length === 0) {
+      if (decision && (decision.round !== tournament.currentRound || tournament.activeMatches.length === 0)) {
+        clearRoundDecision(guild);
+        await saveTournamentData();
+      }
+      return { ok: false, stale: true, message: 'There is no decision waiting for that round any more.' };
+    }
+    if (!['keep', 'end', 'restart'].includes(choice)) return { ok: false, message: 'Unknown choice.' };
+    if (choice === 'restart' && (tournament.pendingRemoval || tournament.signupsReopened)) {
+      return { ok: false, message: 'Wait until the pending leave request or open signups are resolved, then restart the round.' };
+    }
+
+    let message;
+    if (choice === 'keep') {
+      clearRoundDecision(guild);
+      await saveTournamentData();
+      message = `Round ${round} carries on as planned.`;
+    } else if (choice === 'end') {
+      const { ended, gamesKept } = await forceEndRound(guild);
+      message = `Round ${round} ended: ${ended} match(es) stopped, ${gamesKept} logged game(s) kept. Round ${round + 1} is starting with the new plan.`;
+    } else {
+      const { dropped, result } = await restartCurrentRound(guild, { dropLogged: true });
+      message = `Round ${round} restarted for the current players; ${dropped} logged game(s) were deleted.${result.success ? '' : ` It couldn't be started: ${result.message}`}`;
+    }
+    const channel = guild && tournament.setupChannelId ? await guild.channels.fetch(tournament.setupChannelId).catch(() => null) : null;
+    if (channel) await channel.send({ content: `✅ ${by ? `${by} decided: ` : ''}${message}`, allowedMentions: { parse: [] } }).catch(() => null);
+    return { ok: true, message };
+  });
+}
+
+// ── Moving the round deadline (admin, from the website) ────────────────────
+async function setRoundDeadline(guild, deadlineMs) {
+  tournament.roundDeadline = deadlineMs;
+  await saveTournamentData();
+  if (!guild) return;
+  scheduleRoundTimers(guild);
+  startThreadKeepAlive(guild); // scheduleRoundTimers stops the keep-alive timer too
+  refreshSetupMessage(guild).catch(() => null);
+  const ts = Math.floor(deadlineMs / 1000);
+  if (tournament.roundCard && tournament.setupChannelId) {
+    const channel = await guild.channels.fetch(tournament.setupChannelId).catch(() => null);
+    const msg = channel ? await channel.messages.fetch(tournament.roundCard.messageId).catch(() => null) : null;
+    if (msg) {
+      await msg.edit(cards.roundCard({ round: tournament.currentRound, deadlineMs, matches: tournament.roundCard.matches }))
+        .catch(e => console.warn('[deadline] Could not update the round card:', e.message));
+    }
+  }
+  for (const match of tournament.activeMatches) {
+    const thread = await guild.channels.fetch(match.threadId).catch(() => null);
+    if (!thread) continue;
+    if (thread.archived) await thread.setArchived(false).catch(() => null);
+    await thread.send(`🕒 **The round deadline has moved.** Round ${tournament.currentRound} now ends <t:${ts}:F> (<t:${ts}:R>).`).catch(() => null);
+  }
+}
+
 // Shared logic for closing a mid-tournament signup window.
 async function closeSignups(guild) {
   if (!tournament.signupsReopened) return;
@@ -1320,17 +1586,19 @@ async function closeSignups(guild) {
   const activePlayers = Array.from(tournament.players);
   tournament.signupsReopened = false;
   tournament.signupReopenMessageId = null;
-  await recalculateFutureRounds(activePlayers);
   await saveTournamentData();
+  const joined = tournament.roundRoster ? activePlayers.filter(id => !tournament.roundRoster.includes(id)) : [];
+  const reason = joined.length
+    ? `Signups closed and ${joined.map(id => `<@${id}>`).join(', ')} joined.`
+    : 'Signups closed and the players have changed.';
+  const plan = await applyRosterChange(guild, reason);
   if (channel) {
-    await channel.send(`✅ Signups closed with ${activePlayers.length} player${activePlayers.length !== 1 ? 's' : ''}. Future rounds have been recalculated — ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned.`);
+    await channel.send({
+      content: `✅ Signups closed with ${activePlayers.length} player${activePlayers.length !== 1 ? 's' : ''}. ${plan} ${tournament.rounds.length} total round${tournament.rounds.length !== 1 ? 's' : ''} planned.`,
+      allowedMentions: { parse: [] },
+    });
   }
-  if (guild) {
-    refreshSetupMessage(guild).catch(() => null);
-    if (tournament.activeMatches.length === 0 && tournament.currentRound <= tournament.rounds.length) {
-      allocateRound(guild).catch(e => console.error('[closeSignups] Auto-allocate failed:', e.message));
-    }
-  }
+  if (guild) refreshSetupMessage(guild).catch(() => null);
 }
 
 async function sendThreadKeepAlive(guild) {
@@ -1594,6 +1862,7 @@ async function forceEndRound(guild) {
   }
   tournament.activeMatches = [];
   clearRoundTimers();
+  clearRoundDecision(guild);
   tournament.roundDeadline = null;
   tournament.currentRound++;
   tournament.currentRoundIndex = 0;
@@ -1671,6 +1940,7 @@ async function recordGameResult(ctx, matchData, winner, assassin, remainingCards
   const roundComplete = remainingActive === 0;
   if (roundComplete) {
     clearRoundTimers();
+    clearRoundDecision(guild);
     tournament.currentRound++;
     tournament.currentRoundIndex = 0;
   }
@@ -2009,6 +2279,11 @@ function buildWebData() {
     pendingRemoval: tournament.pendingRemoval !== null,
     signupsReopened: tournament.signupsReopened,
     roundDeadline: tournament.roundDeadline,
+    roundDecision: tournament.roundDecision && {
+      round: tournament.roundDecision.round,
+      loggedGames: currentRoundLoggedGames(),
+      createdAt: tournament.roundDecision.createdAt,
+    },
     matchStatus: buildMatchStatus(),
   };
 }
@@ -2289,6 +2564,7 @@ async function handleHttpRequest(req, res) {
 
         clearRoundTimers();
         clearRemovalTimer();
+        clearRoundDecision(guild);
         tournament = {
           players: new Set(),
           currentRound: 0,
@@ -2310,6 +2586,9 @@ async function handleHttpRequest(req, res) {
           pendingRemoval: null,
           signupsReopened: false,
           signupReopenMessageId: null,
+          roundRoster: null,
+          roundCard: null,
+          roundDecision: null,
         };
         await saveTournamentData();
 
@@ -2623,6 +2902,40 @@ async function handleHttpRequest(req, res) {
         const guildCS = client.guilds.cache.get(process.env.GUILD_ID);
         await closeSignups(guildCS);
         sendJson(res, 200, { ok: true, message: `Signups closed. Future rounds recalculated. Total rounds: ${tournament.rounds.length}.` });
+        return;
+      }
+
+      // ── round-decision ─────────────────────────────────────────────────────
+      // What to do with the current round after the players changed mid-round.
+      if (action === 'round-decision') {
+        let data;
+        try { data = JSON.parse(await readBody(req)); } catch { sendJson(res, 400, { error: 'Invalid JSON body.' }); return; }
+        const { choice, round } = data || {};
+        if (!['keep', 'end', 'restart'].includes(choice) || !parseInt(round, 10)) {
+          sendJson(res, 400, { error: 'Required: choice ("keep"|"end"|"restart") and round (int).' });
+          return;
+        }
+        const guildRD = client.guilds.cache.get(process.env.GUILD_ID);
+        const outcome = await resolveRoundDecision(guildRD, choice, parseInt(round, 10), session.globalName || session.username);
+        sendJson(res, outcome.ok ? 200 : 400, outcome.ok ? { ok: true, message: outcome.message } : { error: outcome.message });
+        return;
+      }
+
+      // ── set-deadline ───────────────────────────────────────────────────────
+      // Body: { deadline: ms timestamp } or { delayDays: 1|3|7|14 }.
+      if (action === 'set-deadline') {
+        if (!tournament.started || tournament.activeMatches.length === 0 || !tournament.roundDeadline) {
+          sendJson(res, 400, { error: 'No round is running, so there is no deadline to change.' });
+          return;
+        }
+        let data;
+        try { data = JSON.parse(await readBody(req)); } catch { sendJson(res, 400, { error: 'Invalid JSON body.' }); return; }
+        const next = roundAdmin.newDeadline({ current: tournament.roundDeadline, delayDays: data?.delayDays, deadline: data?.deadline });
+        if (next.error) { sendJson(res, 400, { error: next.error }); return; }
+        const previous = tournament.roundDeadline;
+        await setRoundDeadline(client.guilds.cache.get(process.env.GUILD_ID), next.deadline);
+        console.log(`[deadline] Round ${tournament.currentRound} deadline moved from ${new Date(previous).toISOString()} to ${new Date(next.deadline).toISOString()} by ${session.username}`);
+        sendJson(res, 200, { ok: true, deadline: next.deadline, previous, message: `Round ${tournament.currentRound} deadline moved.` });
         return;
       }
 

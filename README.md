@@ -353,7 +353,18 @@ To switch a tournament that started on the older format, press **🔄 Fix Matchu
 
 After each game, the thread automatically posts the next game configuration and result buttons. Once all configured games are logged, the thread is archived and the scoreboard updated. When all threads in a round are complete, the next round is allocated automatically.
 
-**Round deadlines** are configurable via `ROUND_TIMEOUT_DAYS` (default 14 days). A warning message is posted to all active threads 2 days before the deadline. When the deadline expires, a notice is posted in the tournament channel; admins force-end the round from the website.
+**Round deadlines** are configurable via `ROUND_TIMEOUT_DAYS` (default 14 days). A warning message is posted to all active threads 2 days before the deadline. When the deadline expires, a notice is posted in the tournament channel; admins force-end the round from the website. Admins can also move the deadline of the round in progress from the website (see [Admin View](#admin-view-web)).
+
+### When players join or leave mid-round
+
+When someone leaves, or signups close with new players, the rounds are recalculated for the current players, **including the round in progress**:
+
+- **No games logged in the round yet:** the round is replanned and restarted straight away. The old match threads get a notice and are locked, new threads open, and the round keeps its deadline.
+- **Games already logged in the round:** the rounds after it are recalculated, but the round itself is left alone and the admins are asked (pinged in the tournament channel, and shown in the website's admin panel) what to do with it:
+  - **Keep round N**: its matches carry on as planned. Anyone who left still finishes their match.
+  - **End it now**: keeps the games already logged, scores nothing for the rest, and starts the next round with the new plan (like **Force end round**).
+  - **Restart it**: deletes the games logged in this round (their points go too) and replans and restarts it for the current players.
+- **While signups are open, or a leave request is waiting for confirmation**, rounds are paused, so the decision is made once that's resolved.
 
 ---
 
@@ -410,6 +421,8 @@ Log in with **Discord** (OAuth2) using the button in the top-right corner. You m
 | **Start tournament** | Builds the schedule from everyone signed up and switches the Discord message to the live view (4+ players). |
 | **Allocate round** | Starts the current round if it isn't running (normally automatic). |
 | **Force end round** | Next to the current round. Keeps games already logged, scores nothing for the rest, archives the threads and starts the next round. |
+| **Change deadline** | Next to the current round. Delay it by 1, 3, 7 or 14 days (added to the current deadline, or to now if it has passed), or pick a date and time. Players are told in their match threads, and the round card, the 2-day warning and the expiry notice follow the new deadline. |
+| **Round N needs a decision** | Shown when players joined or left after games were logged in the current round: keep it, end it now, or restart it (see [When players join or leave mid-round](#when-players-join-or-leave-mid-round)). |
 | **Shuffle upcoming** | Randomly reorders the rounds that haven't started. |
 | **Reopen / close signups** | Lets new players join mid-tournament; rounds pause while signups are open. |
 | **Fix matchups** | Rebuilds every future round for the current players (see Tournament Format). |
